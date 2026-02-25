@@ -9,12 +9,19 @@ description = "Protocol-agnostic adaptive bitrate algorithm for audio streaming"
 
 [dependencies]
 derivative = { workspace = true }
+kithara-platform = { workspace = true }
 tracing = { workspace = true }
-web-time = { workspace = true }
+
+[features]
+internal = []
 
 [dev-dependencies]
+kithara-abr = { path = ".", default-features = false, features = ["internal"] }
 unimock = { workspace = true }
-rstest = { workspace = true }
+kithara-test-utils = { workspace = true }
+wasm-bindgen-test = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = { workspace = true }
 
 [lints]

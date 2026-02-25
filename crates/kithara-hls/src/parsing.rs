@@ -145,6 +145,9 @@ fn detect_container_from_uri(uri: &str) -> Option<ContainerFormat> {
 }
 
 /// Parses a master playlist (M3U8) into [`MasterPlaylist`].
+///
+/// # Errors
+/// Returns an error when UTF-8 decoding or playlist parsing fails.
 pub fn parse_master_playlist(data: &[u8]) -> HlsResult<MasterPlaylist> {
     let input =
         std::str::from_utf8(data).map_err(|e| crate::HlsError::PlaylistParse(e.to_string()))?;
@@ -174,6 +177,7 @@ pub fn parse_master_playlist(data: &[u8]) -> HlsResult<MasterPlaylist> {
                 let audio_codec = c
                     .split(',')
                     .map(str::trim)
+                    .map(|codec| codec.trim_matches('"'))
                     .find_map(AudioCodec::from_hls_codec);
 
                 // Determine container format from URI extension
@@ -200,6 +204,9 @@ pub fn parse_master_playlist(data: &[u8]) -> HlsResult<MasterPlaylist> {
 }
 
 /// Parses a media playlist (M3U8) into [`MediaPlaylist`].
+///
+/// # Errors
+/// Returns an error when UTF-8 decoding or playlist parsing fails.
 pub fn parse_media_playlist(data: &[u8], variant_id: VariantId) -> HlsResult<MediaPlaylist> {
     fn map_encryption_method(m: hls_m3u8::types::EncryptionMethod) -> EncryptionMethod {
         match m {
@@ -338,27 +345,27 @@ pub fn variant_info_from_master(master: &MasterPlaylist) -> Vec<VariantInfo> {
 
 #[cfg(test)]
 mod tests {
-    use rstest::{fixture, rstest};
+    use kithara_test_utils::kithara;
 
     use super::*;
     use crate::HlsError;
 
-    #[fixture]
+    #[kithara::fixture]
     fn variant_id_42() -> VariantId {
         VariantId(42)
     }
 
-    #[fixture]
+    #[kithara::fixture]
     fn variant_id_5() -> VariantId {
         VariantId(5)
     }
 
-    #[fixture]
+    #[kithara::fixture]
     fn variant_id_0() -> VariantId {
         VariantId(0)
     }
 
-    #[fixture]
+    #[kithara::fixture]
     fn simple_master_playlist_data() -> &'static [u8] {
         b"#EXTM3U
 #EXT-X-VERSION:6
@@ -368,7 +375,7 @@ audio.m3u8
 audio_high.m3u8"
     }
 
-    #[fixture]
+    #[kithara::fixture]
     fn simple_media_playlist_data() -> &'static [u8] {
         b"#EXTM3U
 #EXT-X-VERSION:6
@@ -382,7 +389,7 @@ segment1.ts
 #EXT-X-ENDLIST"
     }
 
-    #[fixture]
+    #[kithara::fixture]
     fn media_playlist_with_init_data() -> &'static [u8] {
         b"#EXTM3U
 #EXT-X-VERSION:6
@@ -394,18 +401,18 @@ segment0.m4s
 #EXT-X-ENDLIST"
     }
 
-    #[fixture]
+    #[kithara::fixture]
     fn invalid_playlist_data() -> &'static [u8] {
         b"NOT A VALID PLAYLIST"
     }
 
-    #[fixture]
+    #[kithara::fixture]
     fn empty_master_playlist_data() -> &'static [u8] {
         b"#EXTM3U
 #EXT-X-VERSION:6"
     }
 
-    #[fixture]
+    #[kithara::fixture]
     fn master_playlist_with_codec_data() -> &'static [u8] {
         b"#EXTM3U
 #EXT-X-VERSION:6
@@ -413,14 +420,22 @@ segment0.m4s
 video.m3u8"
     }
 
+    #[kithara::fixture]
+    fn master_playlist_with_mixed_case_flac_codec_data() -> &'static [u8] {
+        b"#EXTM3U
+#EXT-X-VERSION:6
+#EXT-X-STREAM-INF:BANDWIDTH=1000000,CODECS=\"fLaC\"
+audio_flac.m3u8"
+    }
+
     // Test Cases
 
-    #[rstest]
+    #[kithara::test(wasm)]
     fn test_variant_id_creation(variant_id_42: VariantId) {
         assert_eq!(variant_id_42.0, 42);
     }
 
-    #[rstest]
+    #[kithara::test(wasm)]
     fn test_parse_simple_master_playlist(simple_master_playlist_data: &[u8]) {
         let result = parse_master_playlist(simple_master_playlist_data);
         assert!(
@@ -441,7 +456,7 @@ video.m3u8"
         assert_eq!(master.variants[1].bandwidth, Some(2000000));
     }
 
-    #[rstest]
+    #[kithara::test(wasm)]
     fn test_parse_simple_media_playlist(
         simple_media_playlist_data: &[u8],
         variant_id_0: VariantId,
@@ -468,7 +483,7 @@ video.m3u8"
         assert_eq!(media.segments[1].sequence, 1);
     }
 
-    #[rstest]
+    #[kithara::test(wasm)]
     fn test_parse_media_playlist_with_init_segment(
         media_playlist_with_init_data: &[u8],
         variant_id_0: VariantId,
@@ -488,7 +503,7 @@ video.m3u8"
         assert_eq!(init.uri, "init.mp4");
     }
 
-    #[rstest]
+    #[kithara::test(wasm)]
     fn test_parse_invalid_playlist(invalid_playlist_data: &[u8]) {
         let result = parse_master_playlist(invalid_playlist_data);
         assert!(result.is_err(), "Should fail to parse invalid playlist");
@@ -500,7 +515,7 @@ video.m3u8"
         }
     }
 
-    #[rstest]
+    #[kithara::test(wasm)]
     fn test_empty_master_playlist(empty_master_playlist_data: &[u8]) {
         let result = parse_master_playlist(empty_master_playlist_data);
         assert!(result.is_ok(), "Empty master playlist should parse");
@@ -509,7 +524,7 @@ video.m3u8"
         assert_eq!(master.variants.len(), 0);
     }
 
-    #[rstest]
+    #[kithara::test(wasm)]
     fn test_media_playlist_variant_id_preserved(
         simple_media_playlist_data: &[u8],
         variant_id_5: VariantId,
@@ -523,7 +538,7 @@ video.m3u8"
         assert_eq!(media.segments[1].variant_id.0, 5);
     }
 
-    #[rstest]
+    #[kithara::test(wasm)]
     fn test_master_playlist_with_codec_info(master_playlist_with_codec_data: &[u8]) {
         let result = parse_master_playlist(master_playlist_with_codec_data);
         assert!(result.is_ok());
@@ -538,9 +553,25 @@ video.m3u8"
         let codecs_str = codec.codecs.as_deref().unwrap_or("");
         assert!(codecs_str.contains("mp4a.40.2"));
         assert!(codecs_str.contains("avc1.64001f"));
+        assert_eq!(codec.audio_codec, Some(AudioCodec::AacLc));
     }
 
-    #[rstest]
+    #[kithara::test(wasm)]
+    fn test_master_playlist_with_mixed_case_flac_codec(
+        master_playlist_with_mixed_case_flac_codec_data: &[u8],
+    ) {
+        let result = parse_master_playlist(master_playlist_with_mixed_case_flac_codec_data);
+        assert!(result.is_ok());
+
+        let master = result.unwrap();
+        assert_eq!(master.variants.len(), 1);
+
+        let variant = &master.variants[0];
+        let codec = variant.codec.as_ref().expect("codec info");
+        assert_eq!(codec.audio_codec, Some(AudioCodec::Flac));
+    }
+
+    #[kithara::test(wasm)]
     #[case(HlsError::PlaylistParse("test error".to_string()), "test error")]
     #[case(HlsError::VariantNotFound("variant 0".to_string()), "variant 0")]
     #[case(HlsError::InvalidUrl("bad url".to_string()), "bad url")]
@@ -554,7 +585,7 @@ video.m3u8"
         );
     }
 
-    #[rstest]
+    #[kithara::test(wasm)]
     #[case(0u32, "test.m3u8", Some(1000000), Some("Test Variant".to_string()))]
     #[case(1u32, "audio.m3u8", Some(2000000), None)]
     #[case(2u32, "video.m3u8", None, Some("Video Only".to_string()))]
@@ -581,7 +612,7 @@ video.m3u8"
         }
     }
 
-    #[rstest]
+    #[kithara::test(wasm)]
     #[case(0u32, 0u64, "segment.ts", 4.0)]
     #[case(5u32, 1u64, "segment1.m4s", 6.0)]
     #[case(10u32, 2u64, "chunk.ts", 2.5)]
@@ -604,7 +635,7 @@ video.m3u8"
         assert!(debug_output.contains(uri));
     }
 
-    #[rstest]
+    #[kithara::test(wasm)]
     #[case(
         b"#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-STREAM-INF:BANDWIDTH=500000\nlow.m3u8",
         1
@@ -623,7 +654,7 @@ video.m3u8"
         assert_eq!(master.variants.len(), expected_count);
     }
 
-    #[rstest]
+    #[kithara::test(wasm)]
     #[case(
         b"#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\nseg1.ts\n#EXT-X-ENDLIST",
         1,
@@ -649,20 +680,20 @@ video.m3u8"
         assert_eq!(media.end_list, expected_endlist);
     }
 
-    #[rstest]
+    #[kithara::test(wasm)]
     fn test_allow_cache_no(variant_id_0: VariantId) {
         let data = b"#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-ALLOW-CACHE:NO\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\nseg1.ts\n#EXT-X-ENDLIST";
         let media = parse_media_playlist(data, variant_id_0).unwrap();
         assert!(!media.allow_cache, "allow_cache should be false");
     }
 
-    #[rstest]
+    #[kithara::test(wasm)]
     fn test_allow_cache_default(simple_media_playlist_data: &[u8], variant_id_0: VariantId) {
         let media = parse_media_playlist(simple_media_playlist_data, variant_id_0).unwrap();
         assert!(media.allow_cache, "allow_cache should be true by default");
     }
 
-    #[rstest]
+    #[kithara::test(wasm)]
     fn test_allow_cache_yes(variant_id_0: VariantId) {
         let data = b"#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-ALLOW-CACHE:YES\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\nseg1.ts\n#EXT-X-ENDLIST";
         let media = parse_media_playlist(data, variant_id_0).unwrap();

@@ -3,25 +3,18 @@
 //! Contains `FileDownloader` implementing `Downloader` trait,
 //! `FileIo` implementing `DownloaderIo`, and supporting types.
 
-use std::{future::Future, sync::Arc};
+use std::{error::Error, fmt, future::Future, ops::Range, sync::Arc};
 
 use futures::StreamExt;
-use kithara_assets::{AssetResource, CoverageIndex};
+use kithara_assets::AssetResource;
+use kithara_coverage::{Coverage, CoverageManager, DiskCoverage};
 use kithara_events::{EventBus, FileEvent};
 use kithara_net::{Headers, HttpClient, RangeSpec};
-use kithara_storage::{Coverage, MemCoverage, ResourceExt};
+use kithara_storage::{ResourceExt, ResourceStatus, StorageResource};
 use kithara_stream::{Downloader, DownloaderIo, PlanOutcome, StepResult, Writer, WriterItem};
 use tokio_util::sync::CancellationToken;
 
-#[cfg(not(target_arch = "wasm32"))]
-use kithara_assets::DiskCoverage;
-
 use crate::session::{FileStreamState, Progress, SharedFileState};
-
-#[cfg(not(target_arch = "wasm32"))]
-type CoverageRes = kithara_storage::MmapResource;
-#[cfg(target_arch = "wasm32")]
-type CoverageRes = kithara_storage::MemResource;
 
 // FileIo — pure I/O executor (Clone, no &mut self)
 
@@ -37,7 +30,7 @@ pub(crate) struct FileIo {
 
 /// Plan for downloading a file range.
 pub(crate) struct FilePlan {
-    pub(crate) range: std::ops::Range<u64>,
+    pub(crate) range: Range<u64>,
 }
 
 /// Result of a file download operation.
@@ -45,7 +38,7 @@ pub(crate) enum FileFetch {
     /// A chunk was written during sequential streaming.
     Chunk { offset: u64, len: u64 },
     /// A range request completed.
-    RangeDone { range: std::ops::Range<u64> },
+    RangeDone { range: Range<u64> },
     /// Sequential stream ended.
     StreamEnded { total_bytes: u64 },
 }
@@ -56,13 +49,13 @@ pub(crate) struct FileDownloadError {
     msg: String,
 }
 
-impl std::fmt::Display for FileDownloadError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for FileDownloadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "file download error: {}", self.msg)
     }
 }
 
-impl std::error::Error for FileDownloadError {}
+impl Error for FileDownloadError {}
 
 impl DownloaderIo for FileIo {
     type Plan = FilePlan;
@@ -105,80 +98,6 @@ impl DownloaderIo for FileIo {
     }
 }
 
-// FileCoverage — dual-backend coverage tracker
-
-/// Coverage tracker that works with both in-memory and disk-backed storage.
-///
-/// Remote files use `Disk` for crash-safe persistence; local files and tests
-/// use `Memory`.
-pub(crate) enum FileCoverage {
-    Memory(MemCoverage),
-    #[cfg(not(target_arch = "wasm32"))]
-    Disk(DiskCoverage<CoverageRes>),
-}
-
-impl Coverage for FileCoverage {
-    #[cfg_attr(feature = "perf", hotpath::measure)]
-    fn mark(&mut self, range: std::ops::Range<u64>) {
-        match self {
-            Self::Memory(c) => c.mark(range),
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Disk(c) => c.mark(range),
-        }
-    }
-
-    #[cfg_attr(feature = "perf", hotpath::measure)]
-    fn is_complete(&self) -> bool {
-        match self {
-            Self::Memory(c) => c.is_complete(),
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Disk(c) => c.is_complete(),
-        }
-    }
-
-    fn next_gap(&self, max_size: u64) -> Option<std::ops::Range<u64>> {
-        match self {
-            Self::Memory(c) => c.next_gap(max_size),
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Disk(c) => c.next_gap(max_size),
-        }
-    }
-
-    fn gaps(&self) -> Vec<std::ops::Range<u64>> {
-        match self {
-            Self::Memory(c) => c.gaps(),
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Disk(c) => c.gaps(),
-        }
-    }
-
-    fn total_size(&self) -> Option<u64> {
-        match self {
-            Self::Memory(c) => c.total_size(),
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Disk(c) => c.total_size(),
-        }
-    }
-
-    fn set_total_size(&mut self, size: u64) {
-        match self {
-            Self::Memory(c) => c.set_total_size(size),
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Disk(c) => c.set_total_size(size),
-        }
-    }
-}
-
-impl FileCoverage {
-    /// Flush dirty coverage to disk (no-op for in-memory).
-    fn flush(&mut self) {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Self::Disk(c) = self {
-            c.flush();
-        }
-    }
-}
-
 // FileDownloader — mutable state (plan + commit)
 
 /// Current phase of file download.
@@ -208,7 +127,7 @@ pub(crate) struct FileDownloader {
     look_ahead_bytes: Option<u64>,
     shared: Arc<SharedFileState>,
     /// Coverage tracker for downloaded ranges.
-    coverage: FileCoverage,
+    coverage: DiskCoverage<StorageResource>,
     /// Current download phase.
     phase: FilePhase,
 }
@@ -221,7 +140,7 @@ impl FileDownloader {
         bus: EventBus,
         look_ahead_bytes: Option<u64>,
         shared: Arc<SharedFileState>,
-        coverage_index: Option<Arc<CoverageIndex<CoverageRes>>>,
+        coverage_manager: CoverageManager<StorageResource>,
     ) -> Self {
         let url = state.url().clone();
         let total = state.len();
@@ -244,34 +163,16 @@ impl FileDownloader {
             }
         };
 
-        let mut coverage: FileCoverage = coverage_index.map_or_else(
-            || {
-                let mc = total.map_or_else(MemCoverage::new, MemCoverage::with_total_size);
-                FileCoverage::Memory(mc)
-            },
-            |idx| {
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    let key = url.to_string();
-                    let mut dc = DiskCoverage::open(idx, key);
-                    if let Some(size) = total {
-                        dc.set_total_size(size);
-                    }
-                    FileCoverage::Disk(dc)
-                }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    let _ = idx;
-                    let mc = total.map_or_else(MemCoverage::new, MemCoverage::with_total_size);
-                    FileCoverage::Memory(mc)
-                }
-            },
-        );
+        let mut coverage = coverage_manager.open_state(url.to_string());
+        if let Some(size) = total {
+            coverage.set_total_size(size);
+        }
 
-        // If resource already has some data (partial cache) and coverage
-        // doesn't know about it yet, mark it. This handles legacy files
-        // (downloaded before coverage was introduced).
-        if let Some(len) = res.len()
+        // Bootstrap coverage only for fully committed resources.
+        // For active resources sparse write_at ranges may leave a head gap,
+        // and marking 0..len would hide that gap from wait_range/probe.
+        if matches!(res.status(), ResourceStatus::Committed { .. })
+            && let Some(len) = res.len()
             && len > 0
             && coverage.next_gap(len).is_some_and(|g| g.start == 0)
         {
@@ -538,9 +439,10 @@ mod tests {
     use std::sync::Arc;
 
     use kithara_assets::AssetStoreBuilder;
+    use kithara_coverage::Coverage;
     use kithara_events::EventBus;
-    use kithara_net::HttpClient;
-    use kithara_storage::MemCoverage;
+    use kithara_net::{HttpClient, NetOptions};
+    use kithara_test_utils::kithara;
     use tempfile::TempDir;
     use tokio_util::sync::CancellationToken;
 
@@ -550,9 +452,9 @@ mod tests {
     /// After a demand (on-demand range request) is polled during Sequential phase,
     /// the downloader should cancel sequential and switch to gap-filling.
     ///
-    /// Currently FAILS: poll_demand does not change phase, so plan() still returns
+    /// Currently FAILS: `poll_demand` does not change phase, so `plan()` still returns
     /// Step and the sequential download continues wasting bandwidth.
-    #[tokio::test]
+    #[kithara::test(native, tokio)]
     async fn sequential_stops_after_demand() {
         let cancel = CancellationToken::new();
         let dir = TempDir::new().unwrap();
@@ -574,7 +476,7 @@ mod tests {
         let writer = Writer::new(stream, res.clone(), cancel.clone());
 
         let io = FileIo {
-            net_client: HttpClient::new(Default::default()),
+            net_client: HttpClient::new(NetOptions::default()),
             url: url.clone(),
             res: res.clone(),
             cancel: cancel.clone(),
@@ -582,19 +484,21 @@ mod tests {
         };
 
         let shared = Arc::new(SharedFileState::new());
-        let mut coverage = MemCoverage::with_total_size(total);
+        let coverage_manager = store.open_coverage_manager().unwrap();
+        let mut coverage = coverage_manager.open_state(url.to_string());
+        coverage.set_total_size(total);
         coverage.mark(0..1000); // Sequential downloaded first 1KB.
 
         let mut dl = FileDownloader {
             io,
             writer,
             res,
-            progress: Arc::new(Progress::new()),
+            progress: Arc::new(Progress::new(kithara_stream::Timeline::new())),
             bus: EventBus::new(16),
             total: Some(total),
             look_ahead_bytes: None,
             shared: shared.clone(),
-            coverage: FileCoverage::Memory(coverage),
+            coverage,
             phase: FilePhase::Sequential,
         };
 

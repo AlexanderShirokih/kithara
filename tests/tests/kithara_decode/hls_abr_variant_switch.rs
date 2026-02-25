@@ -18,9 +18,7 @@ use kithara::{
     hls::{AbrMode, AbrOptions, Hls, HlsConfig},
     stream::Stream,
 };
-use kithara_test_utils::temp_dir;
-use rstest::rstest;
-use tempfile::TempDir;
+use kithara_test_utils::{TestTempDir, temp_dir};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -40,11 +38,9 @@ use crate::kithara_hls::fixture::abr::{AbrTestServer, master_playlist};
 /// - All bytes should be readable sequentially
 /// - Variant switch should be seamless from reader's perspective
 /// - No gaps or duplicates in byte stream
-#[rstest]
-#[timeout(Duration::from_secs(30))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[kithara::test(tokio, timeout(Duration::from_secs(30)))]
 async fn test_abr_variant_switch_no_byte_glitches(
-    temp_dir: TempDir,
+    temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     // Initialize tracing for debug output
     let _ = tracing_subscriber::fmt()
@@ -129,8 +125,8 @@ async fn test_abr_variant_switch_no_byte_glitches(
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Read bytes in blocking thread
-    let result =
-        tokio::task::spawn_blocking(move || -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
+    let result = kithara_platform::spawn_blocking(
+        move || -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
             let mut all_bytes = Vec::new();
             let mut buffer = vec![0u8; 4096];
             let mut total_reads = 0;
@@ -161,8 +157,9 @@ async fn test_abr_variant_switch_no_byte_glitches(
             }
 
             Ok(all_bytes)
-        })
-        .await??;
+        },
+    )
+    .await??;
 
     info!("Read {} bytes total", result.len());
 
@@ -194,11 +191,9 @@ async fn test_abr_variant_switch_no_byte_glitches(
 }
 
 /// Simpler test without ABR - just verify basic multi-segment reading works
-#[rstest]
-#[timeout(Duration::from_secs(10))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[kithara::test(tokio, timeout(Duration::from_secs(10)))]
 async fn test_basic_multi_segment_reading(
-    temp_dir: TempDir,
+    temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
@@ -225,8 +220,8 @@ async fn test_basic_multi_segment_reading(
 
     let mut stream = Stream::<Hls>::new(config).await?;
 
-    let result =
-        tokio::task::spawn_blocking(move || -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
+    let result = kithara_platform::spawn_blocking(
+        move || -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
             let mut all_bytes = Vec::new();
             let mut buffer = vec![0u8; 4096];
 
@@ -241,8 +236,9 @@ async fn test_basic_multi_segment_reading(
             }
 
             Ok(all_bytes)
-        })
-        .await??;
+        },
+    )
+    .await??;
 
     // Should have read all 3 segments from variant 0 (~600KB total)
     info!("Read {} bytes from variant 0", result.len());
@@ -266,11 +262,9 @@ async fn test_basic_multi_segment_reading(
 /// 4. Reader seeks back to offset 0 - this requires loading segment 0 from variant 2
 /// 5. BUG: `first_media_segment` stays at 2 instead of updating to 0
 /// 6. This causes gap detection or incorrect offset calculations
-#[rstest]
-#[timeout(Duration::from_secs(30))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[kithara::test(tokio, timeout(Duration::from_secs(30)))]
 async fn test_abr_variant_switch_with_seek_backward(
-    temp_dir: TempDir,
+    temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     use std::io::Seek as _;
 
@@ -332,7 +326,7 @@ async fn test_abr_variant_switch_with_seek_backward(
     // Give ABR time to trigger and load some segments
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    tokio::task::spawn_blocking(move || -> Result<(), Box<dyn Error + Send + Sync>> {
+    kithara_platform::spawn_blocking(move || -> Result<(), Box<dyn Error + Send + Sync>> {
         use std::io::SeekFrom;
 
         // Read some bytes to trigger ABR switch

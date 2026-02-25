@@ -7,10 +7,11 @@
 //! Deterministic [`Xorshift64`] PRNG guarantees reproducibility.
 //! No external network required.
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
 use std::{
     io::{Read, Seek, SeekFrom},
     sync::Arc,
-    time::Duration,
 };
 
 use kithara::{
@@ -18,9 +19,7 @@ use kithara::{
     hls::{AbrMode, AbrOptions, Hls, HlsConfig},
     stream::Stream,
 };
-use kithara_test_utils::Xorshift64;
-use rstest::rstest;
-use tempfile::TempDir;
+use kithara_test_utils::{TestTempDir, Xorshift64};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -36,7 +35,7 @@ use super::fixture::{EncryptionConfig, HlsTestServer, HlsTestServerConfig};
 /// 5. Sample `seek_iterations` random seek positions in `(0, len - chunk_size)`
 /// 6. For each: seek → read → verify every byte matches `expected_byte_at`
 /// 7. Final: seek to `len - chunk_size`, read all → verify EOF
-#[rstest]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(120)))]
 #[case::small(50_000, 20, 200, false, false)]
 #[case::medium(100_000, 50, 500, false, false)]
 #[case::large(200_000, 100, 1000, false, false)]
@@ -44,8 +43,6 @@ use super::fixture::{EncryptionConfig, HlsTestServer, HlsTestServerConfig};
 #[case::init_medium(100_000, 50, 500, true, false)]
 #[case::encrypted_small(50_000, 20, 200, true, true)]
 #[case::encrypted_medium(100_000, 50, 500, true, true)]
-#[timeout(Duration::from_secs(120))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stress_random_seek_read_hls(
     #[case] segment_size: usize,
     #[case] segment_count: usize,
@@ -106,7 +103,7 @@ async fn stress_random_seek_read_hls(
     );
 
     // Step 2: Create Stream<Hls>
-    let temp_dir = TempDir::new().expect("temp dir");
+    let temp_dir = TestTempDir::new();
     let cancel = CancellationToken::new();
 
     let config = HlsConfig::new(url)
@@ -120,7 +117,7 @@ async fn stress_random_seek_read_hls(
     let mut stream = Stream::<Hls>::new(config).await.expect("create HLS stream");
 
     // Steps 3-7 in blocking thread
-    let result = tokio::task::spawn_blocking(move || {
+    let result = kithara_platform::spawn_blocking(move || {
         // Step 3: Total byte length from fixture config
         info!(total_bytes, "Stream byte length");
 
@@ -272,7 +269,6 @@ async fn stress_random_seek_read_hls(
 
     match result {
         Ok(()) => info!("HLS stress test passed"),
-        Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
         Err(e) => panic!("spawn_blocking failed: {e}"),
     }
 }

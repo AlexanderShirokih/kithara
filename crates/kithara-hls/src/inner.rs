@@ -2,18 +2,14 @@
 //!
 //! Provides `Hls` marker type implementing `StreamType` trait.
 
-use std::sync::{Arc, atomic::AtomicU64};
+use std::sync::Arc;
 
-#[cfg(not(target_arch = "wasm32"))]
-use kithara_assets::CoverageIndex;
-use kithara_assets::{
-    AssetStoreBuilder, Assets, AssetsBackend, ProcessChunkFn, asset_root_for_url,
-};
+use kithara_assets::{AssetStore, AssetStoreBuilder, ProcessChunkFn, asset_root_for_url};
 use kithara_drm::{DecryptContext, aes128_cbc_process_chunk};
 use kithara_events::{EventBus, HlsEvent};
 use kithara_net::HttpClient;
 use kithara_platform::ThreadPool;
-use kithara_stream::{StreamContext, StreamType};
+use kithara_stream::{StreamContext, StreamType, Timeline};
 
 use crate::{
     HlsStreamContext,
@@ -67,7 +63,7 @@ impl StreamType for Hls {
         if let Some(cap) = config.store.cache_capacity {
             builder = builder.cache_capacity(cap);
         }
-        let backend: AssetsBackend<DecryptContext> = builder.build();
+        let backend: AssetStore<DecryptContext> = builder.build();
 
         // Build KeyManager for DRM key resolution
         let key_manager = Arc::new(KeyManager::from_options(
@@ -127,15 +123,10 @@ impl StreamType for Hls {
             initial_variant,
         });
 
-        // Create coverage index for crash-safe segment tracking (disk only).
-        #[cfg(not(target_arch = "wasm32"))]
-        let coverage_index = match fetch_manager.backend() {
-            AssetsBackend::Disk(store) => store
-                .open_coverage_index_resource()
-                .ok()
-                .map(|res| Arc::new(CoverageIndex::new(res))),
-            AssetsBackend::Mem(_) => None,
-        };
+        let coverage_manager = fetch_manager
+            .backend()
+            .open_coverage_manager()
+            .map_err(HlsError::Assets)?;
 
         // Create HlsDownloader + HlsSource pair
         let playlist_state = fetch_manager
@@ -146,8 +137,7 @@ impl StreamType for Hls {
             Arc::clone(&fetch_manager),
             &master.variants,
             &config,
-            #[cfg(not(target_arch = "wasm32"))]
-            coverage_index,
+            coverage_manager,
             playlist_state,
             bus,
         );
@@ -161,12 +151,9 @@ impl StreamType for Hls {
         Ok(source)
     }
 
-    fn build_stream_context(
-        source: &Self::Source,
-        position: Arc<AtomicU64>,
-    ) -> Arc<dyn StreamContext> {
+    fn build_stream_context(source: &Self::Source, timeline: Timeline) -> Arc<dyn StreamContext> {
         Arc::new(HlsStreamContext::new(
-            position,
+            timeline,
             source.segment_index_handle(),
             source.variant_index_handle(),
         ))

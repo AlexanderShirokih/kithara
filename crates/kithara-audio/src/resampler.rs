@@ -369,96 +369,118 @@ impl ResamplerProcessor {
         }
     }
 
-    #[expect(
-        clippy::cognitive_complexity,
-        reason = "resampler reconfiguration with multiple checks"
-    )]
     fn update_resampler_if_needed(&mut self) {
-        let host_sr = self.host_sample_rate.load(Ordering::Relaxed);
-        let target_rate = if host_sr == 0 {
-            self.source_rate
-        } else {
-            host_sr
-        };
-
-        // Update output spec
+        let target_rate = self.target_rate();
         self.output_spec.sample_rate = target_rate;
-
         let should_pt = Self::should_passthrough(self.source_rate, target_rate);
         let currently_pt = self.is_passthrough();
-
-        let new_ratio = if self.source_rate > 0 {
-            f64::from(target_rate) / f64::from(self.source_rate)
-        } else {
-            1.0
-        };
+        let new_ratio = self.ratio_for_target(target_rate);
         let ratio_changed = (new_ratio - self.current_ratio).abs() > 0.0001;
 
         if should_pt {
-            if !currently_pt {
-                debug!(
-                    source_rate = self.source_rate,
-                    target_rate, "Resampler switching to passthrough"
-                );
-                self.resampler = None;
-            }
-            self.current_ratio = 1.0;
-            for buf in &mut self.input_buffer {
-                buf.clear();
-            }
+            self.switch_to_passthrough(target_rate, currently_pt);
             return;
         }
 
-        // Need an active resampler with the latest ratio
-        if !currently_pt
-            && ratio_changed
-            && let Some(ref mut resampler) = self.resampler
-        {
-            match resampler.set_resample_ratio(new_ratio, false) {
-                Ok(()) => {
-                    debug!(
-                        new_ratio,
-                        source_rate = self.source_rate,
-                        target_rate,
-                        "Resampler ratio updated dynamically"
-                    );
-                    self.current_ratio = new_ratio;
-                    return;
-                }
-                Err(e) => {
-                    debug!(err = %e, "Failed to update ratio dynamically, recreating");
-                    self.resampler = None;
-                }
-            }
+        if self.try_update_ratio(target_rate, new_ratio, currently_pt, ratio_changed) {
+            return;
         }
 
         if currently_pt || self.resampler.is_none() || ratio_changed {
-            debug!(
-                new_ratio,
-                source_rate = self.source_rate,
-                target_rate,
-                quality = ?self.quality,
-                "Resampler activated"
-            );
+            self.recreate_resampler(target_rate, new_ratio);
+        }
+    }
 
-            match Self::create_resampler(
-                self.quality,
-                new_ratio,
-                self.chunk_size,
-                self.channels,
-                self.source_rate,
-                target_rate,
-            ) {
-                Ok(resampler) => {
-                    self.resampler = Some(resampler);
-                    self.current_ratio = new_ratio;
-                    for buf in &mut self.input_buffer {
-                        buf.clear();
-                    }
+    fn target_rate(&self) -> u32 {
+        let host_sr = self.host_sample_rate.load(Ordering::Relaxed);
+        if host_sr == 0 {
+            self.source_rate
+        } else {
+            host_sr
+        }
+    }
+
+    fn ratio_for_target(&self, target_rate: u32) -> f64 {
+        if self.source_rate > 0 {
+            f64::from(target_rate) / f64::from(self.source_rate)
+        } else {
+            1.0
+        }
+    }
+
+    fn switch_to_passthrough(&mut self, target_rate: u32, currently_pt: bool) {
+        if !currently_pt {
+            debug!(
+                source_rate = self.source_rate,
+                target_rate, "Resampler switching to passthrough"
+            );
+            self.resampler = None;
+        }
+        self.current_ratio = 1.0;
+        for buf in &mut self.input_buffer {
+            buf.clear();
+        }
+    }
+
+    fn try_update_ratio(
+        &mut self,
+        target_rate: u32,
+        new_ratio: f64,
+        currently_pt: bool,
+        ratio_changed: bool,
+    ) -> bool {
+        if currently_pt || !ratio_changed {
+            return false;
+        }
+        let Some(ref mut resampler) = self.resampler else {
+            return false;
+        };
+
+        match resampler.set_resample_ratio(new_ratio, false) {
+            Ok(()) => {
+                debug!(
+                    new_ratio,
+                    source_rate = self.source_rate,
+                    target_rate,
+                    "Resampler ratio updated dynamically"
+                );
+                self.current_ratio = new_ratio;
+                true
+            }
+            Err(e) => {
+                debug!(err = %e, "Failed to update ratio dynamically, recreating");
+                self.resampler = None;
+                false
+            }
+        }
+    }
+
+    fn recreate_resampler(&mut self, target_rate: u32, new_ratio: f64) {
+        debug!(
+            new_ratio,
+            source_rate = self.source_rate,
+            target_rate,
+            quality = ?self.quality,
+            "Resampler activated"
+        );
+
+        match Self::create_resampler(
+            self.quality,
+            new_ratio,
+            self.chunk_size,
+            self.channels,
+            self.source_rate,
+            target_rate,
+        ) {
+            Ok(resampler) => {
+                self.resampler = Some(resampler);
+                self.current_ratio = new_ratio;
+                for buf in &mut self.input_buffer {
+                    buf.clear();
                 }
-                Err(e) => {
-                    debug!(err = %e, "Failed to create resampler, staying in current mode");
-                }
+            }
+            Err(e) => {
+                debug!(err = %e, "Failed to create resampler, staying in current mode");
             }
         }
     }
@@ -723,7 +745,7 @@ impl AudioEffect for ResamplerProcessor {
 #[cfg(test)]
 mod tests {
     use kithara_bufpool::pcm_pool;
-    use rstest::rstest;
+    use kithara_test_utils::kithara;
 
     use super::*;
 
@@ -754,7 +776,7 @@ mod tests {
         ResamplerParams::new(host_sr, source_rate, channels).with_quality(quality)
     }
 
-    #[rstest]
+    #[kithara::test]
     #[case::same_rate(44100, 44100, true)]
     #[case::host_zero(0, 44100, true)]
     #[case::different_rate(44100, 48000, false)]
@@ -767,7 +789,7 @@ mod tests {
         assert_eq!(processor.is_passthrough(), expected);
     }
 
-    #[test]
+    #[kithara::test]
     fn test_passthrough_processing() {
         let mut processor = ResamplerProcessor::new(params(make_host_rate(44100), 44100, 2));
 
@@ -786,14 +808,14 @@ mod tests {
         assert_eq!(out.spec().sample_rate, 44100);
     }
 
-    #[test]
+    #[kithara::test]
     fn test_output_spec() {
         let processor = ResamplerProcessor::new(params(make_host_rate(44100), 48000, 2));
         assert_eq!(processor.output_spec.sample_rate, 44100);
         assert_eq!(processor.output_spec.channels, 2);
     }
 
-    #[test]
+    #[kithara::test]
     fn test_dynamic_host_rate_change() {
         let host_sr = make_host_rate(44100);
         let mut processor = ResamplerProcessor::new(params(host_sr.clone(), 44100, 2));
@@ -814,7 +836,7 @@ mod tests {
         assert!(!processor.is_passthrough());
     }
 
-    #[test]
+    #[kithara::test]
     fn test_accumulates_small_chunks() {
         let mut processor = ResamplerProcessor::new(params(make_host_rate(44100), 48000, 2));
 
@@ -831,7 +853,7 @@ mod tests {
         assert_eq!(processor.input_buffer[0].len(), 50);
     }
 
-    #[test]
+    #[kithara::test]
     fn test_processes_large_chunks() {
         let mut processor = ResamplerProcessor::new(params(make_host_rate(44100), 48000, 2));
 
@@ -848,7 +870,7 @@ mod tests {
         assert!(!result.unwrap().pcm.is_empty());
     }
 
-    #[test]
+    #[kithara::test]
     fn test_source_rate_change_updates_dynamically() {
         let mut processor = ResamplerProcessor::new(params(make_host_rate(44100), 48000, 2));
 
@@ -876,7 +898,7 @@ mod tests {
         assert!(processor.is_passthrough());
     }
 
-    #[test]
+    #[kithara::test]
     fn test_no_data_loss_across_chunks() {
         let mut processor = ResamplerProcessor::new(params(make_host_rate(44100), 48000, 2));
 
@@ -909,7 +931,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[kithara::test]
     fn test_audio_effect_trait() {
         let mut processor = ResamplerProcessor::new(params(make_host_rate(44100), 44100, 2));
 
@@ -932,7 +954,7 @@ mod tests {
 
     // Quality-specific tests
 
-    #[rstest]
+    #[kithara::test]
     #[case::fast(ResamplerQuality::Fast)]
     #[case::normal(ResamplerQuality::Normal)]
     #[case::good(ResamplerQuality::Good)]

@@ -9,9 +9,7 @@ use kithara::{
     hls::{Hls, HlsConfig},
     stream::Stream,
 };
-use kithara_test_utils::{temp_dir, tracing_setup};
-use rstest::rstest;
-use tempfile::TempDir;
+use kithara_test_utils::{TestTempDir, temp_dir, tracing_setup};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use url::Url;
@@ -20,12 +18,10 @@ use super::fixture;
 
 // Test Cases
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn test_hls_session_creation(
     _tracing_setup: (),
-    temp_dir: TempDir,
+    temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let server = TestServer::new().await;
     let test_stream_url = server.url("/master.m3u8")?;
@@ -67,12 +63,10 @@ async fn test_hls_session_creation(
     Ok(())
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn test_hls_with_local_fixture(
     _tracing_setup: (),
-    temp_dir: TempDir,
+    temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let server = TestServer::new().await;
     let url = server.url("/master.m3u8")?;
@@ -88,12 +82,10 @@ async fn test_hls_with_local_fixture(
     Ok(())
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn test_hls_session_with_init_segments(
     _tracing_setup: (),
-    temp_dir: TempDir,
+    temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let server = TestServer::new().await;
     let url = server.url("/master-init.m3u8")?;
@@ -109,12 +101,10 @@ async fn test_hls_session_with_init_segments(
     Ok(())
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn test_hls_session_events_consumption(
     _tracing_setup: (),
-    temp_dir: TempDir,
+    temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let server = TestServer::new().await;
     let test_stream_url = server.url("/master.m3u8")?;
@@ -150,12 +140,10 @@ async fn test_hls_session_events_consumption(
     Ok(())
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn test_hls_invalid_url_handling(
     _tracing_setup: (),
-    temp_dir: TempDir,
+    temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Test with invalid URL
     let invalid_url = "http://invalid-domain-that-does-not-exist-12345.com/master.m3u8";
@@ -178,12 +166,10 @@ async fn test_hls_invalid_url_handling(
     Ok(())
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn test_hls_session_drop_cleanup(
     _tracing_setup: (),
-    temp_dir: TempDir,
+    temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let server = TestServer::new().await;
     let test_stream_url = server.url("/master.m3u8")?;

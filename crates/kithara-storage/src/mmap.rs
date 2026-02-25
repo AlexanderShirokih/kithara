@@ -327,9 +327,13 @@ pub type MmapResource = Resource<MmapDriver>;
 
 #[cfg(test)]
 mod tests {
+    mod kithara {
+        pub(crate) use kithara_test_macros::test;
+    }
+
     use std::time::Duration;
 
-    use rstest::*;
+    use kithara_platform::thread;
     use tempfile::TempDir;
     use tokio_util::sync::CancellationToken;
 
@@ -356,9 +360,7 @@ mod tests {
         .expect("open test resource")
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_create_new_resource() {
         let dir = TempDir::new().unwrap();
         let res = create_resource(&dir);
@@ -366,9 +368,7 @@ mod tests {
         assert_eq!(res.status(), ResourceStatus::Active);
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_write_and_read() {
         let dir = TempDir::new().unwrap();
         let res = create_resource(&dir);
@@ -382,9 +382,7 @@ mod tests {
         assert_eq!(&buf, b"hello world");
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_write_all_read_into() {
         let dir = TempDir::new().unwrap();
         let res = create_resource(&dir);
@@ -397,9 +395,7 @@ mod tests {
         assert_eq!(&buf[..], b"atomic data");
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_wait_range_ready() {
         let dir = TempDir::new().unwrap();
         let res = create_resource(&dir);
@@ -410,16 +406,14 @@ mod tests {
         assert_eq!(outcome, WaitOutcome::Ready);
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(2))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(2)))]
     fn test_wait_range_blocks_then_ready() {
         let dir = TempDir::new().unwrap();
         let res = create_resource(&dir);
         let res2 = res.clone();
 
-        let handle = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(50));
+        let handle = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
             res2.write_at(0, b"delayed data").unwrap();
         });
 
@@ -428,9 +422,7 @@ mod tests {
         handle.join().unwrap();
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_wait_range_eof() {
         let dir = TempDir::new().unwrap();
         let res = create_resource(&dir);
@@ -442,16 +434,14 @@ mod tests {
         assert_eq!(outcome, WaitOutcome::Eof);
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_fail_wakes_waiters() {
         let dir = TempDir::new().unwrap();
         let res = create_resource(&dir);
         let res2 = res.clone();
 
-        let handle = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(50));
+        let handle = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
             res2.fail("test error".to_string());
         });
 
@@ -460,9 +450,7 @@ mod tests {
         handle.join().unwrap();
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(2))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(2)))]
     fn test_cancel_wakes_waiters() {
         let dir = TempDir::new().unwrap();
         let cancel = CancellationToken::new();
@@ -478,10 +466,10 @@ mod tests {
         )
         .expect("open cancel test resource");
 
-        let handle = std::thread::spawn({
+        let handle = thread::spawn({
             let cancel = cancel.clone();
             move || {
-                std::thread::sleep(Duration::from_millis(50));
+                thread::sleep(Duration::from_millis(50));
                 cancel.cancel();
             }
         });
@@ -491,9 +479,7 @@ mod tests {
         handle.join().unwrap();
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_open_existing_file() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("existing.dat");
@@ -532,9 +518,7 @@ mod tests {
         assert_eq!(&buf[..], b"persisted data");
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_resize_on_large_write() {
         let dir = TempDir::new().unwrap();
         let res = create_resource_with_size(&dir, Some(16));
@@ -549,9 +533,7 @@ mod tests {
         assert!(buf.iter().all(|&b| b == 42));
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_status_transitions() {
         let dir = TempDir::new().unwrap();
         let res = create_resource(&dir);
@@ -568,9 +550,7 @@ mod tests {
         );
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_status_failed() {
         let dir = TempDir::new().unwrap();
         let res = create_resource(&dir);

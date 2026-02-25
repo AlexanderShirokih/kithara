@@ -7,9 +7,10 @@
 
 use std::{
     num::NonZeroU32,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
+use kithara_platform::{Receiver, Sender, bounded};
 use portable_atomic::{AtomicF64, AtomicU32};
 
 use super::player_notification::PlayerNotification;
@@ -17,22 +18,29 @@ use super::player_notification::PlayerNotification;
 /// Shared state that bridges the main thread and the audio processor.
 ///
 /// Position and duration are updated by the processor every render cycle.
-/// Notifications flow from the processor to the main thread via kanal.
+/// Notifications flow from the processor to the main thread via a bounded channel.
 #[derive(Debug)]
 pub(crate) struct SharedPlayerState {
     /// Whether playback is active.
     pub(crate) playing: AtomicBool,
-    /// Current playback position in seconds.
+    /// Current seek epoch used to invalidate stale seek requests.
+    pub(crate) seek_epoch: AtomicU64,
+    /// Last observed playback position snapshot in seconds.
+    ///
+    /// Source of truth is the per-track `Timeline` in the audio pipeline.
     pub(crate) position: AtomicF64,
-    /// Total duration in seconds.
+    /// Last observed total duration snapshot in seconds.
+    ///
+    /// Source of truth is the per-track `Timeline` in the audio pipeline.
     pub(crate) duration: AtomicF64,
     /// Current sample rate from the audio stream.
     pub(crate) sample_rate: AtomicU32,
+    /// Diagnostic: how many times `process()` has been called on the audio thread.
+    pub(crate) process_count: AtomicU64,
     /// Sender for processor-to-main-thread notifications.
-    pub(crate) notification_tx: kanal::Sender<PlayerNotification>,
+    pub(crate) notification_tx: Sender<PlayerNotification>,
     /// Receiver for processor-to-main-thread notifications.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by Task 9 wiring"))]
-    pub(crate) notification_rx: kanal::Receiver<PlayerNotification>,
+    pub(crate) notification_rx: Receiver<PlayerNotification>,
 }
 
 impl SharedPlayerState {
@@ -41,12 +49,14 @@ impl SharedPlayerState {
     /// The notification channel is bounded to 32 to avoid dropping
     /// notifications during high activity while keeping memory bounded.
     pub(crate) fn new() -> Self {
-        let (tx, rx) = kanal::bounded(32);
+        let (tx, rx) = bounded(32);
         Self {
             playing: AtomicBool::new(false),
+            seek_epoch: AtomicU64::new(0),
             position: AtomicF64::new(0.0),
             duration: AtomicF64::new(0.0),
             sample_rate: AtomicU32::new(0),
+            process_count: AtomicU64::new(0),
             notification_tx: tx,
             notification_rx: rx,
         }
@@ -57,24 +67,39 @@ impl SharedPlayerState {
     pub(crate) fn sample_rate(&self) -> Option<NonZeroU32> {
         NonZeroU32::new(self.sample_rate.load(Ordering::Relaxed))
     }
+
+    pub(crate) fn next_seek_epoch(&self) -> u64 {
+        self.seek_epoch
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use rstest::rstest;
+    use kithara_test_utils::kithara;
 
     use super::*;
 
-    #[test]
+    #[kithara::test]
     fn shared_state_defaults() {
         let state = SharedPlayerState::new();
         assert!(!state.playing.load(Ordering::Relaxed));
+        assert_eq!(state.seek_epoch.load(Ordering::Relaxed), 0);
         assert_eq!(state.position.load(Ordering::Relaxed), 0.0);
         assert_eq!(state.duration.load(Ordering::Relaxed), 0.0);
         assert_eq!(state.sample_rate.load(Ordering::Relaxed), 0);
     }
 
-    #[rstest]
+    #[kithara::test]
+    fn shared_state_seek_epoch_increments() {
+        let state = SharedPlayerState::new();
+        assert_eq!(state.next_seek_epoch(), 1);
+        assert_eq!(state.next_seek_epoch(), 2);
+        assert_eq!(state.next_seek_epoch(), 3);
+    }
+
+    #[kithara::test]
     #[case(0, None)]
     #[case(44_100, Some(44_100))]
     #[case(48_000, Some(48_000))]
@@ -84,7 +109,7 @@ mod tests {
         assert_eq!(state.sample_rate().map(NonZeroU32::get), expected);
     }
 
-    #[test]
+    #[kithara::test]
     fn shared_state_notification_channel_works() {
         use std::sync::Arc;
 
@@ -102,7 +127,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[kithara::test]
     fn shared_state_position_and_duration_update() {
         let state = SharedPlayerState::new();
         state.position.store(42.5, Ordering::Relaxed);

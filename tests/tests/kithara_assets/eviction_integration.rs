@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![cfg(not(target_arch = "wasm32"))]
 
 //! Eviction integration tests.
 //!
@@ -8,11 +9,11 @@
 use std::time::Duration;
 
 use kithara::{
-    assets::{AssetStore, AssetStoreBuilder, Assets, EvictConfig, ResourceKey},
+    assets::{AssetStore, AssetStoreBuilder, EvictConfig, ResourceKey},
+    internal::Assets,
     storage::ResourceExt,
 };
 use kithara_test_utils::temp_dir;
-use rstest::rstest;
 
 #[derive(serde::Deserialize)]
 #[expect(dead_code, reason = "fields deserialized from binary")]
@@ -21,12 +22,14 @@ struct PinsIndexFile {
     pinned: Vec<String>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn exists_asset_dir(root: &std::path::Path, asset_root: &str) -> bool {
     root.join(asset_root).exists()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn asset_store_with_root(
-    temp_dir: &tempfile::TempDir,
+    temp_dir: &kithara_test_utils::TestTempDir,
     asset_root: &str,
     max_assets: Option<usize>,
 ) -> AssetStore {
@@ -37,19 +40,17 @@ fn asset_store_with_root(
             max_assets,
             max_bytes: None,
         })
-        .build_disk()
+        .build()
 }
 
-#[rstest]
+#[kithara::test(native, timeout(Duration::from_secs(5)))]
 #[case(2, 3)]
 #[case(3, 4)]
 #[case(5, 6)]
-#[timeout(Duration::from_secs(5))]
-#[test]
 fn eviction_max_assets_skips_pinned_assets(
     #[case] max_assets: usize,
     #[case] create_count: usize,
-    temp_dir: tempfile::TempDir,
+    temp_dir: kithara_test_utils::TestTempDir,
 ) {
     let dir = temp_dir.path().to_path_buf();
 
@@ -115,13 +116,14 @@ fn eviction_max_assets_skips_pinned_assets(
     );
 }
 
-#[rstest]
+#[kithara::test(native, timeout(Duration::from_secs(5)))]
 #[case(1)]
 #[case(2)]
 #[case(3)]
-#[timeout(Duration::from_secs(5))]
-#[test]
-fn eviction_ignores_missing_index(#[case] asset_count: usize, temp_dir: tempfile::TempDir) {
+fn eviction_ignores_missing_index(
+    #[case] asset_count: usize,
+    temp_dir: kithara_test_utils::TestTempDir,
+) {
     let dir = temp_dir.path().to_path_buf();
 
     // Create assets without proper LRU tracking (simulate missing/corrupted index)
@@ -149,10 +151,8 @@ fn eviction_ignores_missing_index(#[case] asset_count: usize, temp_dir: tempfile
     assert!(res.is_ok(), "Should handle missing LRU index gracefully");
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
-fn eviction_with_zero_byte_assets(temp_dir: tempfile::TempDir) {
+#[kithara::test(native, timeout(Duration::from_secs(5)))]
+fn eviction_with_zero_byte_assets(temp_dir: kithara_test_utils::TestTempDir) {
     let dir = temp_dir.path().to_path_buf();
 
     // Create assets with zero bytes
@@ -180,17 +180,15 @@ fn eviction_with_zero_byte_assets(temp_dir: tempfile::TempDir) {
     );
 }
 
-#[rstest]
+#[kithara::test(native, timeout(Duration::from_secs(5)))]
 #[case(1, 3, 1)] // max_assets=1, create 3 assets, keep 1 newest pinned
 #[case(2, 4, 1)] // max_assets=2, create 4 assets, keep 1 newest pinned
 #[case(3, 6, 2)] // max_assets=3, create 6 assets, keep 2 newest pinned
-#[timeout(Duration::from_secs(5))]
-#[test]
 fn eviction_respects_max_assets_limit(
     #[case] max_assets: usize,
     #[case] create_count: usize,
     #[case] pinned_count: usize,
-    temp_dir: tempfile::TempDir,
+    temp_dir: kithara_test_utils::TestTempDir,
 ) {
     let dir = temp_dir.path().to_path_buf();
 
@@ -211,7 +209,7 @@ fn eviction_respects_max_assets_limit(
     }
 
     // Give eviction a moment to complete
-    std::thread::sleep(Duration::from_millis(100));
+    kithara_platform::thread::sleep(Duration::from_millis(100));
 
     // Count how many asset directories exist
     let mut existing_count = 0;

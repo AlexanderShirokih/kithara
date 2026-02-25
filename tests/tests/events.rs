@@ -3,7 +3,7 @@
 
 use kithara::events::{Event, EventBus, HlsEvent};
 
-#[test]
+#[kithara::test]
 fn test_event_bus_publish_subscribe() {
     let bus = EventBus::new(32);
     let mut rx = bus.subscribe();

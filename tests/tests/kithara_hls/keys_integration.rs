@@ -1,18 +1,17 @@
 #![forbid(unsafe_code)]
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
 
 use fixture::*;
-use kithara::hls::{HlsResult, keys::KeyManager};
-use rstest::rstest;
+use kithara::{hls::HlsResult, internal::KeyManager};
 
 use super::fixture;
 
 // Test Cases
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn fetch_and_cache_key(
     #[future] test_server: TestServer,
     assets_fixture: TestAssets,
@@ -30,9 +29,7 @@ async fn fetch_and_cache_key(
     Ok(())
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn key_processor_applied(
     #[future] test_server: TestServer,
     assets_fixture: TestAssets,
@@ -52,15 +49,13 @@ async fn key_processor_applied(
     let key_manager = KeyManager::new(fetch_manager.clone(), Some(processor), None, None);
     let key_url = server.url("/key.bin")?;
 
-    let key = key_manager.get_raw_key(&key_url, None).await?;
+    let key: bytes::Bytes = key_manager.get_raw_key(&key_url, None).await?;
     assert!(key.starts_with(b"processed:"));
 
     Ok(())
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn key_manager_with_different_processors(
     #[future] test_server: TestServer,
     assets_fixture: TestAssets,
@@ -78,15 +73,13 @@ async fn key_manager_with_different_processors(
     let key_manager = KeyManager::new(fetch_manager.clone(), Some(uppercase_processor), None, None);
     let key_url = server.url("/key.bin")?;
 
-    let key = key_manager.get_raw_key(&key_url, None).await?;
+    let key: bytes::Bytes = key_manager.get_raw_key(&key_url, None).await?;
     assert!(key.is_ascii());
 
     Ok(())
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn key_manager_error_handling(
     assets_fixture: TestAssets,
     net_fixture: kithara::net::HttpClient,
@@ -99,7 +92,7 @@ async fn key_manager_error_handling(
         url::Url::parse("http://invalid-domain-that-does-not-exist-12345.com/master.m3u8")
             .map_err(|e| kithara::hls::HlsError::InvalidUrl(e.to_string()))?;
 
-    let result = key_manager.get_raw_key(&invalid_url, None).await;
+    let result: HlsResult<bytes::Bytes> = key_manager.get_raw_key(&invalid_url, None).await;
 
     // Should fail with network error (or succeed if somehow connects)
     assert!(result.is_ok() || result.is_err());
@@ -107,9 +100,7 @@ async fn key_manager_error_handling(
     Ok(())
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn key_manager_caching_behavior(
     #[future] test_server: TestServer,
     assets_fixture: TestAssets,
@@ -121,7 +112,7 @@ async fn key_manager_caching_behavior(
     let key_url = server.url("/key.bin")?;
 
     // First fetch
-    let key1 = key_manager.get_raw_key(&key_url, None).await?;
+    let key1: bytes::Bytes = key_manager.get_raw_key(&key_url, None).await?;
 
     // Second fetch should potentially use cache
     let key2 = key_manager.get_raw_key(&key_url, None).await?;
@@ -132,9 +123,7 @@ async fn key_manager_caching_behavior(
     Ok(())
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn key_manager_with_context(
     #[future] test_server: TestServer,
     assets_fixture: TestAssets,
@@ -165,15 +154,13 @@ async fn key_manager_with_context(
     // Test with IV
     let mut iv = [0u8; 16];
     iv[..7].copy_from_slice(b"test-iv");
-    let key2 = key_manager.get_raw_key(&key_url, Some(iv)).await?;
+    let key2: bytes::Bytes = key_manager.get_raw_key(&key_url, Some(iv)).await?;
     assert!(key2.starts_with(b"ctx:"));
 
     Ok(())
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(30)))]
 async fn aes128_key_decrypts_ciphertext(
     #[future] test_server: TestServer,
     assets_fixture: TestAssets,

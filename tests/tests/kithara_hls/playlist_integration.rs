@@ -1,18 +1,16 @@
 #![forbid(unsafe_code)]
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 use fixture::*;
-use kithara::hls::{HlsResult, parsing::VariantId};
-use rstest::rstest;
+use kithara::{hls::HlsResult, internal::VariantId};
 
 use super::fixture;
 
 // Test Cases
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn fetch_master_playlist_from_network(
     #[future] test_server: TestServer,
     assets_fixture: TestAssets,
@@ -27,9 +25,7 @@ async fn fetch_master_playlist_from_network(
     Ok(())
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn fetch_media_playlist_from_network(
     #[future] test_server: TestServer,
     assets_fixture: TestAssets,
@@ -48,9 +44,7 @@ async fn fetch_media_playlist_from_network(
     Ok(())
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn resolve_url_with_base_override(
     #[future] test_server: TestServer,
     assets_fixture: TestAssets,
@@ -73,9 +67,7 @@ async fn resolve_url_with_base_override(
     Ok(())
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn fetch_media_playlist_for_different_variants(
     #[future] test_server: TestServer,
     assets_fixture: TestAssets,
@@ -101,9 +93,7 @@ async fn fetch_media_playlist_for_different_variants(
     Ok(())
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn fetch_manager_caching_behavior(
     #[future] test_server: TestServer,
     assets_fixture: TestAssets,
@@ -127,9 +117,7 @@ async fn fetch_manager_caching_behavior(
     Ok(())
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn fetch_manager_error_handling_invalid_url(
     assets_fixture: TestAssets,
     net_fixture: kithara::net::HttpClient,
@@ -149,9 +137,7 @@ async fn fetch_manager_error_handling_invalid_url(
     Ok(())
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn resolve_multiple_relative_urls(
     #[future] test_server: TestServer,
     assets_fixture: TestAssets,
@@ -184,9 +170,7 @@ async fn resolve_multiple_relative_urls(
     Ok(())
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn fetch_manager_with_different_base_urls(
     #[future] test_server: TestServer,
     assets_fixture: TestAssets,

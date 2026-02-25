@@ -29,15 +29,14 @@ use kithara::{
     file::{File, FileConfig, FileSrc},
     stream::Stream,
 };
-use kithara_test_utils::TestHttpServer;
-use tempfile::TempDir;
+use kithara_test_utils::{TestHttpServer, TestTempDir};
 use tokio_util::sync::CancellationToken;
 
 const TOTAL_SIZE: usize = 1_024_000;
 const STREAM_CLOSES_AT: usize = 512_000;
 
-fn clean_temp_dir() -> TempDir {
-    let dir = TempDir::new().unwrap();
+fn clean_temp_dir() -> TestTempDir {
+    let dir = TestTempDir::new();
     let entries: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()
         .collect::<Result<Vec<_>, _>>()
@@ -171,7 +170,7 @@ fn init_tracing() {
 ///
 /// After sequential stream closes at 512KB, seek to 700KB
 /// should trigger on-demand Range request and succeed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[kithara::test(tokio)]
 async fn file_stream_closes_early_seek_still_works() {
     let clean_temp_dir = clean_temp_dir();
     let cancel_token = CancellationToken::new();
@@ -187,7 +186,7 @@ async fn file_stream_closes_early_seek_still_works() {
 
     let mut stream = Stream::<File>::new(config).await.unwrap();
 
-    let blocking_task = tokio::task::spawn_blocking(move || {
+    let blocking_task = kithara_platform::spawn_blocking(move || {
         // Read first chunk from initial partial stream
         let mut buf = [0u8; 10_000];
         let n = stream.read(&mut buf).unwrap();
@@ -243,7 +242,7 @@ async fn file_stream_closes_early_seek_still_works() {
 ///
 /// Phase 1: download 512KB of 1MB, drop stream.
 /// Phase 2: reopen same URL with same cache dir, seek to 700KB → on-demand Range.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[kithara::test(tokio)]
 async fn partial_cache_resume_works() {
     let cache_dir = clean_temp_dir();
     init_tracing();
@@ -260,7 +259,7 @@ async fn partial_cache_resume_works() {
 
     let stream1 = Stream::<File>::new(config1).await.unwrap();
 
-    let phase1 = tokio::task::spawn_blocking(move || {
+    let phase1 = kithara_platform::spawn_blocking(move || {
         let mut stream1 = stream1;
         let mut buf = [0u8; 10_000];
         let n = stream1.read(&mut buf).unwrap();
@@ -268,7 +267,7 @@ async fn partial_cache_resume_works() {
         tracing::info!("Phase 1: read {} bytes", n);
 
         // Give sequential download time to finish (server sends 512KB quickly)
-        std::thread::sleep(Duration::from_millis(500));
+        kithara_platform::thread::sleep(Duration::from_millis(500));
         // stream1 drops here
     });
 
@@ -290,7 +289,7 @@ async fn partial_cache_resume_works() {
 
     let stream2 = Stream::<File>::new(config2).await.unwrap();
 
-    let phase2 = tokio::task::spawn_blocking(move || {
+    let phase2 = kithara_platform::spawn_blocking(move || {
         let mut stream2 = stream2;
         let seek_offset = 700_000u64;
         tracing::info!(

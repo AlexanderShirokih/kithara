@@ -1,0 +1,11 @@
+pre-commit:
+  parallel: false
+  commands:
+    lint-fast:
+      run: just lint-fast
+
+pre-push:
+  parallel: false
+  commands:
+    test-all:
+      run: just test-all

@@ -1,14 +1,18 @@
 #![forbid(unsafe_code)]
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
+#[cfg(not(target_arch = "wasm32"))]
+use kithara::assets::EvictConfig;
+#[cfg(not(target_arch = "wasm32"))]
+use kithara::internal::Assets;
 use kithara::{
-    assets::{AssetStore, AssetStoreBuilder, Assets, EvictConfig, ResourceKey},
+    assets::{AssetStore, AssetStoreBuilder, ResourceKey},
     bufpool::byte_pool,
     storage::ResourceExt,
 };
 use kithara_test_utils::temp_dir;
-use rstest::rstest;
 
 /// Helper to read bytes from resource into a pooled buffer
 fn read_bytes<R: ResourceExt>(res: &R, offset: u64, len: usize) -> Vec<u8> {
@@ -35,6 +39,7 @@ struct PinsIndexFile {
     pinned: Vec<String>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn read_pins_file(root: &std::path::Path) -> Option<Vec<String>> {
     let path = root.join("_index").join("pins.bin");
     if !path.exists() {
@@ -47,28 +52,40 @@ fn read_pins_file(root: &std::path::Path) -> Option<Vec<String>> {
     Some(file.pinned)
 }
 
-fn asset_store_with_root(temp_dir: &tempfile::TempDir, asset_root: &str) -> AssetStore {
-    AssetStoreBuilder::new()
-        .root_dir(temp_dir.path())
-        .asset_root(Some(asset_root))
-        .evict_config(EvictConfig {
-            max_assets: None,
-            max_bytes: None,
-        })
-        .build_disk()
+fn asset_store_with_root(
+    temp_dir: &kithara_test_utils::TestTempDir,
+    asset_root: &str,
+) -> AssetStore {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        AssetStoreBuilder::new()
+            .root_dir(temp_dir.path())
+            .asset_root(Some(asset_root))
+            .evict_config(EvictConfig {
+                max_assets: None,
+                max_bytes: None,
+            })
+            .build()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = temp_dir;
+        AssetStoreBuilder::new()
+            .ephemeral(true)
+            .asset_root(Some(asset_root))
+            .build()
+    }
 }
 
-#[rstest]
+#[kithara::test(native, timeout(Duration::from_secs(5)))]
 #[case("asset-mp3-001", "media/audio.mp3", 128 * 1024)]
 #[case("asset-mp3-002", "audio/song.mp3", 64 * 1024)]
 #[case("asset-mp3-003", "music/track.mp3", 256 * 1024)]
-#[timeout(Duration::from_secs(5))]
-#[test]
 fn mp3_single_file_atomic_roundtrip_with_pins_persisted(
     #[case] asset_root: &str,
     #[case] rel_path: &str,
     #[case] size: usize,
-    temp_dir: tempfile::TempDir,
+    temp_dir: kithara_test_utils::TestTempDir,
 ) {
     let dir = temp_dir.path().to_path_buf();
     let store = asset_store_with_root(&temp_dir, asset_root);
@@ -98,16 +115,14 @@ fn mp3_single_file_atomic_roundtrip_with_pins_persisted(
     drop(res);
 }
 
-#[rstest]
+#[kithara::test(timeout(Duration::from_secs(5)))]
 #[case("persist-atomic-1", "media/atomic_a.bin", b"atomic data")]
 #[case("persist-atomic-empty", "media/atomic_empty.bin", b"")]
-#[timeout(Duration::from_secs(5))]
-#[test]
 fn atomic_resource_persistence(
     #[case] asset_root: &str,
     #[case] rel_path: &str,
     #[case] payload: &[u8],
-    temp_dir: tempfile::TempDir,
+    temp_dir: kithara_test_utils::TestTempDir,
 ) {
     let store = asset_store_with_root(&temp_dir, asset_root);
     let key = ResourceKey::new(rel_path);
@@ -123,16 +138,14 @@ fn atomic_resource_persistence(
     assert_eq!(&*buf, payload);
 }
 
-#[rstest]
+#[kithara::test(timeout(Duration::from_secs(5)))]
 #[case("persist-stream-1", "media/stream1.bin", b"stream payload")]
 #[case("persist-stream-2", "media/stream2.bin", b"more stream data")]
-#[timeout(Duration::from_secs(5))]
-#[test]
 fn streaming_resource_persistence(
     #[case] asset_root: &str,
     #[case] rel_path: &str,
     #[case] payload: &[u8],
-    temp_dir: tempfile::TempDir,
+    temp_dir: kithara_test_utils::TestTempDir,
 ) {
     let store = asset_store_with_root(&temp_dir, asset_root);
     let key = ResourceKey::new(rel_path);
@@ -149,10 +162,8 @@ fn streaming_resource_persistence(
     assert_eq!(&data, payload);
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
-fn mixed_resource_persistence_across_reopen(temp_dir: tempfile::TempDir) {
+#[kithara::test(timeout(Duration::from_secs(5)))]
+fn mixed_resource_persistence_across_reopen(temp_dir: kithara_test_utils::TestTempDir) {
     let store = asset_store_with_root(&temp_dir, "mixed-asset");
 
     let atomic_key = ResourceKey::new("meta/index.json");
@@ -188,10 +199,10 @@ fn mixed_resource_persistence_across_reopen(temp_dir: tempfile::TempDir) {
     assert_eq!(&streaming_read, &streaming_payload[..]);
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
-fn streaming_resource_concurrent_write_and_read_across_handles(temp_dir: tempfile::TempDir) {
+#[kithara::test(native, timeout(Duration::from_secs(5)))]
+fn streaming_resource_concurrent_write_and_read_across_handles(
+    temp_dir: kithara_test_utils::TestTempDir,
+) {
     let store = asset_store_with_root(&temp_dir, "concurrent-asset");
 
     let key = ResourceKey::new("media/concurrent.bin");
@@ -201,7 +212,7 @@ fn streaming_resource_concurrent_write_and_read_across_handles(temp_dir: tempfil
     let store_reader = store.clone();
     let key_reader = key.clone();
     let payload_len_reader = payload_len;
-    let reader = std::thread::spawn(move || {
+    let reader = kithara_platform::thread::spawn(move || {
         let res = store_reader.open_resource(&key_reader).unwrap();
         res.wait_range(0..payload_len_reader).unwrap();
         let mut buf = byte_pool().get_with(|b| b.resize(payload_len_reader as usize, 0));
@@ -213,7 +224,7 @@ fn streaming_resource_concurrent_write_and_read_across_handles(temp_dir: tempfil
     let store_writer = store;
     let payload_writer = payload.clone();
     let key_writer = key;
-    let writer = std::thread::spawn(move || {
+    let writer = kithara_platform::thread::spawn(move || {
         let res = store_writer.open_resource(&key_writer).unwrap();
         res.write_at(0, &payload_writer).unwrap();
         res.commit(Some(payload_writer.len() as u64)).unwrap();
@@ -225,16 +236,14 @@ fn streaming_resource_concurrent_write_and_read_across_handles(temp_dir: tempfil
     assert_eq!(&data, &payload);
 }
 
-#[rstest]
+#[kithara::test(native, timeout(Duration::from_secs(5)))]
 #[case("asset-hls-123", 3)]
 #[case("asset-hls-456", 5)]
 #[case("asset-hls-789", 2)]
-#[timeout(Duration::from_secs(5))]
-#[test]
 fn hls_multi_file_streaming_and_atomic_roundtrip_with_pins_persisted(
     #[case] asset_root: &str,
     #[case] segment_count: usize,
-    temp_dir: tempfile::TempDir,
+    temp_dir: kithara_test_utils::TestTempDir,
 ) {
     let dir = temp_dir.path().to_path_buf();
     let store = asset_store_with_root(&temp_dir, asset_root);
@@ -303,16 +312,14 @@ fn hls_multi_file_streaming_and_atomic_roundtrip_with_pins_persisted(
     drop(playlist);
 }
 
-#[rstest]
+#[kithara::test(timeout(Duration::from_secs(5)))]
 #[case("asset-test-1", "media/file1.bin")]
 #[case("asset-test-2", "deep/path/to/file2.bin")]
 #[case("asset-test-3", "file3.bin")]
-#[timeout(Duration::from_secs(5))]
-#[test]
 fn atomic_resource_roundtrip_with_different_paths(
     #[case] asset_root: &str,
     #[case] rel_path: &str,
-    temp_dir: tempfile::TempDir,
+    temp_dir: kithara_test_utils::TestTempDir,
 ) {
     let store = asset_store_with_root(&temp_dir, asset_root);
 
@@ -328,17 +335,15 @@ fn atomic_resource_roundtrip_with_different_paths(
     assert_eq!(&*read_back, &payload[..]);
 }
 
-#[rstest]
+#[kithara::test(timeout(Duration::from_secs(5)))]
 #[case(0, 4096, 4096)] // Write at beginning
 #[case(8192, 2048, 2048)] // Write at offset
 #[case(16384, 10240, 10240)] // Larger write
-#[timeout(Duration::from_secs(5))]
-#[test]
 fn streaming_resource_write_read_at_different_positions(
     #[case] offset: u64,
     #[case] size: usize,
     #[case] read_size: usize,
-    temp_dir: tempfile::TempDir,
+    temp_dir: kithara_test_utils::TestTempDir,
 ) {
     let store = asset_store_with_root(&temp_dir, "streaming-test");
 
@@ -359,15 +364,13 @@ fn streaming_resource_write_read_at_different_positions(
     res.commit(None).unwrap();
 }
 
-#[rstest]
+#[kithara::test(timeout(Duration::from_secs(5)))]
 #[case(2)]
 #[case(3)]
 #[case(5)]
-#[timeout(Duration::from_secs(5))]
-#[test]
 fn multiple_resources_same_asset_root_independently_accessible(
     #[case] resource_count: usize,
-    temp_dir: tempfile::TempDir,
+    temp_dir: kithara_test_utils::TestTempDir,
 ) {
     let asset_root = "multi-resource-asset";
     let store = asset_store_with_root(&temp_dir, asset_root);
@@ -404,10 +407,8 @@ fn multiple_resources_same_asset_root_independently_accessible(
 
 /// Test that `delete_asset` only deletes the asset directory for the store's `asset_root`,
 /// leaving other assets in the same `root_dir` untouched.
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
-fn delete_asset_only_removes_own_directory(temp_dir: tempfile::TempDir) {
+#[kithara::test(native, timeout(Duration::from_secs(5)))]
+fn delete_asset_only_removes_own_directory(temp_dir: kithara_test_utils::TestTempDir) {
     let root_path = temp_dir.path();
 
     // Create three separate assets in the same root_dir
@@ -474,10 +475,8 @@ fn delete_asset_only_removes_own_directory(temp_dir: tempfile::TempDir) {
 }
 
 /// Test sequential deletion of multiple assets in the same `root_dir`.
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
-fn delete_assets_sequentially(temp_dir: tempfile::TempDir) {
+#[kithara::test(native, timeout(Duration::from_secs(5)))]
+fn delete_assets_sequentially(temp_dir: kithara_test_utils::TestTempDir) {
     let root_path = temp_dir.path();
 
     let asset_roots = ["seq-asset-1", "seq-asset-2", "seq-asset-3", "seq-asset-4"];
@@ -538,10 +537,8 @@ fn delete_assets_sequentially(temp_dir: tempfile::TempDir) {
 }
 
 /// Test that deleting a non-existent asset doesn't affect other assets.
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
-fn delete_nonexistent_asset_is_idempotent(temp_dir: tempfile::TempDir) {
+#[kithara::test(native, timeout(Duration::from_secs(5)))]
+fn delete_nonexistent_asset_is_idempotent(temp_dir: kithara_test_utils::TestTempDir) {
     let root_path = temp_dir.path();
 
     // Create one asset

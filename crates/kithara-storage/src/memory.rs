@@ -250,9 +250,13 @@ impl MemResource {
 
 #[cfg(test)]
 mod tests {
+    mod kithara {
+        pub(crate) use kithara_test_macros::test;
+    }
+
     use std::time::Duration;
 
-    use rstest::*;
+    use kithara_platform::thread;
 
     use super::*;
     use crate::{
@@ -264,9 +268,7 @@ mod tests {
         MemResource::new(CancellationToken::new())
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_create_new_resource() {
         let res = create_resource();
         assert_eq!(res.len(), None);
@@ -274,9 +276,7 @@ mod tests {
         assert_eq!(res.path(), None);
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_write_and_read() {
         let res = create_resource();
 
@@ -289,9 +289,7 @@ mod tests {
         assert_eq!(&buf, b"hello world");
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_write_all_read_into() {
         let res = create_resource();
 
@@ -303,9 +301,7 @@ mod tests {
         assert_eq!(&buf[..], b"atomic data");
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_from_bytes() {
         let res = MemResource::from_bytes(b"preloaded", CancellationToken::new());
 
@@ -321,9 +317,7 @@ mod tests {
         assert_eq!(&buf[..], b"preloaded");
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_wait_range_ready() {
         let res = create_resource();
 
@@ -333,15 +327,13 @@ mod tests {
         assert_eq!(outcome, WaitOutcome::Ready);
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(2))]
-    #[test]
+    #[kithara::test(native)]
     fn test_wait_range_blocks_then_ready() {
         let res = create_resource();
         let res2 = res.clone();
 
-        let handle = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(50));
+        let handle = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
             res2.write_at(0, b"delayed data").unwrap();
         });
 
@@ -350,9 +342,7 @@ mod tests {
         handle.join().unwrap();
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_wait_range_eof() {
         let res = create_resource();
 
@@ -363,15 +353,13 @@ mod tests {
         assert_eq!(outcome, WaitOutcome::Eof);
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(native)]
     fn test_fail_wakes_waiters() {
         let res = create_resource();
         let res2 = res.clone();
 
-        let handle = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(50));
+        let handle = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
             res2.fail("test error".to_string());
         });
 
@@ -380,17 +368,15 @@ mod tests {
         handle.join().unwrap();
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(2))]
-    #[test]
+    #[kithara::test(native)]
     fn test_cancel_wakes_waiters() {
         let cancel = CancellationToken::new();
         let res = MemResource::new(cancel.clone());
 
-        let handle = std::thread::spawn({
+        let handle = thread::spawn({
             let cancel = cancel.clone();
             move || {
-                std::thread::sleep(Duration::from_millis(50));
+                thread::sleep(Duration::from_millis(50));
                 cancel.cancel();
             }
         });
@@ -400,9 +386,7 @@ mod tests {
         handle.join().unwrap();
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_status_transitions() {
         let res = create_resource();
 
@@ -418,9 +402,7 @@ mod tests {
         );
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_status_failed() {
         let res = create_resource();
 
@@ -428,9 +410,7 @@ mod tests {
         assert_eq!(res.status(), ResourceStatus::Failed("boom".to_string()));
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_reactivate() {
         let res = create_resource();
 
@@ -458,9 +438,7 @@ mod tests {
         assert_eq!(&buf2[..], b"hello world");
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_write_rejected_after_commit() {
         let res = create_resource();
         res.write_at(0, b"data").unwrap();
@@ -470,9 +448,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_sparse_write() {
         let res = create_resource();
 
@@ -492,9 +468,7 @@ mod tests {
         assert_eq!(&zero_buf, &[0, 0, 0, 0]);
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_ring_wrap_around_evicts_old_data() {
         // Small ring buffer (256 bytes) to test wrap-around.
         let res = MemResource::open(
@@ -507,7 +481,7 @@ mod tests {
         .unwrap();
 
         // Write 200 bytes at offset 0.
-        res.write_at(0, &vec![0xAA; 200]).unwrap();
+        res.write_at(0, &[0xAA; 200]).unwrap();
 
         // Verify data is readable.
         let mut buf = [0u8; 10];
@@ -517,7 +491,7 @@ mod tests {
 
         // Write 200 bytes at offset 200 — this wraps, evicting first 144 bytes.
         // window_start advances to (200+200) - 256 = 144
-        res.write_at(200, &vec![0xBB; 200]).unwrap();
+        res.write_at(200, &[0xBB; 200]).unwrap();
 
         // Offset 0..144 is evicted — read returns 0 bytes.
         let n = res.read_at(0, &mut buf).unwrap();
@@ -526,7 +500,10 @@ mod tests {
         // Offset 144..200 should still have 0xAA data.
         let n = res.read_at(144, &mut buf).unwrap();
         assert!(n > 0, "data within window should be readable");
-        assert_eq!(&buf[..n], &vec![0xAA; n][..]);
+        assert!(
+            buf[..n].iter().all(|b| *b == 0xAA),
+            "expected 0xAA bytes in preserved range"
+        );
 
         // Offset 200..400 should have 0xBB data.
         let n = res.read_at(200, &mut buf).unwrap();
@@ -534,9 +511,7 @@ mod tests {
         assert_eq!(&buf, &[0xBB; 10]);
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(2))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(2)))]
     fn test_ring_eviction_invalidates_coverage() {
         // Small ring to force eviction.
         let res = MemResource::open(
@@ -549,11 +524,11 @@ mod tests {
         .unwrap();
 
         // Write 0..200 — should be available.
-        res.write_at(0, &vec![0xAA; 200]).unwrap();
+        res.write_at(0, &[0xAA; 200]).unwrap();
         assert_eq!(res.wait_range(0..200).unwrap(), WaitOutcome::Ready);
 
         // Write 200..400 — evicts 0..144.
-        res.write_at(200, &vec![0xBB; 200]).unwrap();
+        res.write_at(200, &[0xBB; 200]).unwrap();
 
         // 144..400 should still be available.
         assert_eq!(res.wait_range(144..400).unwrap(), WaitOutcome::Ready);
@@ -566,9 +541,7 @@ mod tests {
         assert_eq!(n, 0, "evicted offset should return 0 bytes");
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_ring_multiple_wraps() {
         let res = MemResource::open(
             CancellationToken::new(),
@@ -582,7 +555,7 @@ mod tests {
         // Write 3 rounds of 128 bytes each.
         for round in 0u8..3 {
             let offset = u64::from(round) * 128;
-            res.write_at(offset, &vec![round; 128]).unwrap();
+            res.write_at(offset, &[round; 128]).unwrap();
         }
 
         // Only the last 128 bytes (offset 256..384) should be readable.
@@ -602,9 +575,7 @@ mod tests {
         assert_eq!(&buf, &[2u8; 10]);
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_ring_from_bytes_readable() {
         // from_bytes creates a committed resource — the data should be readable.
         let data = b"hello ring buffer world";
@@ -616,9 +587,7 @@ mod tests {
         assert_eq!(&buf, data);
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    #[test]
+    #[kithara::test(timeout(Duration::from_secs(1)))]
     fn test_ring_capacity_power_of_two() {
         // Non-power-of-2 capacity should be rounded up.
         let res = MemResource::open(
@@ -631,7 +600,7 @@ mod tests {
         .unwrap();
 
         // Write 128 bytes (the rounded-up capacity).
-        res.write_at(0, &vec![0xFF; 128]).unwrap();
+        res.write_at(0, &[0xFF; 128]).unwrap();
         let mut buf = [0u8; 128];
         let n = res.read_at(0, &mut buf).unwrap();
         assert_eq!(n, 128);

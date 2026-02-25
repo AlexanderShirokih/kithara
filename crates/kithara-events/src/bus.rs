@@ -46,52 +46,50 @@ impl EventBus {
 
 #[cfg(test)]
 mod tests {
-    use rstest::rstest;
+    use kithara_test_utils::kithara;
 
     use super::*;
     use crate::FileEvent;
 
-    fn assert_file_event(event: Event, expected: FileEvent) {
+    fn assert_file_event(event: Event, expected: &FileEvent) {
         match event {
-            Event::File(actual) => assert_eq!(actual, expected),
+            Event::File(actual) => assert_eq!(&actual, expected),
             other => panic!("expected file event, got {other:?}"),
         }
     }
 
-    #[test]
+    #[kithara::test]
     fn publish_without_subscribers_does_not_panic() {
         let bus = EventBus::new(16);
         bus.publish(FileEvent::EndOfStream);
     }
 
-    #[rstest]
+    #[kithara::test(tokio)]
     #[case(FileEvent::DownloadComplete { total_bytes: 42 })]
     #[case(FileEvent::EndOfStream)]
-    #[tokio::test]
     async fn publish_and_subscribe(#[case] expected: FileEvent) {
         let bus = EventBus::new(16);
         let mut rx = bus.subscribe();
         bus.publish(expected.clone());
         let event = rx.recv().await.unwrap();
-        assert_file_event(event, expected);
+        assert_file_event(event, &expected);
     }
 
-    #[rstest]
+    #[kithara::test(tokio)]
     #[case(FileEvent::EndOfStream)]
     #[case(FileEvent::DownloadError {
         error: "network".to_string()
     })]
-    #[tokio::test]
     async fn multiple_subscribers_each_receive(#[case] expected: FileEvent) {
         let bus = EventBus::new(16);
         let mut rx1 = bus.subscribe();
         let mut rx2 = bus.subscribe();
         bus.publish(expected.clone());
-        assert_file_event(rx1.recv().await.unwrap(), expected.clone());
-        assert_file_event(rx2.recv().await.unwrap(), expected);
+        assert_file_event(rx1.recv().await.unwrap(), &expected);
+        assert_file_event(rx2.recv().await.unwrap(), &expected);
     }
 
-    #[tokio::test]
+    #[kithara::test(tokio)]
     async fn lagged_subscriber_gets_error() {
         let bus = EventBus::new(2);
         let mut rx = bus.subscribe();
@@ -108,7 +106,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[kithara::test]
     fn clone_shares_channel() {
         let bus1 = EventBus::new(16);
         let bus2 = bus1.clone();

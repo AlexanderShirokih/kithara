@@ -14,11 +14,15 @@ hotpath = { workspace = true, optional = true }
 
 [features]
 perf = ["dep:hotpath", "hotpath/hotpath"]
+internal = []
 
 
 [lints]
 workspace = true
 
 [dev-dependencies]
-rstest = { workspace = true }
+kithara-bufpool = { path = ".", default-features = false, features = ["internal"] }
+kithara-test-macros = { workspace = true }
+tokio = { workspace = true }
 unimock = { workspace = true }
+wasm-bindgen-test = { workspace = true }

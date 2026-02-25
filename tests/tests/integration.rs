@@ -4,25 +4,13 @@
     reason = "integration test crate — unwraps are acceptable in test code"
 )]
 
-// Native-only test modules
-#[cfg(not(target_arch = "wasm32"))]
 mod kithara_assets;
-#[cfg(not(target_arch = "wasm32"))]
 mod kithara_audio;
-#[cfg(not(target_arch = "wasm32"))]
 mod kithara_decode;
-#[cfg(not(target_arch = "wasm32"))]
 mod kithara_file;
-#[cfg(not(target_arch = "wasm32"))]
 mod kithara_hls;
-#[cfg(not(target_arch = "wasm32"))]
 mod kithara_net;
-#[cfg(not(target_arch = "wasm32"))]
 mod kithara_storage;
-#[cfg(not(target_arch = "wasm32"))]
 mod kithara_stream;
-#[cfg(not(target_arch = "wasm32"))]
-mod multi_instance;
-
-// WASM + native test modules (platform-gated internally)
 mod kithara_wasm;
+mod multi_instance;

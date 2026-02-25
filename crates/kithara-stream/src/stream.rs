@@ -10,16 +10,14 @@
 use std::{
     future::Future,
     io::{Read, Seek, SeekFrom},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::Arc,
+    time::Duration,
 };
 
 use kithara_platform::{MaybeSend, MaybeSync, ThreadPool};
 use kithara_storage::WaitOutcome;
 
-use crate::{MediaInfo, StreamContext, source::Source};
+use crate::{MediaInfo, SourceSeekAnchor, StreamContext, Timeline, source::Source};
 
 /// Defines a stream type and how to create it.
 ///
@@ -70,10 +68,7 @@ pub trait StreamType: MaybeSend + 'static {
     ///
     /// HLS returns `HlsStreamContext` with segment/variant atomics.
     /// File returns `NullStreamContext` (no segment/variant).
-    fn build_stream_context(
-        source: &Self::Source,
-        position: Arc<AtomicU64>,
-    ) -> Arc<dyn StreamContext>;
+    fn build_stream_context(source: &Self::Source, timeline: Timeline) -> Arc<dyn StreamContext>;
 }
 
 /// Generic audio stream with sync `Read + Seek`.
@@ -83,7 +78,7 @@ pub trait StreamType: MaybeSend + 'static {
 /// `Source::wait_range()` and `Source::read_at()`.
 pub struct Stream<T: StreamType> {
     source: T::Source,
-    pos: Arc<AtomicU64>,
+    timeline: Timeline,
 }
 
 impl<T: StreamType> Stream<T> {
@@ -94,20 +89,18 @@ impl<T: StreamType> Stream<T> {
     /// Returns an error if the underlying stream source cannot be created.
     pub async fn new(config: T::Config) -> Result<Self, T::Error> {
         let source = T::create(config).await?;
-        Ok(Self {
-            source,
-            pos: Arc::new(AtomicU64::new(0)),
-        })
+        let timeline = source.timeline();
+        Ok(Self { source, timeline })
     }
 
     /// Get current read position.
     pub fn position(&self) -> u64 {
-        self.pos.load(Ordering::Relaxed)
+        self.timeline.byte_position()
     }
 
-    /// Get handle to shared byte position (for `StreamContext`).
-    pub fn position_handle(&self) -> Arc<AtomicU64> {
-        Arc::clone(&self.pos)
+    /// Get stream timeline.
+    pub fn timeline(&self) -> Timeline {
+        self.timeline.clone()
     }
 
     /// Get shared reference to inner source.
@@ -143,6 +136,47 @@ impl<T: StreamType> Stream<T> {
     pub fn clear_variant_fence(&mut self) {
         self.source.clear_variant_fence();
     }
+
+    /// Set seek epoch for stale request invalidation.
+    pub fn set_seek_epoch(&mut self, seek_epoch: u64) {
+        self.source.set_seek_epoch(seek_epoch);
+    }
+
+    /// Wake any blocked `wait_range()` calls.
+    ///
+    /// Called after `Timeline::initiate_seek()` for instant wakeup.
+    pub fn notify_waiting(&self) {
+        self.source.notify_waiting();
+    }
+
+    /// Create a lock-free callback for waking blocked `wait_range()`.
+    ///
+    /// The returned closure captures only the condvar/notify primitive,
+    /// so it can be called without holding the `SharedStream` mutex.
+    pub fn make_notify_fn(&self) -> Option<Box<dyn Fn() + Send + Sync>> {
+        self.source.make_notify_fn()
+    }
+
+    /// Resolve a deterministic time-based seek anchor and move the stream position.
+    ///
+    /// Returns `None` for sources without segmented time mapping.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the source failed to resolve the anchor.
+    pub fn seek_time_anchor(
+        &mut self,
+        position: Duration,
+    ) -> Result<Option<SourceSeekAnchor>, std::io::Error> {
+        let anchor = self
+            .source
+            .seek_time_anchor(position)
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        if let Some(anchor) = anchor {
+            self.timeline.set_byte_position(anchor.byte_offset);
+        }
+        Ok(anchor)
+    }
 }
 
 impl<T: StreamType> Read for Stream<T> {
@@ -152,7 +186,7 @@ impl<T: StreamType> Read for Stream<T> {
             return Ok(0);
         }
 
-        let pos = self.pos.load(Ordering::Relaxed);
+        let pos = self.timeline.byte_position();
         let range = pos..pos.saturating_add(buf.len() as u64);
 
         // Wait for data to be available (blocking)
@@ -163,23 +197,31 @@ impl<T: StreamType> Read for Stream<T> {
         {
             WaitOutcome::Ready => {}
             WaitOutcome::Eof => return Ok(0),
+            WaitOutcome::Interrupted => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "seek pending",
+                ));
+            }
         }
 
-        // Read data directly from source
+        // Read data directly from source.
+        // No flushing check here: wait_range already handles interruption,
+        // and the decoder must be able to read during apply_pending_seek().
         let n = self
             .source
             .read_at(pos, buf)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
 
-        self.pos
-            .store(pos.saturating_add(n as u64), Ordering::Relaxed);
+        self.timeline
+            .set_byte_position(pos.saturating_add(n as u64));
         Ok(n)
     }
 }
 
 impl<T: StreamType> Seek for Stream<T> {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
-        let current = self.pos.load(Ordering::Relaxed);
+        let current = self.timeline.byte_position();
         let new_pos: i128 = match pos {
             SeekFrom::Start(p) => i128::from(p),
             SeekFrom::Current(delta) => i128::from(current).saturating_add(i128::from(delta)),
@@ -216,7 +258,7 @@ impl<T: StreamType> Seek for Stream<T> {
             ));
         }
 
-        self.pos.store(new_pos, Ordering::Relaxed);
+        self.timeline.set_byte_position(new_pos);
         Ok(new_pos)
     }
 }

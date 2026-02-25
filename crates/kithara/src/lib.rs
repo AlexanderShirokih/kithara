@@ -19,6 +19,9 @@
 //! resource.read(&mut buf);
 //! ```
 
+#[cfg(feature = "internal")]
+pub mod internal;
+
 // Virtual modules — namespaced access to all subcrates.
 
 pub mod audio {
@@ -83,6 +86,10 @@ pub mod net {
 pub mod storage {
     pub use kithara_storage::*;
 }
+
+// Test macros — `#[kithara::test]` and `#[kithara::fixture]`.
+#[cfg(feature = "test-utils")]
+pub use kithara_test_macros::{fixture, test};
 
 // Mock module — re-exports mocks from all subcrates with test-utils.
 #[cfg(feature = "test-utils")]

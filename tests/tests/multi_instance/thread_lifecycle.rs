@@ -24,9 +24,7 @@ use kithara::{
     platform::ThreadPool,
     stream::{AudioCodec, ContainerFormat, MediaInfo, Stream},
 };
-use kithara_test_utils::wav::create_test_wav;
-use rstest::rstest;
-use tempfile::TempDir;
+use kithara_test_utils::{TestTempDir, wav::create_test_wav};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -39,6 +37,9 @@ const SAMPLE_RATE: u32 = 44100;
 const CHANNELS: u16 = 2;
 const SEGMENT_SIZE: usize = 200_000;
 const SEGMENT_COUNT: usize = 10;
+const POOL_AVAILABILITY_PROBE_HOLD: Duration = Duration::from_millis(120);
+const POOL_AVAILABILITY_RETRY: Duration = Duration::from_millis(100);
+const POOL_AVAILABILITY_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn generate_wav_data() -> Arc<Vec<u8>> {
     let total_bytes = SEGMENT_COUNT * SEGMENT_SIZE;
@@ -53,12 +54,11 @@ fn generate_wav_data() -> Arc<Vec<u8>> {
 ///
 /// If any thread is stuck from a previous instance, the concurrent count
 /// will be less than `expected_threads`.
-async fn assert_pool_threads_available(pool: &ThreadPool, expected_threads: usize) {
+async fn pool_max_concurrency(pool: &ThreadPool, expected_threads: usize) -> usize {
     let running = Arc::new(AtomicUsize::new(0));
     let max_concurrent = Arc::new(AtomicUsize::new(0));
-    let _barrier = Arc::new(tokio::sync::Barrier::new(expected_threads));
 
-    let mut handles = Vec::new();
+    let mut handles = Vec::with_capacity(expected_threads);
     for _ in 0..expected_threads {
         let running = Arc::clone(&running);
         let max_concurrent = Arc::clone(&max_concurrent);
@@ -68,12 +68,7 @@ async fn assert_pool_threads_available(pool: &ThreadPool, expected_threads: usiz
             let cur = running.fetch_add(1, Ordering::SeqCst) + 1;
             max_concurrent.fetch_max(cur, Ordering::SeqCst);
 
-            // Block until all threads arrive — proves they're all free.
-            // Use a spin-wait with channel since we're on rayon threads.
-            // Actually we use tokio::sync::Barrier from the async side instead.
-            // But we're on a rayon thread, so just sleep briefly to let all
-            // threads register their presence.
-            std::thread::sleep(Duration::from_millis(100));
+            kithara_platform::thread::sleep(POOL_AVAILABILITY_PROBE_HOLD);
 
             running.fetch_sub(1, Ordering::SeqCst);
             let _ = tx.send(cur);
@@ -85,12 +80,32 @@ async fn assert_pool_threads_available(pool: &ThreadPool, expected_threads: usiz
         let _ = rx.await;
     }
 
-    let observed_max = max_concurrent.load(Ordering::SeqCst);
-    assert!(
-        observed_max >= expected_threads,
-        "only {observed_max}/{expected_threads} threads were free concurrently — \
-         some threads are still occupied by a previous instance"
-    );
+    max_concurrent.load(Ordering::SeqCst)
+}
+
+async fn assert_pool_threads_available(pool: &ThreadPool, expected_threads: usize) {
+    let deadline = tokio::time::Instant::now() + POOL_AVAILABILITY_TIMEOUT;
+    let mut best_observed = 0usize;
+
+    loop {
+        let observed_max = pool_max_concurrency(pool, expected_threads).await;
+        best_observed = best_observed.max(observed_max);
+
+        if observed_max >= expected_threads {
+            return;
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            assert!(
+                best_observed >= expected_threads,
+                "only {best_observed}/{expected_threads} threads were free concurrently \
+                 within {:?} — some threads are still occupied by a previous instance",
+                POOL_AVAILABILITY_TIMEOUT
+            );
+        }
+
+        tokio::time::sleep(POOL_AVAILABILITY_RETRY).await;
+    }
 }
 
 /// Read some PCM data (not to EOF), then drop the instance.
@@ -133,9 +148,7 @@ fn read_partial_and_drop_hls(audio: Audio<Stream<Hls>>, samples_to_read: usize) 
 // Tests
 
 /// Drop a File instance mid-stream, then verify all pool threads are free.
-#[rstest]
-#[timeout(Duration::from_secs(30))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[kithara::test(tokio, timeout(Duration::from_secs(30)))]
 async fn file_threads_released_after_drop() {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
@@ -144,7 +157,7 @@ async fn file_threads_released_after_drop() {
 
     let pool = ThreadPool::with_num_threads(4).expect("thread pool");
     let server = AudioTestServer::new().await;
-    let temp = TempDir::new().expect("temp dir");
+    let temp = TestTempDir::new();
 
     // Create and partially read a File instance, then drop it.
     let file_config = FileConfig::new(server.mp3_url().into())
@@ -157,7 +170,7 @@ async fn file_threads_released_after_drop() {
         .await
         .expect("create audio");
 
-    tokio::task::spawn_blocking(move || {
+    kithara_platform::spawn_blocking(move || {
         read_partial_and_drop_file(audio, 10_000);
     })
     .await
@@ -172,9 +185,7 @@ async fn file_threads_released_after_drop() {
 }
 
 /// Drop an HLS instance mid-stream, then verify all pool threads are free.
-#[rstest]
-#[timeout(Duration::from_secs(30))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[kithara::test(tokio, timeout(Duration::from_secs(30)))]
 async fn hls_threads_released_after_drop() {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
@@ -195,7 +206,7 @@ async fn hls_threads_released_after_drop() {
     .await;
 
     let url = server.url("/master.m3u8").expect("url");
-    let temp = TempDir::new().expect("temp dir");
+    let temp = TestTempDir::new();
     let cancel = CancellationToken::new();
 
     let hls_config = HlsConfig::new(url)
@@ -215,7 +226,7 @@ async fn hls_threads_released_after_drop() {
         .await
         .expect("create audio");
 
-    tokio::task::spawn_blocking(move || {
+    kithara_platform::spawn_blocking(move || {
         let _server = server;
         let _temp = temp;
         read_partial_and_drop_hls(audio, 10_000);
@@ -233,9 +244,7 @@ async fn hls_threads_released_after_drop() {
 ///
 /// If threads leak, the pool (2 threads) would be exhausted by the 2nd
 /// iteration and the test would deadlock.
-#[rstest]
-#[timeout(Duration::from_secs(60))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[kithara::test(tokio, timeout(Duration::from_secs(60)))]
 async fn sequential_file_create_destroy_no_leak() {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
@@ -246,7 +255,7 @@ async fn sequential_file_create_destroy_no_leak() {
     let server = AudioTestServer::new().await;
 
     for round in 0..10 {
-        let temp = TempDir::new().expect("temp dir");
+        let temp = TestTempDir::new();
         let file_config = FileConfig::new(server.mp3_url().into())
             .with_store(StoreOptions::new(temp.path()))
             .with_thread_pool(pool.clone());
@@ -257,7 +266,7 @@ async fn sequential_file_create_destroy_no_leak() {
             .await
             .expect("create audio");
 
-        tokio::task::spawn_blocking(move || {
+        kithara_platform::spawn_blocking(move || {
             let _temp = temp;
             read_partial_and_drop_file(audio, 5_000);
         })
@@ -276,9 +285,7 @@ async fn sequential_file_create_destroy_no_leak() {
 }
 
 /// Create and destroy HLS instances sequentially, 10 times, on a shared pool.
-#[rstest]
-#[timeout(Duration::from_secs(60))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[kithara::test(tokio, timeout(Duration::from_secs(60)))]
 async fn sequential_hls_create_destroy_no_leak() {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
@@ -300,7 +307,7 @@ async fn sequential_hls_create_destroy_no_leak() {
         .await;
 
         let url = server.url("/master.m3u8").expect("url");
-        let temp = TempDir::new().expect("temp dir");
+        let temp = TestTempDir::new();
         let cancel = CancellationToken::new();
 
         let hls_config = HlsConfig::new(url)
@@ -320,7 +327,7 @@ async fn sequential_hls_create_destroy_no_leak() {
             .await
             .expect("create audio");
 
-        tokio::task::spawn_blocking(move || {
+        kithara_platform::spawn_blocking(move || {
             let _server = server;
             let _temp = temp;
             read_partial_and_drop_hls(audio, 5_000);
@@ -339,9 +346,7 @@ async fn sequential_hls_create_destroy_no_leak() {
 
 /// Saturate a 4-thread pool with 2 instances (each uses ~2 threads:
 /// worker + downloader), drop them all, then verify full recovery.
-#[rstest]
-#[timeout(Duration::from_secs(60))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[kithara::test(tokio, timeout(Duration::from_secs(120)))]
 async fn pool_recovers_after_saturation() {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
@@ -356,7 +361,7 @@ async fn pool_recovers_after_saturation() {
     // Phase 1: saturate the pool with 2 instances (File + HLS)
     info!("phase 1: saturating pool");
 
-    let temp1 = TempDir::new().expect("temp dir");
+    let temp1 = TestTempDir::new();
     let file_config = FileConfig::new(server.mp3_url().into())
         .with_store(StoreOptions::new(temp1.path()))
         .with_thread_pool(pool.clone());
@@ -376,7 +381,7 @@ async fn pool_recovers_after_saturation() {
     })
     .await;
     let url = hls_server.url("/master.m3u8").expect("url");
-    let temp2 = TempDir::new().expect("temp dir");
+    let temp2 = TestTempDir::new();
     let cancel = CancellationToken::new();
     let hls_config = HlsConfig::new(url)
         .with_store(StoreOptions::new(temp2.path()))
@@ -395,11 +400,11 @@ async fn pool_recovers_after_saturation() {
         .expect("create hls audio");
 
     // Read partially from both, then drop.
-    let h1 = tokio::task::spawn_blocking(move || {
+    let h1 = kithara_platform::spawn_blocking(move || {
         let _temp = temp1;
         read_partial_and_drop_file(audio_file, 10_000);
     });
-    let h2 = tokio::task::spawn_blocking(move || {
+    let h2 = kithara_platform::spawn_blocking(move || {
         let _server = hls_server;
         let _temp = temp2;
         read_partial_and_drop_hls(audio_hls, 10_000);
@@ -417,7 +422,7 @@ async fn pool_recovers_after_saturation() {
     // Phase 3: create new instances on the recovered pool
     info!("phase 3: creating new instances on recovered pool");
 
-    let temp3 = TempDir::new().expect("temp dir");
+    let temp3 = TestTempDir::new();
     let file_config = FileConfig::new(server.mp3_url().into())
         .with_store(StoreOptions::new(temp3.path()))
         .with_thread_pool(pool.clone());
@@ -429,7 +434,7 @@ async fn pool_recovers_after_saturation() {
         .expect("create audio on recovered pool");
 
     // Read to EOF to prove the pool is fully functional.
-    let total = tokio::task::spawn_blocking(move || {
+    let total = kithara_platform::spawn_blocking(move || {
         let _temp = temp3;
         let mut buf = vec![0.0f32; 4096];
         let mut total = 0u64;
@@ -449,5 +454,35 @@ async fn pool_recovers_after_saturation() {
     info!(
         total_samples = total,
         "pool recovered and new instance completed"
+    );
+}
+
+/// Probe helper should tolerate delayed thread release and not fail
+/// on a single transient snapshot.
+#[kithara::test(tokio, timeout(Duration::from_secs(20)))]
+async fn pool_availability_waits_for_delayed_release() {
+    let pool = ThreadPool::with_num_threads(4).expect("thread pool");
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+
+    for _ in 0..2 {
+        let tx = ready_tx.clone();
+        pool.spawn(move || {
+            let _ = tx.send(());
+            kithara_platform::thread::sleep(Duration::from_millis(700));
+        });
+    }
+    drop(ready_tx);
+
+    for _ in 0..2 {
+        ready_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("busy task should start");
+    }
+
+    let started = tokio::time::Instant::now();
+    assert_pool_threads_available(&pool, 4).await;
+    assert!(
+        started.elapsed() >= Duration::from_millis(400),
+        "availability check should wait for delayed release"
     );
 }

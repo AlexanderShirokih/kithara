@@ -84,6 +84,7 @@ impl PlaylistState {
     /// Each entry in `media_playlists` corresponds to the variant at the same
     /// index in `variants`. Segment URIs are resolved against the media
     /// playlist URL; failures fall back to the media URL itself.
+    #[must_use]
     pub fn from_parsed(
         variants: &[crate::parsing::VariantStream],
         media_playlists: &[(Url, crate::parsing::MediaPlaylist)],
@@ -181,6 +182,23 @@ impl PlaylistState {
         let last_idx = size_map.segment_sizes.len() - 1;
         size_map.total = size_map.offsets[last_idx] + size_map.segment_sizes[last_idx];
     }
+
+    /// Total media duration across parsed variants.
+    ///
+    /// Variants are expected to describe the same timeline. We keep the
+    /// maximum duration to tolerate incomplete alternate renditions.
+    #[must_use]
+    pub fn track_duration(&self) -> Option<Duration> {
+        self.variants
+            .iter()
+            .map(|lock| {
+                let state = lock.read();
+                state.segments.iter().fold(Duration::ZERO, |acc, segment| {
+                    acc.saturating_add(segment.duration)
+                })
+            })
+            .max()
+    }
 }
 
 // PlaylistAccess trait
@@ -189,7 +207,6 @@ impl PlaylistState {
 #[cfg_attr(test, unimock::unimock(api = PlaylistAccessMock))]
 pub(crate) trait PlaylistAccess: Send + Sync {
     /// Number of variants in the master playlist.
-    #[cfg_attr(not(test), expect(dead_code))]
     fn num_variants(&self) -> usize;
 
     /// Number of segments in a variant's media playlist.
@@ -218,6 +235,15 @@ pub(crate) trait PlaylistAccess: Send + Sync {
 
     /// Find which segment contains the given byte offset (binary search on offsets).
     fn find_segment_at_offset(&self, variant: usize, offset: u64) -> Option<usize>;
+
+    /// Resolve a target time to a deterministic segment.
+    ///
+    /// Returns segment index and time boundaries of the selected segment.
+    fn find_seek_point_for_time(
+        &self,
+        variant: usize,
+        target: Duration,
+    ) -> Option<(usize, Duration, Duration)>;
 }
 
 impl PlaylistAccess for PlaylistState {
@@ -304,13 +330,43 @@ impl PlaylistAccess for PlaylistState {
         // offsets, but guard against it anyway.
         if pos == 0 { None } else { Some(pos - 1) }
     }
+
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "segment list borrows read guard"
+    )]
+    fn find_seek_point_for_time(
+        &self,
+        variant: usize,
+        target: Duration,
+    ) -> Option<(usize, Duration, Duration)> {
+        let lock = self.variants.get(variant)?;
+        let state = lock.read();
+        if state.segments.is_empty() {
+            return None;
+        }
+
+        let mut elapsed = Duration::ZERO;
+        for segment in &state.segments {
+            let segment_start = elapsed;
+            let segment_end = segment_start.saturating_add(segment.duration);
+            if target < segment_end {
+                return Some((segment.index, segment_start, segment_end));
+            }
+            elapsed = segment_end;
+        }
+
+        let tail = state.segments.last()?;
+        let tail_start = elapsed.saturating_sub(tail.duration);
+        Some((tail.index, tail_start, elapsed))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
-    use rstest::rstest;
+    use kithara_test_utils::kithara;
     use url::Url;
 
     use super::*;
@@ -377,9 +433,20 @@ mod tests {
         }
     }
 
+    fn seek_point_for_time(
+        state: &PlaylistState,
+        variant: usize,
+        target_ms: u64,
+    ) -> Option<(usize, u64)> {
+        let (segment_index, _segment_start, _segment_end) =
+            state.find_seek_point_for_time(variant, Duration::from_millis(target_ms))?;
+        let byte_offset = state.segment_byte_offset(variant, segment_index)?;
+        Some((segment_index, byte_offset))
+    }
+
     // Test 1: basic access
 
-    #[test]
+    #[kithara::test]
     fn test_playlist_state_basic_access() {
         let state = PlaylistState::new(vec![make_variant(0, 5), make_variant(1, 3)]);
 
@@ -394,7 +461,7 @@ mod tests {
 
     // Test 2: variant info
 
-    #[test]
+    #[kithara::test]
     fn test_playlist_state_variant_info() {
         let mut v = make_variant(0, 2);
         v.codec = Some(AudioCodec::Flac);
@@ -424,7 +491,7 @@ mod tests {
 
     // Test 3: size map not set
 
-    #[test]
+    #[kithara::test]
     fn test_size_map_not_set() {
         let state = PlaylistState::new(vec![make_variant(0, 3)]);
 
@@ -436,7 +503,7 @@ mod tests {
 
     // Test 4: size map set and query
 
-    #[test]
+    #[kithara::test]
     fn test_size_map_set_and_query() {
         let state = PlaylistState::new(vec![make_variant(0, 4)]);
 
@@ -450,7 +517,7 @@ mod tests {
         assert_eq!(state.total_variant_size(0), Some(1500));
     }
 
-    #[rstest]
+    #[kithara::test(wasm)]
     #[case::first(0, Some(0))]
     #[case::second(1, Some(300))]
     #[case::third(2, Some(600))]
@@ -462,7 +529,7 @@ mod tests {
         assert_eq!(state.segment_byte_offset(0, segment), expected);
     }
 
-    #[rstest]
+    #[kithara::test(wasm)]
     #[case::init_start(0, Some(0))]
     #[case::init_inside(99, Some(0))]
     #[case::media_start(100, Some(0))]
@@ -480,7 +547,7 @@ mod tests {
 
     // Test 5: reconcile segment size
 
-    #[test]
+    #[kithara::test]
     fn test_reconcile_segment_size() {
         let state = PlaylistState::new(vec![make_variant(0, 3)]);
 
@@ -509,7 +576,7 @@ mod tests {
 
     // Test 6: find_segment_at_offset edge cases
 
-    #[rstest]
+    #[kithara::test(wasm)]
     #[case::first_segment_start(0, 0, Some(0))]
     #[case::init_region(0, 49, Some(0))]
     #[case::first_media_start(0, 50, Some(0))]
@@ -535,9 +602,59 @@ mod tests {
         assert_eq!(state.find_segment_at_offset(variant, offset), expected);
     }
 
-    // Test 7: from_parsed builder
+    // Test 7: deterministic seek_point_for_time mapping
 
-    #[test]
+    #[kithara::test(wasm)]
+    #[case::segment_0_start(0, (0, 0))]
+    #[case::segment_0_last_ms(3999, (0, 0))]
+    #[case::segment_1_start(4000, (1, 150))]
+    #[case::segment_1_last_ms(7999, (1, 150))]
+    #[case::segment_2_start(8000, (2, 250))]
+    #[case::segment_3_start(12000, (3, 350))]
+    #[case::past_end_clamps_to_last(999_999, (3, 350))]
+    fn test_seek_point_for_time_deterministic(
+        #[case] target_ms: u64,
+        #[case] expected: (usize, u64),
+    ) {
+        let state = PlaylistState::new(vec![make_variant(0, 4)]);
+        // init=50, media=[100,100,100,100] -> segment offsets [0,150,250,350]
+        state.set_size_map(0, make_size_map(50, &[100, 100, 100, 100]));
+        let seek_point = seek_point_for_time(&state, 0, target_ms).expect("seek point");
+        assert_eq!(seek_point, expected);
+    }
+
+    #[kithara::test]
+    fn test_seek_point_for_time_boundary_at_track_end() {
+        let state = PlaylistState::new(vec![make_variant(0, 4)]);
+        state.set_size_map(0, make_size_map(50, &[100, 100, 100, 100]));
+
+        // Total track duration is 16_000ms (4 segments * 4s).
+        // Boundary seek at exact end should clamp to the last known segment.
+        let seek_point = seek_point_for_time(&state, 0, 16_000).expect("seek point");
+        assert_eq!(seek_point, (3, 350));
+    }
+
+    #[kithara::test]
+    fn test_find_seek_point_for_time_returns_segment_bounds() {
+        let state = PlaylistState::new(vec![make_variant(0, 4)]);
+        let seek_point = state
+            .find_seek_point_for_time(0, Duration::from_millis(8_500))
+            .expect("seek point");
+
+        assert_eq!(seek_point.0, 2);
+        assert_eq!(seek_point.1, Duration::from_secs(8));
+        assert_eq!(seek_point.2, Duration::from_secs(12));
+    }
+
+    #[kithara::test]
+    fn test_track_duration_uses_longest_variant() {
+        let state = PlaylistState::new(vec![make_variant(0, 4), make_variant(1, 3)]);
+        assert_eq!(state.track_duration(), Some(Duration::from_secs(16)));
+    }
+
+    // Test 8: from_parsed builder
+
+    #[kithara::test]
     fn test_from_parsed_basic() {
         let variants = vec![VariantStream {
             id: VariantId(0),

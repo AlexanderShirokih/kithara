@@ -211,24 +211,31 @@ impl Condvar {
         self.0.wait(&mut guard.0);
     }
 
-    /// Block until notified (timeout ignored on wasm32).
+    /// Sleep-based timed wait for wasm32.
     ///
     /// On wasm32, `parking_lot::Condvar::wait_for` internally calls
-    /// `std::time::Instant::now()` which panics ("time not implemented").
-    /// We delegate to untimed `wait()` instead — notifications from the
-    /// downloader are reliable, and the timeout is only a safety net on
-    /// native.
+    /// `std::time::Instant::now()` which panics ("time not implemented"),
+    /// and untimed `wait()` blocks forever via `Atomics.wait` — if a
+    /// notification is missed (race between condition check and wait),
+    /// the thread never wakes up.
     ///
-    /// Always returns `true` (not timed out) since we don't track elapsed
-    /// time.
+    /// Instead we temporarily unlock the mutex, sleep for `timeout`
+    /// (which uses `memory_atomic_wait32` with a deadline on wasm32,
+    /// NOT `Instant::now`), then re-lock. The caller's loop re-checks
+    /// the condition on the next iteration.
+    ///
+    /// Returns `false` (simulated timeout) so callers that branch on
+    /// the return value take the poll/retry path.
     #[inline]
     pub fn wait_for<T: ?Sized>(
         &self,
         guard: &mut MutexGuard<'_, T>,
-        _timeout: std::time::Duration,
+        timeout: std::time::Duration,
     ) -> bool {
-        self.0.wait(&mut guard.0);
-        true
+        parking_lot::MutexGuard::unlocked(&mut guard.0, || {
+            crate::thread::sleep(timeout);
+        });
+        false
     }
 
     /// Wake one waiting thread.
@@ -256,13 +263,12 @@ impl fmt::Debug for Condvar {
     }
 }
 
-// IMPORTANT: Do NOT use `std::hint::spin_loop()` here!
-// On wasm32+atomics it compiles to `memory.atomic.wait32` (= `Atomics.wait`)
-// which throws `TypeError` on the browser main thread regardless of timeout.
+// A bare `try_lock()` loop avoids `parking_lot::Mutex::lock()` which,
+// under contention on wasm32+atomics, escalates to `Atomics.wait` —
+// illegal on the browser main thread.
 //
-// A bare `try_lock()` loop is fine: contention windows are microseconds
-// (the rayon worker holds locks briefly), so the loop resolves in 1-2
-// iterations. This matches rayon's own `web_spin_lock` approach.
+// On wasm32 we yield to the host scheduler between retries.
+// On native we use a spin hint.
 
 #[inline]
 fn spin_lock<T: ?Sized>(m: &parking_lot::Mutex<T>) -> parking_lot::MutexGuard<'_, T> {
@@ -270,6 +276,7 @@ fn spin_lock<T: ?Sized>(m: &parking_lot::Mutex<T>) -> parking_lot::MutexGuard<'_
         if let Some(guard) = m.try_lock() {
             return guard;
         }
+        spin_wait_hint();
     }
 }
 
@@ -279,6 +286,7 @@ fn spin_read<T: ?Sized>(rw: &parking_lot::RwLock<T>) -> parking_lot::RwLockReadG
         if let Some(guard) = rw.try_read() {
             return guard;
         }
+        spin_wait_hint();
     }
 }
 
@@ -288,5 +296,19 @@ fn spin_write<T: ?Sized>(rw: &parking_lot::RwLock<T>) -> parking_lot::RwLockWrit
         if let Some(guard) = rw.try_write() {
             return guard;
         }
+        spin_wait_hint();
+    }
+}
+
+#[inline]
+fn spin_wait_hint() {
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::thread::yield_now();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        core::hint::spin_loop();
     }
 }

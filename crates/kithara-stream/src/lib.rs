@@ -18,7 +18,11 @@ mod fetch;
 mod media;
 mod source;
 mod stream;
+mod timeline;
 mod writer;
+
+#[cfg(feature = "internal")]
+pub mod internal;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod mock;
@@ -29,6 +33,7 @@ pub use downloader::{Downloader, DownloaderIo, PlanOutcome, StepResult};
 pub use error::{StreamError, StreamResult};
 pub use fetch::{EpochValidator, Fetch};
 pub use media::{AudioCodec, ContainerFormat, MediaInfo};
-pub use source::Source;
+pub use source::{Source, SourceSeekAnchor};
 pub use stream::{Stream, StreamType};
+pub use timeline::Timeline;
 pub use writer::{Writer, WriterError, WriterItem};

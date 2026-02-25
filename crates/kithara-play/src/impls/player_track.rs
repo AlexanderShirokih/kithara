@@ -13,7 +13,7 @@ use firewheel::{
     },
     param::smoother::SmootherConfig,
 };
-use kithara_platform::Mutex;
+use kithara_platform::{Mutex, Sender};
 
 use super::{player_notification::PlayerNotification, player_resource::PlayerResource};
 
@@ -74,8 +74,14 @@ pub(crate) struct PlayerTrack {
     notified_track_requested: bool,
     mix: MixDSP,
     fade_curve: FadeCurve,
-    cached_position: f64,
-    cached_duration: f64,
+    /// Last observed playback position snapshot.
+    ///
+    /// This is a fallback value only. Source of truth is `PlayerResource`.
+    observed_position: f64,
+    /// Last observed duration snapshot.
+    ///
+    /// This is a fallback value only. Source of truth is `PlayerResource`.
+    observed_duration: f64,
     src: Arc<str>,
 }
 
@@ -103,8 +109,8 @@ impl PlayerTrack {
             notified_track_requested: false,
             mix: MixDSP::new(Mix::FULLY_WET, fade_curve, fade_conf, sample_rate),
             fade_curve,
-            cached_position: 0.0,
-            cached_duration: 0.0,
+            observed_position: 0.0,
+            observed_duration: 0.0,
             src,
         }
     }
@@ -120,7 +126,7 @@ impl PlayerTrack {
         scratch_bufs: &mut [&mut [f32]],
         mix_bufs: &mut [&mut [f32]],
         range: Range<usize>,
-        notification_tx: &kanal::Sender<PlayerNotification>,
+        notification_tx: &Sender<PlayerNotification>,
     ) {
         // Read data from resource inside a scoped lock
         let read_outcome = {
@@ -140,8 +146,8 @@ impl PlayerTrack {
 
         // Process outcome outside the lock
         if let Ok((position, duration)) = read_outcome {
-            self.cached_position = position;
-            self.cached_duration = duration;
+            self.observed_position = position;
+            self.observed_duration = duration;
 
             if scratch_bufs.len() >= 2 && mix_bufs.len() >= 2 {
                 let (output_l_slice, output_r_slice) = mix_bufs.split_at_mut(1);
@@ -174,7 +180,7 @@ impl PlayerTrack {
     }
 
     /// Handle EOF or read error.
-    fn handle_eof(&mut self, notification_tx: &kanal::Sender<PlayerNotification>) {
+    fn handle_eof(&mut self, notification_tx: &Sender<PlayerNotification>) {
         if self.state == TrackState::Finished {
             return;
         }
@@ -187,9 +193,9 @@ impl PlayerTrack {
     }
 
     /// Check position-based notifications.
-    fn check_notifications(&mut self, notification_tx: &kanal::Sender<PlayerNotification>) {
-        let position = self.cached_position;
-        let duration = self.cached_duration;
+    fn check_notifications(&mut self, notification_tx: &Sender<PlayerNotification>) {
+        let position = self.observed_position;
+        let duration = self.observed_duration;
 
         if duration <= 0.0 {
             return;
@@ -242,7 +248,7 @@ impl PlayerTrack {
     }
 
     /// Emit notification when state changes.
-    fn notify_state_change(&mut self, notification_tx: &kanal::Sender<PlayerNotification>) {
+    fn notify_state_change(&mut self, notification_tx: &Sender<PlayerNotification>) {
         if !self.state_dirty {
             return;
         }
@@ -302,18 +308,27 @@ impl PlayerTrack {
     pub(crate) fn seek(&mut self, seconds: f64) {
         if let Some(mut resource) = self.resource.try_lock() {
             resource.seek(seconds);
-            self.cached_position = seconds;
         }
     }
 
-    /// Cached position in seconds.
+    /// Current position in seconds.
+    ///
+    /// Source of truth is `PlayerResource` (`Timeline` underneath).
+    /// Uses snapshot fallback only if lock is temporarily unavailable.
     pub(crate) fn position(&self) -> f64 {
-        self.cached_position
+        self.resource
+            .try_lock()
+            .map_or(self.observed_position, |resource| resource.position())
     }
 
-    /// Cached duration in seconds.
+    /// Current duration in seconds.
+    ///
+    /// Source of truth is `PlayerResource` (`Timeline` underneath).
+    /// Uses snapshot fallback only if lock is temporarily unavailable.
     pub(crate) fn duration(&self) -> f64 {
-        self.cached_duration
+        self.resource
+            .try_lock()
+            .map_or(self.observed_duration, |resource| resource.duration())
     }
 
     /// Current track state.
@@ -356,7 +371,7 @@ impl PlayerTrack {
 mod tests {
     use kithara_audio::mock::TestPcmReader;
     use kithara_decode::PcmSpec;
-    use rstest::rstest;
+    use kithara_test_utils::kithara;
 
     use super::*;
     use crate::impls::resource::Resource;
@@ -379,7 +394,7 @@ mod tests {
 
     // Note: `make_track()` requires a tokio runtime because `Resource::from_reader()`
     // internally calls `tokio::spawn()` to forward audio events. All tests using
-    // this helper must use `#[tokio::test]`.
+    // this helper must use `#[kithara::test(tokio)]`.
     fn make_track() -> PlayerTrack {
         let src: Arc<str> = Arc::from("test.mp3");
         let resource = Resource::from_reader(TestPcmReader::new(mock_spec(), 60.0));
@@ -390,13 +405,12 @@ mod tests {
         PlayerTrack::new(arc_resource, src, 1.0, sample_rate, FadeCurve::SquareRoot)
     }
 
-    #[rstest]
+    #[kithara::test(tokio)]
     #[case(TrackStateScenario::StartPreloading, TrackState::Preloading)]
     #[case(TrackStateScenario::FadeIn, TrackState::FadingIn)]
     #[case(TrackStateScenario::FadeOutAfterPlay, TrackState::FadingOut)]
     #[case(TrackStateScenario::Play, TrackState::Playing)]
     #[case(TrackStateScenario::StopAfterPlay, TrackState::Finished)]
-    #[tokio::test]
     async fn track_state_transitions(
         #[case] scenario: TrackStateScenario,
         #[case] expected_state: TrackState,
@@ -418,7 +432,7 @@ mod tests {
         assert_eq!(track.state(), expected_state);
     }
 
-    #[test]
+    #[kithara::test]
     fn track_state_is_playing() {
         assert!(TrackState::Playing.is_playing());
         assert!(TrackState::FadingIn.is_playing());
@@ -428,7 +442,7 @@ mod tests {
         assert!(!TrackState::Finished.is_playing());
     }
 
-    #[test]
+    #[kithara::test]
     fn track_state_is_leading() {
         assert!(TrackState::Playing.is_leading());
         assert!(TrackState::FadingIn.is_leading());
@@ -438,16 +452,16 @@ mod tests {
         assert!(!TrackState::Finished.is_leading());
     }
 
-    #[tokio::test]
+    #[kithara::test(tokio)]
     async fn track_src_returns_identifier() {
         let track = make_track();
         assert_eq!(&**track.src(), "test.mp3");
     }
 
-    #[tokio::test]
+    #[kithara::test(tokio)]
     async fn track_initial_position_and_duration() {
         let track = make_track();
         assert_eq!(track.position(), 0.0);
-        assert_eq!(track.duration(), 0.0);
+        assert!((track.duration() - 60.0).abs() < f64::EPSILON);
     }
 }

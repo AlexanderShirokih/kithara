@@ -1,7 +1,7 @@
 pub mod config;
 pub(crate) mod crossfade;
-pub(crate) mod effect_bridge;
 pub mod engine;
+pub(crate) mod master_eq_node;
 pub mod player;
 pub(crate) mod player_node;
 pub(crate) mod player_notification;
@@ -11,6 +11,7 @@ pub(crate) mod player_track;
 pub mod resource;
 #[cfg(feature = "rodio")]
 mod rodio_impl;
+pub(crate) mod session_engine;
 pub(crate) mod shared_eq;
 pub(crate) mod shared_player_state;
 pub mod source_type;

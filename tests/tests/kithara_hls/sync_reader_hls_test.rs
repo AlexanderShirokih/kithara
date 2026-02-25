@@ -16,17 +16,13 @@ use kithara::{
     hls::{AbrMode, AbrOptions, Hls, HlsConfig},
     stream::Stream,
 };
-use kithara_test_utils::temp_dir;
-use rstest::rstest;
-use tempfile::TempDir;
+use kithara_test_utils::{TestTempDir, temp_dir};
 use tokio_util::sync::CancellationToken;
 
 use super::fixture::abr::{AbrTestServer, master_playlist};
 
-#[rstest]
-#[timeout(Duration::from_secs(30))]
-#[tokio::test]
-async fn test_sync_reader_reads_all_bytes_from_hls(temp_dir: TempDir) {
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(30)))]
+async fn test_sync_reader_reads_all_bytes_from_hls(temp_dir: TestTempDir) {
     // Create HLS server with 3 segments per variant
     let server = AbrTestServer::new(
         master_playlist(256_000, 512_000, 1_024_000),
@@ -58,7 +54,7 @@ async fn test_sync_reader_reads_all_bytes_from_hls(temp_dir: TempDir) {
     let mut read_buf = vec![0u8; 64 * 1024];
     let mut total_reads = 0;
 
-    let result = tokio::task::spawn_blocking(move || {
+    let result = kithara_platform::spawn_blocking(move || {
         loop {
             match stream.read(&mut read_buf) {
                 Ok(0) => {

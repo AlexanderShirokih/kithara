@@ -1,5 +1,21 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::ignored_unit_patterns))]
+#![allow(
+    dead_code,
+    reason = "internal HLS orchestration types are consumed via integration tests and `internal` feature"
+)]
+#![allow(
+    unreachable_pub,
+    reason = "public visibility is used for `internal` re-exports without widening stable API"
+)]
+#![allow(
+    unused_imports,
+    reason = "imports differ between feature combinations and test wiring"
+)]
+#![allow(
+    unfulfilled_lint_expectations,
+    reason = "some expect attributes only trigger under specific feature sets"
+)]
 
 //! HLS (HTTP Live Streaming) VOD implementation.
 //!
@@ -23,22 +39,16 @@
 pub mod config;
 pub mod error;
 
-// Internal modules (exposed for testing, use with caution)
-#[doc(hidden)]
-pub mod fetch;
-#[doc(hidden)]
-pub mod keys;
-#[doc(hidden)]
-pub mod parsing;
-
-// Re-export from kithara-assets
-#[doc(hidden)]
-pub use kithara_assets::AssetsBackend;
+#[cfg(feature = "internal")]
+pub mod internal;
 
 mod context;
 pub(crate) mod download_state;
 mod downloader;
+mod fetch;
 mod inner;
+mod keys;
+mod parsing;
 pub(crate) mod playlist;
 mod source;
 

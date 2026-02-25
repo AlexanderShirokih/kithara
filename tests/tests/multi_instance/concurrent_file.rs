@@ -3,6 +3,7 @@
 //! Verifies that 2, 4, and 8 `Audio<Stream<File>>` instances can run
 //! concurrently on a shared `ThreadPool` and each reads PCM data to EOF.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 use kithara::{
@@ -12,8 +13,7 @@ use kithara::{
     platform::ThreadPool,
     stream::Stream,
 };
-use rstest::rstest;
-use tempfile::TempDir;
+use kithara_test_utils::TestTempDir;
 use tracing::info;
 
 use crate::kithara_decode::fixture::AudioTestServer;
@@ -79,9 +79,7 @@ fn assert_consistent_counts(results: &[(usize, u64)]) {
 ///
 /// Each Audio instance uses 2 pool threads (downloader + audio_loop),
 /// so pool size must be >= 2 * N to avoid starvation.
-#[rstest]
-#[timeout(Duration::from_secs(120))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[kithara::test(tokio, timeout(Duration::from_secs(120)))]
 async fn two_file_instances() {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
@@ -94,10 +92,10 @@ async fn two_file_instances() {
     let mut handles = Vec::new();
     let mut temps = Vec::new();
     for i in 0..2 {
-        let temp = TempDir::new().expect("temp dir");
+        let temp = TestTempDir::new();
         let audio = create_file_audio(server.mp3_url(), temp.path(), &pool).await;
         temps.push(temp);
-        handles.push(tokio::task::spawn_blocking(move || {
+        handles.push(kithara_platform::spawn_blocking(move || {
             let mut audio = audio;
             let total = read_to_eof(&mut audio);
             info!(instance = i, total_samples = total, "instance finished");
@@ -119,9 +117,7 @@ async fn two_file_instances() {
 }
 
 /// 4 concurrent File instances on a shared pool.
-#[rstest]
-#[timeout(Duration::from_secs(120))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[kithara::test(tokio, timeout(Duration::from_secs(120)))]
 async fn four_file_instances() {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
@@ -134,10 +130,10 @@ async fn four_file_instances() {
     let mut handles = Vec::new();
     let mut temps = Vec::new();
     for i in 0..4 {
-        let temp = TempDir::new().expect("temp dir");
+        let temp = TestTempDir::new();
         let audio = create_file_audio(server.mp3_url(), temp.path(), &pool).await;
         temps.push(temp);
-        handles.push(tokio::task::spawn_blocking(move || {
+        handles.push(kithara_platform::spawn_blocking(move || {
             let mut audio = audio;
             let total = read_to_eof(&mut audio);
             info!(instance = i, total_samples = total, "instance finished");
@@ -159,9 +155,7 @@ async fn four_file_instances() {
 }
 
 /// 8 concurrent File instances on a shared pool.
-#[rstest]
-#[timeout(Duration::from_secs(180))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[kithara::test(tokio, timeout(Duration::from_secs(180)))]
 async fn eight_file_instances() {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
@@ -174,10 +168,10 @@ async fn eight_file_instances() {
     let mut handles = Vec::new();
     let mut temps = Vec::new();
     for i in 0..8 {
-        let temp = TempDir::new().expect("temp dir");
+        let temp = TestTempDir::new();
         let audio = create_file_audio(server.mp3_url(), temp.path(), &pool).await;
         temps.push(temp);
-        handles.push(tokio::task::spawn_blocking(move || {
+        handles.push(kithara_platform::spawn_blocking(move || {
             let mut audio = audio;
             let total = read_to_eof(&mut audio);
             info!(instance = i, total_samples = total, "instance finished");

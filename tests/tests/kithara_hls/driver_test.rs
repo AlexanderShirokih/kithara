@@ -15,9 +15,7 @@ use kithara::{
     hls::{AbrMode, AbrOptions, Hls, HlsConfig},
     stream::Stream,
 };
-use kithara_test_utils::{cancel_token, temp_dir, tracing_setup};
-use rstest::rstest;
-use tempfile::TempDir;
+use kithara_test_utils::{TestTempDir, cancel_token, temp_dir, tracing_setup};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -35,12 +33,10 @@ use super::fixture::{
 /// 4. Verify segment 1 data is readable
 ///
 /// EXPECTED: seek is processed, segment data is read correctly
-#[rstest]
-#[timeout(Duration::from_secs(10))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(10)))]
 async fn test_driver_seek_after_playlist_finished(
     _tracing_setup: (),
-    temp_dir: TempDir,
+    temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) {
     let server = TestServer::new().await;
@@ -56,7 +52,7 @@ async fn test_driver_seek_after_playlist_finished(
 
     let mut stream = Stream::<Hls>::new(config).await.unwrap();
 
-    tokio::task::spawn_blocking(move || {
+    kithara_platform::spawn_blocking(move || {
         // Read ALL data until EOF
         let mut all_data = Vec::new();
         let mut buf = [0u8; 64 * 1024];
@@ -102,12 +98,10 @@ async fn test_driver_seek_after_playlist_finished(
 ///
 /// This tests seek backward at the Stream<Hls> level with ABR active,
 /// without the full decoder chain.
-#[rstest]
-#[timeout(Duration::from_secs(30))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(30)))]
 async fn test_driver_abr_seek_backward(
     _tracing_setup: (),
-    temp_dir: TempDir,
+    temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) {
     let server = AbrTestServer::new(
@@ -163,7 +157,7 @@ async fn test_driver_abr_seek_backward(
     // Give ABR time to start downloading
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    tokio::task::spawn_blocking(move || {
+    kithara_platform::spawn_blocking(move || {
         // Read some data forward
         let mut first_read = vec![0u8; 50_000];
         let n1 = stream.read(&mut first_read).unwrap();

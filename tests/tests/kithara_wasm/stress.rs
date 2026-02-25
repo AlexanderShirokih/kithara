@@ -4,25 +4,29 @@
 //! Requires the HLS fixture server to be running (see `scripts/ci/wasm-test.sh`).
 
 use std::{
+    future::Future,
     sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
+use futures::future::{Either, select};
 use kithara_assets::StoreOptions;
 use kithara_audio::{Audio, AudioConfig};
-use kithara_events::EventBus;
+use kithara_events::{AudioEvent, Event, EventBus, SeekLifecycleStage};
 use kithara_hls::{AbrMode, AbrOptions, Hls, HlsConfig};
 use kithara_platform::ThreadPool;
 use kithara_stream::{AudioCodec, ContainerFormat, MediaInfo, Stream};
 use tracing::{info, warn};
 use url::Url;
 use wasm_bindgen_futures::JsFuture;
-use wasm_bindgen_test::*;
 
-wasm_bindgen_test_configure!(run_in_dedicated_worker);
+mod kithara {
+    pub(crate) use kithara_test_macros::test;
+}
 
 /// Number of rayon worker threads for the thread pool.
 const THREAD_COUNT: usize = 2;
+const EVENT_BUS_CAPACITY: usize = 4096;
 
 /// Guard: `init_thread_pool` panics if called twice in the same page.
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -31,6 +35,12 @@ static INITIALIZED: AtomicBool = AtomicBool::new(false);
 fn fixture_url() -> Url {
     let url_str = option_env!("HLS_TEST_URL").unwrap_or("http://127.0.0.1:3333/master.m3u8");
     url_str.parse().unwrap()
+}
+
+fn fixture_jitter_url() -> Url {
+    let mut url = fixture_url();
+    url.set_path("/master-jitter.m3u8");
+    url
 }
 
 /// Minimal xorshift64 PRNG for deterministic seek positions.
@@ -77,10 +87,14 @@ async fn init() {
 
 /// Create an `Audio<Stream<Hls>>` pipeline in ephemeral mode.
 async fn create_pipeline() -> Audio<Stream<Hls>> {
-    let pool = ThreadPool::global();
-    let bus = EventBus::new(128);
+    create_pipeline_with_url(fixture_url()).await
+}
 
-    let hls_config = HlsConfig::new(fixture_url())
+async fn create_pipeline_with_url(url: Url) -> Audio<Stream<Hls>> {
+    let pool = ThreadPool::global();
+    let bus = EventBus::new(EVENT_BUS_CAPACITY);
+
+    let hls_config = HlsConfig::new(url)
         .with_thread_pool(pool)
         .with_events(bus)
         .with_store(StoreOptions::default().with_ephemeral(true))
@@ -94,6 +108,116 @@ async fn create_pipeline() -> Audio<Stream<Hls>> {
     let mut audio = Audio::<Stream<Hls>>::new(config).await.unwrap();
     audio.preload();
     audio
+}
+
+async fn run_seek_pcm_window_check(mut audio: Audio<Stream<Hls>>) {
+    let spec = audio.spec();
+    let channels = spec.channels as usize;
+    let sample_rate = spec.sample_rate as usize;
+    let mut buf = vec![0.0f32; 4096];
+
+    // Warmup.
+    let mut warmup = 0usize;
+    for _ in 0..20 {
+        let n = read_with_yield(&mut audio, &mut buf).await;
+        if n == 0 {
+            break;
+        }
+        warmup += n;
+    }
+    assert!(warmup > 0, "warmup must read some data");
+
+    // Seek to middle and read ~5s.
+    let duration_secs = audio
+        .duration()
+        .unwrap_or(Duration::from_secs(60))
+        .as_secs_f64();
+    let middle_secs = (duration_secs * 0.5).clamp(3.0, (duration_secs - 1.0).max(3.0));
+    audio
+        .seek(Duration::from_secs_f64(middle_secs))
+        .expect("seek to middle must succeed");
+
+    let mut played_frames = 0usize;
+    let target_frames = sample_rate * 5;
+    for _ in 0..600 {
+        let n = read_with_yield_limit(&mut audio, &mut buf, 50).await;
+        if n == 0 {
+            if audio.is_eof() {
+                break;
+            }
+            continue;
+        }
+        played_frames += n / channels;
+        if played_frames >= target_frames {
+            break;
+        }
+    }
+    assert!(
+        played_frames >= sample_rate * 3,
+        "expected at least ~3s playback before near-start seek"
+    );
+
+    // Seek near start and inspect early PCM window.
+    let near_start = Duration::from_secs_f64(0.2);
+    audio
+        .seek(near_start)
+        .expect("seek near start must succeed");
+
+    let inspect_frames = (sample_rate * 35) / 100; // ~350ms
+    let mut inspected = 0usize;
+    let mut discontinuities = 0usize;
+    let mut backward_jumps = 0usize;
+    let mut first_bad: Option<(usize, usize, usize)> = None;
+    let mut prev_phase: Option<usize> = None;
+
+    for _ in 0..400 {
+        let n = read_with_yield_limit(&mut audio, &mut buf, 100).await;
+        if n == 0 {
+            if audio.is_eof() {
+                break;
+            }
+            continue;
+        }
+
+        let frames = n / channels;
+        for f in 0..frames {
+            if inspected >= inspect_frames {
+                break;
+            }
+            let phase = phase_from_f32(buf[f * channels]);
+            if let Some(prev) = prev_phase {
+                let expected = (prev + 1) % SAW_PERIOD;
+                if phase != expected {
+                    discontinuities += 1;
+                    if phase < prev {
+                        backward_jumps += 1;
+                    }
+                    if first_bad.is_none() {
+                        first_bad = Some((prev, phase, expected));
+                    }
+                }
+            }
+            prev_phase = Some(phase);
+            inspected += 1;
+        }
+
+        if inspected >= inspect_frames {
+            break;
+        }
+    }
+
+    assert!(
+        inspected >= inspect_frames,
+        "inspected too few frames after seek: {inspected}/{inspect_frames}"
+    );
+    assert_eq!(
+        discontinuities, 0,
+        "discontinuities in early PCM window after seek: {discontinuities}, first_bad={first_bad:?}"
+    );
+    assert_eq!(
+        backward_jumps, 0,
+        "backward jumps in early PCM window after seek: {backward_jumps}, first_bad={first_bad:?}"
+    );
 }
 
 /// Non-blocking read that yields to the event loop between attempts.
@@ -129,6 +253,19 @@ async fn read_with_yield_limit(
 /// Yield to event loop so async I/O and Web Workers can progress.
 async fn yield_ms(ms: u32) {
     gloo_timers::future::TimeoutFuture::new(ms).await;
+}
+
+async fn assert_settles<F, T>(op_future: F, timeout_ms: u32, op: &str) -> T
+where
+    F: Future<Output = T>,
+{
+    let timeout_future = gloo_timers::future::TimeoutFuture::new(timeout_ms);
+    match select(Box::pin(op_future), Box::pin(timeout_future)).await {
+        Either::Left((result, _)) => result,
+        Either::Right(((), _)) => {
+            panic!("{op} timed out after {timeout_ms}ms (possible browser hang)");
+        }
+    }
 }
 
 async fn create_player_with_fixture() -> Option<kithara_wasm::WasmPlayer> {
@@ -219,7 +356,7 @@ fn phase_distance(a: usize, b: usize) -> usize {
     d.min(SAW_PERIOD - d)
 }
 
-#[wasm_bindgen_test]
+#[kithara::test(wasm)]
 async fn stress_read_samples_integrity() {
     init().await;
     info!("Starting stress_read_samples_integrity");
@@ -342,7 +479,7 @@ async fn stress_read_samples_integrity() {
     );
 }
 
-#[wasm_bindgen_test]
+#[kithara::test(wasm)]
 async fn stress_seek_and_read() {
     init().await;
     info!("Starting stress_seek_and_read");
@@ -470,7 +607,7 @@ async fn stress_seek_and_read() {
 ///
 /// Verifies that after selecting an HLS track the player reports duration,
 /// advances position while playing, pauses correctly, and keeps seek behavior sane.
-#[wasm_bindgen_test]
+#[kithara::test(wasm)]
 async fn wasm_player_playlist_add_track_validation() {
     init().await;
 
@@ -491,7 +628,7 @@ async fn wasm_player_playlist_add_track_validation() {
     );
 }
 
-#[wasm_bindgen_test]
+#[kithara::test(wasm)]
 async fn wasm_player_eq_controls_roundtrip() {
     init().await;
 
@@ -535,7 +672,7 @@ async fn wasm_player_eq_controls_roundtrip() {
     assert!(reset_gain.abs() < 0.1, "eq gain must reset close to zero");
 }
 
-#[wasm_bindgen_test]
+#[kithara::test(wasm)]
 async fn wasm_player_select_track_crossfade_switch() {
     init().await;
 
@@ -578,11 +715,60 @@ async fn wasm_player_select_track_crossfade_switch() {
     }
 }
 
+#[kithara::test(wasm)]
+async fn wasm_player_play_without_loaded_track_must_not_panic_or_hang() {
+    init().await;
+
+    let mut player = kithara_wasm::WasmPlayer::new();
+    assert_eq!(player.current_index(), -1, "new player must start unloaded");
+
+    player.play();
+    yield_ms(100).await;
+    // In browser backends this may transiently report playing, but must not hang/panic.
+    let _ = player.is_playing();
+}
+
+#[kithara::test(wasm)]
+#[case(2_u32, 20_u32)]
+#[case(3_u32, 20_u32)]
+async fn wasm_player_double_play_click_must_not_hang(
+    #[case] clicks: u32,
+    #[case] _poll_iterations: u32,
+) {
+    init().await;
+
+    let Some(mut player) = create_player_with_fixture().await else {
+        warn!("double-play test: fixture track selection failed; skip strict checks");
+        return;
+    };
+
+    for click in 0..clicks {
+        assert_settles(
+            async {
+                player.play();
+            },
+            10_000,
+            if click == 0 {
+                "first play click"
+            } else if click == 1 {
+                "second play click"
+            } else {
+                "play click"
+            },
+        )
+        .await;
+        let before = player.get_position_ms();
+        if !wait_position_advance(&player, before).await {
+            warn!("double-play test: position did not advance after click {click}");
+        }
+    }
+}
+
 /// Lifecycle sanity for the browser player path (`WasmPlayer` over `kithara-play`).
 ///
 /// Verifies that after selecting an HLS track the player reports duration,
 /// advances position while playing, pauses correctly, and keeps seek behavior sane.
-#[wasm_bindgen_test]
+#[kithara::test(wasm)]
 async fn fill_buffer_position_must_not_drift() {
     init().await;
     info!("Starting fill_buffer_position_must_not_drift (new API)");
@@ -649,7 +835,7 @@ async fn fill_buffer_position_must_not_drift() {
 /// - After each seek: read_with_yield must produce >0 samples (not stuck)
 /// - All samples must be finite and in [-1.0, 1.0]
 /// - Tolerate at most 1% dead seeks (pipeline restart race)
-#[wasm_bindgen_test]
+#[kithara::test(wasm)]
 async fn stress_rapid_seeks_must_not_stall() {
     init().await;
     info!("Starting stress_rapid_seeks_must_not_stall");
@@ -810,7 +996,7 @@ async fn stress_rapid_seeks_must_not_stall() {
 /// - Reset: seek to 0
 /// - Verify: read at least 50 chunks from the beginning, all valid
 /// - Position must be near 0 after seeking, then advance monotonically
-#[wasm_bindgen_test]
+#[kithara::test(wasm)]
 async fn stress_seek_to_zero_after_pressure() {
     init().await;
     info!("Starting stress_seek_to_zero_after_pressure");
@@ -868,6 +1054,7 @@ async fn stress_seek_to_zero_after_pressure() {
     let mut position_checked = false;
     let mut continuity_errors = 0u64;
     let mut prev_last_phase: Option<usize> = None;
+    let mut stall_deadline = Instant::now() + Duration::from_secs(25);
 
     for attempt in 0..target_chunks * 20 {
         let n = read_with_yield_limit(&mut audio, &mut buf, 100).await;
@@ -876,9 +1063,9 @@ async fn stress_seek_to_zero_after_pressure() {
                 info!(chunks_from_zero, total_from_zero, "EOF reached");
                 break;
             }
-            if attempt > target_chunks * 10 {
+            if Instant::now() >= stall_deadline {
                 panic!(
-                    "STUCK after seek-to-0: read returned 0 for {attempt} attempts, \
+                    "STUCK after seek-to-0: read returned 0 for {attempt} attempts before deadline, \
                      chunks_from_zero={chunks_from_zero}, \
                      position={:.3}s",
                     audio.position().as_secs_f64()
@@ -886,6 +1073,9 @@ async fn stress_seek_to_zero_after_pressure() {
             }
             continue;
         }
+
+        // Reset stall timer on each successful post-seek chunk.
+        stall_deadline = Instant::now() + Duration::from_secs(5);
 
         chunks_from_zero += 1;
         total_from_zero += n;
@@ -966,9 +1156,291 @@ async fn stress_seek_to_zero_after_pressure() {
     );
 }
 
+/// Regression: after long playback from the middle, seek near start (but not 0)
+/// must land inside segment 0, not at segment 1 boundary.
+#[kithara::test(wasm)]
+async fn stress_seek_near_start_after_mid_playback_must_land_inside_first_segment() {
+    init().await;
+    info!("Starting stress_seek_near_start_after_mid_playback_must_land_inside_first_segment");
+
+    let mut audio = create_pipeline().await;
+    let spec = audio.spec();
+    let channels = spec.channels as usize;
+    let sample_rate = spec.sample_rate as usize;
+    let mut buf = vec![0.0f32; 4096];
+
+    let mut warmup = 0usize;
+    for _ in 0..20 {
+        let n = read_with_yield(&mut audio, &mut buf).await;
+        if n == 0 {
+            break;
+        }
+        warmup += n;
+    }
+    assert!(warmup > 0, "warmup must read some data");
+
+    let duration = audio.duration().unwrap_or(Duration::from_secs(60));
+    let duration_secs = duration.as_secs_f64();
+
+    let middle_secs = (duration_secs * 0.5).clamp(3.0, (duration_secs - 1.0).max(3.0));
+    audio
+        .seek(Duration::from_secs_f64(middle_secs))
+        .expect("seek to middle must succeed");
+
+    // Emulate "listen ~5s from middle".
+    let mut played_frames = 0usize;
+    let target_frames = sample_rate * 5;
+    for _ in 0..600 {
+        let n = read_with_yield_limit(&mut audio, &mut buf, 50).await;
+        if n == 0 {
+            if audio.is_eof() {
+                break;
+            }
+            continue;
+        }
+        played_frames += n / channels;
+        if played_frames >= target_frames {
+            break;
+        }
+    }
+    assert!(
+        played_frames >= sample_rate * 3,
+        "expected at least ~3s playback before near-start seek, got {} frames",
+        played_frames
+    );
+
+    let near_start_secs = 0.2_f64;
+    audio
+        .seek(Duration::from_secs_f64(near_start_secs))
+        .expect("seek near start must succeed");
+
+    let expected_frame = (near_start_secs * spec.sample_rate as f64).round() as usize;
+    let expected_phase = expected_frame % SAW_PERIOD;
+    let seg1_start_frames = 200_000 / (channels * 2);
+    let seg1_start_phase = seg1_start_frames % SAW_PERIOD;
+
+    let mut checked = false;
+    for _ in 0..200 {
+        let n = read_with_yield_limit(&mut audio, &mut buf, 100).await;
+        if n == 0 {
+            continue;
+        }
+        let frames = n / channels;
+        if frames == 0 {
+            continue;
+        }
+
+        let actual_phase = phase_from_f32(buf[0]);
+        let dist_expected = phase_distance(actual_phase, expected_phase);
+        let dist_seg1 = phase_distance(actual_phase, seg1_start_phase);
+
+        info!(
+            near_start_secs,
+            expected_phase,
+            actual_phase,
+            dist_expected,
+            seg1_start_phase,
+            dist_seg1,
+            "phase after middle->near-start seek"
+        );
+
+        assert!(
+            dist_expected <= 1200,
+            "near-start seek landed in wrong place: \
+             expected_phase={expected_phase}, actual_phase={actual_phase}, dist={dist_expected}"
+        );
+        assert!(
+            dist_seg1 > 3000,
+            "near-start seek suspiciously close to segment-1 boundary: \
+             actual_phase={actual_phase}, seg1_phase={seg1_start_phase}, dist={dist_seg1}"
+        );
+
+        checked = true;
+        break;
+    }
+
+    assert!(
+        checked,
+        "failed to decode samples after near-start seek following middle playback"
+    );
+}
+
+/// Event-level regression guard for seek behavior in browser path:
+/// one seek command should produce one seek-complete, and playback progress
+/// after that seek should advance without extra backward resets.
+#[kithara::test(wasm)]
+async fn stress_seek_events_single_reset_and_monotonic_progress() {
+    init().await;
+    info!("Starting stress_seek_events_single_reset_and_monotonic_progress");
+
+    let mut audio = create_pipeline().await;
+    let mut events_rx = audio.events();
+    let spec = audio.spec();
+    let channels = spec.channels as usize;
+    let mut buf = vec![0.0f32; 4096];
+
+    // Warmup.
+    let mut warmup = 0usize;
+    for _ in 0..20 {
+        let n = read_with_yield(&mut audio, &mut buf).await;
+        if n == 0 {
+            break;
+        }
+        warmup += n;
+    }
+    assert!(warmup > 0, "warmup must read some data");
+
+    // Drain old events before seek scenario.
+    while events_rx.try_recv().is_ok() {}
+
+    // Seek to middle and "play" a few seconds first.
+    let duration_secs = audio
+        .duration()
+        .unwrap_or(Duration::from_secs(60))
+        .as_secs_f64();
+    let middle_secs = (duration_secs * 0.5).clamp(3.0, (duration_secs - 1.0).max(3.0));
+    audio
+        .seek(Duration::from_secs_f64(middle_secs))
+        .expect("seek to middle must succeed");
+
+    let mut played_frames = 0usize;
+    let target_frames = spec.sample_rate as usize * 5;
+    for _ in 0..600 {
+        let n = read_with_yield_limit(&mut audio, &mut buf, 50).await;
+        if n == 0 {
+            if audio.is_eof() {
+                break;
+            }
+            continue;
+        }
+        played_frames += n / channels;
+        if played_frames >= target_frames {
+            break;
+        }
+    }
+    assert!(
+        played_frames >= spec.sample_rate as usize * 3,
+        "expected at least ~3s playback before test seek"
+    );
+
+    // Drain events again to isolate one seek window.
+    while events_rx.try_recv().is_ok() {}
+
+    let near_start_secs = 0.2_f64;
+    let near_start = Duration::from_secs_f64(near_start_secs);
+    audio
+        .seek(near_start)
+        .expect("seek near start must succeed");
+
+    let mut target_seek_epoch = None;
+    let mut seek_complete_for_target = 0usize;
+    let mut seek_complete_seen = false;
+    let mut playback_positions = Vec::with_capacity(64);
+
+    for _ in 0..300 {
+        let _ = read_with_yield_limit(&mut audio, &mut buf, 50).await;
+
+        loop {
+            match events_rx.try_recv() {
+                Ok(Event::Audio(AudioEvent::SeekLifecycle {
+                    stage: SeekLifecycleStage::SeekRequest,
+                    seek_epoch,
+                    ..
+                })) => {
+                    target_seek_epoch = Some(seek_epoch);
+                }
+                Ok(Event::Audio(AudioEvent::SeekComplete { seek_epoch, .. })) => {
+                    if target_seek_epoch == Some(seek_epoch) {
+                        seek_complete_for_target += 1;
+                        seek_complete_seen = true;
+                        // Keep only post-seek-complete playback progress.
+                        playback_positions.clear();
+                    }
+                }
+                Ok(Event::Audio(AudioEvent::PlaybackProgress {
+                    position_ms,
+                    seek_epoch,
+                    ..
+                })) => {
+                    if seek_complete_seen && target_seek_epoch == Some(seek_epoch) {
+                        playback_positions.push(position_ms);
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    break;
+                }
+            }
+        }
+
+        if seek_complete_seen && playback_positions.len() >= 12 {
+            break;
+        }
+    }
+
+    assert!(
+        target_seek_epoch.is_some(),
+        "no AudioEvent::SeekLifecycle::SeekRequest for target seek"
+    );
+    assert!(
+        seek_complete_for_target >= 1,
+        "no AudioEvent::SeekComplete for target seek"
+    );
+    assert_eq!(
+        seek_complete_for_target, 1,
+        "single seek produced multiple seek-complete events for same target"
+    );
+    assert!(
+        playback_positions.len() >= 8,
+        "insufficient PlaybackProgress events after seek: {}",
+        playback_positions.len()
+    );
+
+    let mut regressions = 0usize;
+    let mut prev = None;
+    for pos in playback_positions {
+        if let Some(prev_pos) = prev
+            && pos < prev_pos
+        {
+            regressions += 1;
+        }
+        prev = Some(pos);
+    }
+
+    assert_eq!(
+        regressions, 0,
+        "PlaybackProgress moved backward {regressions} times after a single seek"
+    );
+}
+
+/// PCM-level regression guard for audible "micro-loop" after seek.
+///
+/// Scenario:
+/// - Seek to middle, read ~5s
+/// - Seek near start (non-zero)
+/// - Inspect the first ~350ms of decoded PCM after seek
+///
+/// For the deterministic saw-tooth fixture, this early window must be strictly
+/// contiguous frame-by-frame (no tiny backward jumps / repeated fragments).
+#[kithara::test(wasm)]
+async fn stress_seek_pcm_window_after_seek_must_not_loop_fragment() {
+    init().await;
+    info!("Starting stress_seek_pcm_window_after_seek_must_not_loop_fragment");
+
+    run_seek_pcm_window_check(create_pipeline().await).await;
+}
+
+#[kithara::test(wasm)]
+async fn stress_seek_pcm_window_after_seek_must_not_loop_fragment_jitter() {
+    init().await;
+    info!("Starting stress_seek_pcm_window_after_seek_must_not_loop_fragment_jitter");
+
+    run_seek_pcm_window_check(create_pipeline_with_url(fixture_jitter_url()).await).await;
+}
+
 /// Full `WasmPlayer` lifecycle under pressure: play → rapid seeks → pause →
 /// seek to 0 → play → verify position flow.
-#[wasm_bindgen_test]
+#[kithara::test(wasm)]
 async fn stress_player_lifecycle_seek_pressure() {
     init().await;
     info!("Starting stress_player_lifecycle_seek_pressure");

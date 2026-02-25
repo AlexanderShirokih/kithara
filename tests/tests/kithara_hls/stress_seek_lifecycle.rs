@@ -22,9 +22,8 @@ use kithara::{
     hls::{AbrMode, AbrOptions, Hls, HlsConfig},
     stream::{AudioCodec, ContainerFormat, MediaInfo, Stream},
 };
-use kithara_test_utils::Xorshift64;
-use rstest::rstest;
-use tempfile::TempDir;
+use kithara_platform::time::Instant;
+use kithara_test_utils::{TestTempDir, Xorshift64, fixture_protocol::DelayRule};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -150,18 +149,16 @@ fn read_with_retry(audio: &mut Audio<Stream<Hls>>, buf: &mut [f32]) -> (usize, u
         if audio.is_eof() {
             return (0, retry);
         }
-        std::thread::sleep(Duration::from_millis(1));
+        kithara_platform::thread::sleep(Duration::from_millis(1));
     }
     (0, MAX_ZERO_READS)
 }
 
 /// Aggressive lifecycle stress test with 3 ABR variants, 2000 seeks,
 /// and full-track integrity verification after seek-to-zero.
-#[rstest]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(300)))]
 #[case::ephemeral(true)]
 #[case::mmap(false)]
-#[timeout(Duration::from_secs(300))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stress_seek_lifecycle_with_zero_reset(#[case] ephemeral: bool) {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
@@ -204,13 +201,12 @@ async fn stress_seek_lifecycle_with_zero_reset(#[case] ephemeral: bool) {
             Arc::clone(&init_segment),
         ]),
         variant_bandwidths: Some(vec![5_000_000, 1_000_000, 500_000]),
-        segment_delay: Some(Arc::new(|variant, segment| {
-            if variant == 0 && segment >= 3 {
-                Duration::from_millis(500)
-            } else {
-                Duration::ZERO
-            }
-        })),
+        delay_rules: vec![DelayRule {
+            variant: Some(0),
+            segment_gte: Some(3),
+            delay_ms: 500,
+            ..Default::default()
+        }],
         ..Default::default()
     })
     .await;
@@ -218,7 +214,7 @@ async fn stress_seek_lifecycle_with_zero_reset(#[case] ephemeral: bool) {
     let url = server.url("/master.m3u8").expect("url");
     info!(%url, "HLS server ready");
 
-    let temp_dir = TempDir::new().expect("temp dir");
+    let temp_dir = TestTempDir::new();
     let cancel = CancellationToken::new();
 
     let mut store = StoreOptions::new(temp_dir.path());
@@ -253,7 +249,7 @@ async fn stress_seek_lifecycle_with_zero_reset(#[case] ephemeral: bool) {
         "Audio pipeline created"
     );
 
-    let result = tokio::task::spawn_blocking(move || {
+    let result = kithara_platform::spawn_blocking(move || {
         let channels = spec.channels as usize;
         let chunk_samples = (0.05 * spec.sample_rate as f64 * channels as f64) as usize;
         let mut buf = vec![0.0f32; chunk_samples];
@@ -263,9 +259,9 @@ async fn stress_seek_lifecycle_with_zero_reset(#[case] ephemeral: bool) {
         info!("Phase 1: warmup — reading until ABR switch");
         let mut initial_direction = Direction::Unknown;
         let mut switch_detected = false;
-        let warmup_deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let warmup_deadline = Instant::now() + Duration::from_secs(60);
 
-        while std::time::Instant::now() < warmup_deadline {
+        while Instant::now() < warmup_deadline {
             let (n, _) = read_with_retry(&mut audio, &mut buf);
             if n == 0 {
                 break;
@@ -540,7 +536,6 @@ async fn stress_seek_lifecycle_with_zero_reset(#[case] ephemeral: bool) {
 
     match result {
         Ok(()) => info!("Lifecycle stress test passed"),
-        Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
         Err(e) => panic!("spawn_blocking failed: {e}"),
     }
 }

@@ -3,7 +3,9 @@
 //! Verifies that File and HLS `Audio` instances can coexist on the
 //! same shared `ThreadPool` and all read PCM data to EOF.
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
 
 use kithara::{
     assets::StoreOptions,
@@ -13,9 +15,7 @@ use kithara::{
     platform::ThreadPool,
     stream::{AudioCodec, ContainerFormat, MediaInfo, Stream},
 };
-use kithara_test_utils::wav::create_test_wav;
-use rstest::rstest;
-use tempfile::TempDir;
+use kithara_test_utils::{TestTempDir, wav::create_test_wav};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -82,9 +82,7 @@ fn generate_wav_data() -> Arc<Vec<u8>> {
 }
 
 /// 2 File + 2 HLS instances on a shared pool.
-#[rstest]
-#[timeout(Duration::from_secs(120))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[kithara::test(tokio, timeout(Duration::from_secs(120)))]
 async fn mixed_two_file_two_hls() {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
@@ -98,14 +96,14 @@ async fn mixed_two_file_two_hls() {
 
     let segment_duration = SEGMENT_SIZE as f64 / (SAMPLE_RATE as f64 * CHANNELS as f64 * 2.0);
 
-    let mut handles: Vec<tokio::task::JoinHandle<InstanceResult>> = Vec::new();
+    let mut handles: Vec<kithara_platform::BlockingHandle<InstanceResult>> = Vec::new();
     let mut temps = Vec::new();
     let mut servers = Vec::new();
 
     // Spawn 2 File instances
     for i in 0..2 {
         let url = file_server.mp3_url();
-        let temp = TempDir::new().expect("temp dir");
+        let temp = TestTempDir::new();
         let pool = pool.clone();
 
         let file_config = FileConfig::new(url.into())
@@ -120,7 +118,7 @@ async fn mixed_two_file_two_hls() {
             .expect("create File audio");
 
         temps.push(temp);
-        handles.push(tokio::task::spawn_blocking(move || {
+        handles.push(kithara_platform::spawn_blocking(move || {
             let total = read_file_to_eof(&mut audio);
             info!(instance = i, kind = "file", total_samples = total, "done");
             InstanceResult {
@@ -143,7 +141,7 @@ async fn mixed_two_file_two_hls() {
         .await;
 
         let url = server.url("/master.m3u8").expect("url");
-        let temp = TempDir::new().expect("temp dir");
+        let temp = TestTempDir::new();
         let cancel = CancellationToken::new();
 
         let hls_config = HlsConfig::new(url)
@@ -166,7 +164,7 @@ async fn mixed_two_file_two_hls() {
 
         temps.push(temp);
         servers.push(server);
-        handles.push(tokio::task::spawn_blocking(move || {
+        handles.push(kithara_platform::spawn_blocking(move || {
             let total = read_hls_to_eof(&mut audio);
             info!(instance = i, kind = "hls", total_samples = total, "done");
             InstanceResult {
@@ -196,9 +194,7 @@ async fn mixed_two_file_two_hls() {
 }
 
 /// 4 File + 4 HLS instances (8 total) on a shared pool.
-#[rstest]
-#[timeout(Duration::from_secs(180))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[kithara::test(tokio, timeout(Duration::from_secs(180)))]
 async fn mixed_four_file_four_hls() {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
@@ -212,14 +208,14 @@ async fn mixed_four_file_four_hls() {
 
     let segment_duration = SEGMENT_SIZE as f64 / (SAMPLE_RATE as f64 * CHANNELS as f64 * 2.0);
 
-    let mut handles: Vec<tokio::task::JoinHandle<InstanceResult>> = Vec::new();
+    let mut handles: Vec<kithara_platform::BlockingHandle<InstanceResult>> = Vec::new();
     let mut temps = Vec::new();
     let mut servers = Vec::new();
 
     // Spawn 4 File instances
     for i in 0..4 {
         let url = file_server.mp3_url();
-        let temp = TempDir::new().expect("temp dir");
+        let temp = TestTempDir::new();
         let pool = pool.clone();
 
         let file_config = FileConfig::new(url.into())
@@ -234,7 +230,7 @@ async fn mixed_four_file_four_hls() {
             .expect("create File audio");
 
         temps.push(temp);
-        handles.push(tokio::task::spawn_blocking(move || {
+        handles.push(kithara_platform::spawn_blocking(move || {
             let total = read_file_to_eof(&mut audio);
             info!(instance = i, kind = "file", total_samples = total, "done");
             InstanceResult {
@@ -257,7 +253,7 @@ async fn mixed_four_file_four_hls() {
         .await;
 
         let url = server.url("/master.m3u8").expect("url");
-        let temp = TempDir::new().expect("temp dir");
+        let temp = TestTempDir::new();
         let cancel = CancellationToken::new();
 
         let hls_config = HlsConfig::new(url)
@@ -280,7 +276,7 @@ async fn mixed_four_file_four_hls() {
 
         temps.push(temp);
         servers.push(server);
-        handles.push(tokio::task::spawn_blocking(move || {
+        handles.push(kithara_platform::spawn_blocking(move || {
             let total = read_hls_to_eof(&mut audio);
             info!(instance = i, kind = "hls", total_samples = total, "done");
             InstanceResult {

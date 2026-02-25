@@ -3,7 +3,7 @@
 //! Uses production HLS stream (requires network).
 //! Expected: FAILS — seek after ABR switch causes deadlock or audio death.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use kithara::{
     assets::StoreOptions,
@@ -11,9 +11,8 @@ use kithara::{
     hls::{AbrMode, AbrOptions, Hls, HlsConfig},
     stream::Stream,
 };
-use kithara_test_utils::temp_dir;
-use rstest::rstest;
-use tempfile::TempDir;
+use kithara_platform::time::Instant;
+use kithara_test_utils::{TestTempDir, temp_dir};
 use tracing::info;
 
 const HLS_URL: &str = "https://stream.silvercomet.top/hls/master.m3u8";
@@ -23,11 +22,14 @@ const HLS_URL: &str = "https://stream.silvercomet.top/hls/master.m3u8";
 /// Reproduces production bug: after ABR switch (V0 AAC → V3 FLAC),
 /// seek causes deadlock because `detect_format_change` picks wrong
 /// segment offset → decoder created at wrong position → "missing ftyp atom".
-#[rstest]
-#[timeout(Duration::from_secs(60))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires network — production HLS stream"]
-async fn stress_seek_during_abr_switch_real_decoder(temp_dir: TempDir) {
+#[kithara::test(
+    tokio,
+    browser,
+    timeout(Duration::from_secs(60)),
+    env(NO_PROXY = "stream.silvercomet.top"),
+    soft_fail("connection", "timeout", "refused", "resolve", "dns", "network")
+)]
+async fn stress_seek_during_abr_switch_real_decoder(temp_dir: TestTempDir) {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
         .with_max_level(tracing::Level::DEBUG)
@@ -70,7 +72,7 @@ async fn stress_seek_during_abr_switch_real_decoder(temp_dir: TempDir) {
 
     // Phase 1: Warmup — read PCM for ~10s to let ABR switch happen
     // Phase 2: 20s rapid seeking
-    let result = tokio::task::spawn_blocking(move || {
+    let result = kithara_platform::spawn_blocking(move || {
         let mut buf = vec![0f32; 4096];
         let start = Instant::now();
 
@@ -128,7 +130,7 @@ async fn stress_seek_during_abr_switch_real_decoder(temp_dir: TempDir) {
             }
 
             // Small pause between seeks (simulate real user interaction)
-            std::thread::sleep(Duration::from_millis(50));
+            kithara_platform::thread::sleep(Duration::from_millis(50));
         }
 
         info!(
@@ -165,7 +167,75 @@ async fn stress_seek_during_abr_switch_real_decoder(temp_dir: TempDir) {
 
     match result {
         Ok(()) => info!("Test passed"),
-        Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
-        Err(e) => panic!("spawn_blocking failed: {}", e),
+        Err(e) => panic!("spawn_blocking failed: {e}"),
+    }
+}
+
+/// Repro test for production issue: repeated seeks on the exact stream.
+///
+/// Uses seek positions observed in logs and asserts that each seek
+/// still yields PCM samples (audio must stay alive).
+#[kithara::test(
+    tokio,
+    browser,
+    timeout(Duration::from_secs(60)),
+    env(NO_PROXY = "stream.silvercomet.top"),
+    soft_fail("connection", "timeout", "refused", "resolve", "dns", "network")
+)]
+async fn seek_sequence_from_log_real_stream(temp_dir: TestTempDir) {
+    let _ = tracing_subscriber::fmt()
+        .with_test_writer()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| {
+            "kithara_audio=debug,kithara_hls=debug,kithara_decode=debug".to_string()
+        }))
+        .try_init();
+
+    let url: url::Url = HLS_URL.parse().expect("valid URL");
+    let hls_config = HlsConfig::new(url)
+        .with_store(StoreOptions::new(temp_dir.path()))
+        .with_abr(AbrOptions {
+            mode: AbrMode::Auto(Some(0)),
+            ..Default::default()
+        });
+    let config = AudioConfig::<Hls>::new(hls_config);
+    let mut audio = Audio::<Stream<Hls>>::new(config)
+        .await
+        .expect("audio creation");
+
+    let result = kithara_platform::spawn_blocking(move || {
+        let mut buf = vec![0f32; 4096];
+        // Warm up pipeline before seek sequence.
+        let warmup_deadline = Instant::now() + Duration::from_secs(4);
+        while Instant::now() < warmup_deadline {
+            let _ = audio.read(&mut buf);
+        }
+
+        let seeks = [7.135_147_392, 12.279_818_594, 17.778_684_807];
+        for (idx, seconds) in seeks.into_iter().enumerate() {
+            let pos = Duration::from_secs_f64(seconds);
+            audio.seek(pos).expect("seek must not fail");
+
+            let mut samples_after_seek = 0usize;
+            let read_deadline = Instant::now() + Duration::from_secs(4);
+            while Instant::now() < read_deadline && samples_after_seek < 16_384 {
+                let n = audio.read(&mut buf);
+                samples_after_seek += n;
+                if n == 0 {
+                    kithara_platform::thread::sleep(Duration::from_millis(15));
+                }
+            }
+
+            assert!(
+                samples_after_seek > 0,
+                "seek #{idx} at {seconds:.3}s produced no PCM samples"
+            );
+        }
+    })
+    .await;
+
+    match result {
+        Ok(()) => info!("seek_sequence_from_log_real_stream passed"),
+        Err(e) => panic!("spawn_blocking failed: {e}"),
     }
 }

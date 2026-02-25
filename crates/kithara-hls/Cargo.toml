@@ -13,6 +13,8 @@ workspace = true
 [dependencies]
 kithara-abr = { workspace = true }
 kithara-assets = { workspace = true }
+kithara-bufpool = { workspace = true }
+kithara-coverage = { workspace = true }
 kithara-events = { workspace = true, features = ["hls"] }
 kithara-drm = { workspace = true }
 kithara-net = { workspace = true }
@@ -30,26 +32,29 @@ tokio-util = { workspace = true }
 url = { workspace = true }
 async-stream = { workspace = true }
 tracing = { workspace = true }
-dashmap = { workspace = true }
 kithara-platform = { workspace = true }
 crossbeam-queue = { workspace = true }
 rangemap = { workspace = true }
 hotpath = { workspace = true, optional = true }
-web-time = { workspace = true }
 
 [features]
 default = []
 perf = ["dep:hotpath", "hotpath/hotpath", "kithara-net/perf"]
+internal = []
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true, features = ["full"] }
 
 [dev-dependencies]
+kithara-hls = { path = ".", default-features = false, features = ["internal"] }
 kithara-net = { workspace = true, features = ["test-utils"] }
-axum = { workspace = true }
 tempfile = { workspace = true }
-rodio = { workspace = true }
-tracing-subscriber = { workspace = true }
-rstest = { workspace = true }
+kithara-test-utils = { workspace = true }
+wasm-bindgen-test = { workspace = true }
 unimock = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+axum = { workspace = true }
+rodio = { workspace = true, features = ["playback"] }
+tracing-subscriber = { workspace = true }

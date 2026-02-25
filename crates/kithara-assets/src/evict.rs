@@ -4,10 +4,11 @@ use std::{collections::HashSet, path::Path, sync::Arc};
 
 use kithara_bufpool::BytePool;
 use kithara_platform::Mutex;
+use kithara_storage::ResourceExt;
 use tokio_util::sync::CancellationToken;
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::base::delete_asset_dir;
+use crate::disk_store::delete_asset_dir;
 use crate::{
     base::Assets,
     error::AssetsResult,
@@ -51,6 +52,12 @@ where
     pool: BytePool,
 }
 
+struct PreparedEviction<R: ResourceExt> {
+    candidates: Vec<String>,
+    lru: LruIndex<R>,
+    pinned: HashSet<String>,
+}
+
 impl<A: Assets> std::fmt::Debug for EvictAssets<A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EvictAssets")
@@ -89,6 +96,12 @@ where
         &self.inner
     }
 
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
     /// Record asset size for byte-based eviction (best-effort).
     ///
     /// # Errors
@@ -106,45 +119,27 @@ where
     }
 
     /// Check if byte limit is exceeded and run eviction if needed.
-    #[cfg_attr(feature = "internal", expect(clippy::cognitive_complexity))]
     pub fn check_and_evict_if_over_limit(&self) {
         if !self.enabled || self.cancel.is_cancelled() || self.cfg.max_bytes.is_none() {
             return;
         }
 
-        let lru = match self.open_lru() {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::debug!("Failed to open LRU index: {:?}", e);
-                return;
-            }
+        let Some(PreparedEviction {
+            candidates,
+            lru,
+            pinned,
+        }) = self.prepare_over_limit_eviction()
+        else {
+            return;
         };
 
-        let pins = match self.open_pins() {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::debug!("Failed to open pins index: {:?}", e);
-                return;
-            }
-        };
+        self.evict_candidates(&lru, &pinned, candidates);
+    }
 
-        let pinned = match pins.load() {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::debug!("Failed to load pins: {:?}", e);
-                return;
-            }
-        };
-
-        let lru_state = match lru.load() {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::debug!("Failed to load LRU state: {:?}", e);
-                return;
-            }
-        };
-
-        let total_bytes = lru_state.total_bytes_best_effort();
+    fn prepare_over_limit_eviction(&self) -> Option<PreparedEviction<A::IndexRes>> {
+        let lru = self.load_lru_for_eviction()?;
+        let pinned = self.load_pins_for_eviction()?;
+        let total_bytes = Self::load_total_bytes_for_eviction(&lru)?;
         tracing::debug!(
             total_bytes,
             max_bytes = ?self.cfg.max_bytes,
@@ -152,16 +147,66 @@ where
             "check_and_evict_if_over_limit"
         );
 
-        let candidates = match lru.eviction_candidates(&self.cfg, &pinned) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::debug!("Failed to get eviction candidates: {:?}", e);
-                return;
-            }
-        };
+        let candidates = self.load_candidates_for_eviction(&lru, &pinned)?;
 
         tracing::debug!(candidates = ?candidates, "Eviction candidates selected");
+        Some(PreparedEviction {
+            candidates,
+            lru,
+            pinned,
+        })
+    }
 
+    fn load_lru_for_eviction(&self) -> Option<LruIndex<A::IndexRes>> {
+        match self.open_lru() {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::debug!("Failed to open LRU index: {:?}", e);
+                None
+            }
+        }
+    }
+
+    fn load_pins_for_eviction(&self) -> Option<HashSet<String>> {
+        match self.open_pins().and_then(|pins| pins.load()) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::debug!("Failed to load pins index: {:?}", e);
+                None
+            }
+        }
+    }
+
+    fn load_total_bytes_for_eviction(lru: &LruIndex<A::IndexRes>) -> Option<u64> {
+        match lru.load() {
+            Ok(state) => Some(state.total_bytes_best_effort()),
+            Err(e) => {
+                tracing::debug!("Failed to load LRU state: {:?}", e);
+                None
+            }
+        }
+    }
+
+    fn load_candidates_for_eviction(
+        &self,
+        lru: &LruIndex<A::IndexRes>,
+        pinned: &HashSet<String>,
+    ) -> Option<Vec<String>> {
+        match lru.eviction_candidates(&self.cfg, pinned) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::debug!("Failed to get eviction candidates: {:?}", e);
+                None
+            }
+        }
+    }
+
+    fn evict_candidates(
+        &self,
+        lru: &LruIndex<A::IndexRes>,
+        pinned: &HashSet<String>,
+        candidates: Vec<String>,
+    ) {
         for cand in candidates {
             if self.cancel.is_cancelled() {
                 break;
@@ -179,6 +224,11 @@ where
                 let _ = lru.remove(&cand);
             } else {
                 tracing::debug!(asset_root = %cand, "Failed to delete asset");
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = lru;
+                tracing::debug!(asset_root = %cand, "WASM backend does not support delete_asset_dir");
             }
         }
     }
@@ -272,6 +322,18 @@ where
     type Context = A::Context;
     type IndexRes = A::IndexRes;
 
+    fn supports_evict(&self) -> bool {
+        self.inner.supports_evict()
+    }
+
+    fn supports_lease(&self) -> bool {
+        self.inner.supports_lease()
+    }
+
+    fn supports_cache(&self) -> bool {
+        self.inner.supports_cache()
+    }
+
     fn root_dir(&self) -> &Path {
         self.inner.root_dir()
     }
@@ -310,16 +372,6 @@ where
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn byte_recorder_mock_api_is_generated() {
-        let _ = ByteRecorderMock::record_bytes;
-    }
-}
-
 impl<A> ByteRecorder for EvictAssets<A>
 where
     A: Assets,
@@ -327,5 +379,17 @@ where
     fn record_bytes(&self, asset_root: &str, bytes: u64) {
         let _ = self.record_asset_bytes(asset_root, bytes);
         self.check_and_evict_if_over_limit();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use kithara_test_utils::kithara;
+
+    use super::*;
+
+    #[kithara::test]
+    fn byte_recorder_mock_api_is_generated() {
+        let _ = ByteRecorderMock::record_bytes;
     }
 }

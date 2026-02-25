@@ -136,17 +136,23 @@ impl fmt::Debug for ThreadPool {
 
 #[cfg(test)]
 mod tests {
-    use rstest::rstest;
+    mod kithara {
+        pub(crate) use kithara_test_macros::test;
+    }
 
     use super::*;
 
-    #[test]
+    // --- Rayon pool creation (works on WASM via wasm-bindgen-rayon) ---
+
+    #[kithara::test(native)]
     fn test_custom_pool() {
         let pool = ThreadPool::with_num_threads(2).unwrap();
         assert!(pool.inner.is_some());
     }
 
-    #[test]
+    // --- Blocking tests (mpsc::recv uses Atomics.wait — forbidden on WASM main thread) ---
+
+    #[kithara::test(native)]
     fn test_spawn_completes() {
         let pool = ThreadPool::with_num_threads(2).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -156,10 +162,9 @@ mod tests {
         assert_eq!(rx.recv().unwrap(), 42);
     }
 
-    #[rstest]
+    #[kithara::test(native, tokio)]
     #[case::custom(true)]
     #[case::global(false)]
-    #[tokio::test]
     async fn test_spawn_async(#[case] custom: bool) {
         let pool = if custom {
             ThreadPool::with_num_threads(2).unwrap()
@@ -170,7 +175,7 @@ mod tests {
         assert_eq!(result, 42);
     }
 
-    #[test]
+    #[kithara::test(native)]
     fn test_clone_shares_pool() {
         let pool = ThreadPool::with_num_threads(2).unwrap();
         let pool2 = pool.clone();
@@ -187,20 +192,21 @@ mod tests {
         assert_eq!(rx2.recv().unwrap(), 2);
     }
 
-    #[rstest]
-    #[case::global(false, "global")]
-    #[case::custom(true, "custom")]
-    fn test_debug(#[case] custom: bool, #[case] expected_kind: &str) {
-        let pool = if custom {
-            ThreadPool::with_num_threads(3).unwrap()
-        } else {
-            ThreadPool::global()
-        };
-        let debug = format!("{:?}", pool);
-        assert!(debug.contains(expected_kind));
+    // --- Pure logic tests ---
+
+    #[kithara::test(wasm)]
+    fn test_debug_global() {
+        let debug = format!("{:?}", ThreadPool::global());
+        assert!(debug.contains("global"));
     }
 
-    #[rstest]
+    #[kithara::test(native)]
+    fn test_debug_custom() {
+        let debug = format!("{:?}", ThreadPool::with_num_threads(3).unwrap());
+        assert!(debug.contains("custom"));
+    }
+
+    #[kithara::test(wasm)]
     #[case::global(false)]
     #[case::default(true)]
     fn test_default_and_global_are_global(#[case] default_ctor: bool) {

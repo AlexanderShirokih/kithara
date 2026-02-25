@@ -1,7 +1,7 @@
 //! Audio pipeline struct and public API.
 
 use std::{
-    io::{Read, Seek, SeekFrom},
+    io::{self, Read, Seek, SeekFrom},
     num::NonZeroU32,
     sync::{
         Arc,
@@ -10,24 +10,46 @@ use std::{
     time::Duration,
 };
 
-use kanal::Receiver;
 use kithara_bufpool::{PcmPool, pcm_pool};
-use kithara_decode::{PcmChunk, PcmSpec, TrackMetadata};
-use kithara_events::{AudioEvent, EventBus};
-use kithara_stream::{EpochValidator, Fetch, Stream, StreamType};
+use kithara_decode::{PcmChunk, PcmMeta, PcmSpec, TrackMetadata};
+use kithara_events::{AudioEvent, EventBus, SeekLifecycleStage};
+#[cfg(target_arch = "wasm32")]
+use kithara_platform::unbounded;
+use kithara_platform::{Receiver, Sender, ThreadPool, bounded};
+use kithara_stream::{
+    EpochValidator, Fetch, MediaInfo, Stream, StreamContext, StreamType, Timeline,
+};
 use tokio::sync::{Notify, broadcast};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace, warn};
 
 use super::{
     config::{AudioConfig, create_effects, expected_output_spec},
-    stream_source::{OffsetReader, SharedStream, StreamAudioSource},
+    source::{OffsetReader, SharedStream, StreamAudioSource},
     worker::{AudioCommand, run_audio_loop},
 };
 use crate::traits::{DecodeError, DecodeResult, PcmReader};
 
 /// Default capacity for broadcast event channels.
 const DEFAULT_EVENT_CAPACITY: usize = 64;
+
+enum ChunkOutcome {
+    Continue,
+    Return(Option<PcmChunk>),
+}
+
+enum RecvOutcome {
+    Closed,
+    Empty,
+    Item(Fetch<PcmChunk>),
+}
+
+type AudioChannels = (
+    Sender<AudioCommand>,
+    Receiver<AudioCommand>,
+    Sender<Fetch<PcmChunk>>,
+    Receiver<Fetch<PcmChunk>>,
+);
 
 /// Generic audio pipeline running in a separate thread.
 ///
@@ -57,8 +79,12 @@ const DEFAULT_EVENT_CAPACITY: usize = 64;
 /// }
 /// ```
 pub struct Audio<S> {
-    /// Command sender for seek.
-    cmd_tx: kanal::Sender<AudioCommand>,
+    /// Command sender for non-seek commands.
+    ///
+    /// Seek flows through Timeline atomics. This channel is kept alive
+    /// so the worker loop does not exit due to a closed `cmd_rx`.
+    #[expect(dead_code, reason = "kept alive for cmd_rx in worker loop")]
+    cmd_tx: Sender<AudioCommand>,
 
     /// PCM chunk receiver.
     pcm_rx: Receiver<Fetch<PcmChunk>>,
@@ -67,7 +93,7 @@ pub struct Audio<S> {
     _epoch: Arc<AtomicU64>,
 
     /// Epoch validator for filtering stale chunks.
-    validator: EpochValidator,
+    pub(crate) validator: EpochValidator,
 
     /// Current audio specification (updated from chunks).
     pub(crate) spec: PcmSpec,
@@ -75,20 +101,17 @@ pub struct Audio<S> {
     /// Current chunk being read (auto-recycles to pool on drop).
     pub(crate) current_chunk: Option<PcmChunk>,
 
-    /// Current position in chunk.
+    /// Current position in the in-memory chunk only.
+    ///
+    /// This is not a global playback position and must not be used as timeline
+    /// source-of-truth. Timeline advances only after samples are committed to output.
     pub(crate) chunk_offset: usize,
 
     /// End of stream reached.
     pub(crate) eof: bool,
 
-    /// Number of interleaved samples read since last seek.
-    pub(crate) samples_read: u64,
-
-    /// Base position after last seek.
-    seek_base: Duration,
-
-    /// Total duration from format metadata.
-    pub(crate) total_duration: Option<Duration>,
+    /// Shared stream timeline for committed playback position.
+    pub(crate) timeline: Timeline,
 
     /// Track metadata (title, artist, album, artwork).
     metadata: TrackMetadata,
@@ -110,10 +133,16 @@ pub struct Audio<S> {
     host_sample_rate: Arc<AtomicU32>,
 
     /// Notify for async preload (first chunk available).
-    preload_notify: Arc<Notify>,
+    pub(crate) preload_notify: Arc<Notify>,
 
     /// Whether `preload()` has been called (enables non-blocking mode).
     preloaded: bool,
+
+    /// Callback to wake blocked `wait_range()` calls on seek.
+    ///
+    /// Set during construction for sources with blocking condvar waits (HLS).
+    /// Called from `seek()` after `initiate_seek()` for instant wakeup.
+    notify_waiting: Option<Box<dyn Fn() + Send + Sync>>,
 
     /// Marker for source type.
     _marker: std::marker::PhantomData<S>,
@@ -157,6 +186,62 @@ impl<S> Audio<S> {
         self.spec
     }
 
+    fn emit_playback_progress(&self) {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "clamped to u64::MAX before cast"
+        )]
+        let position_ms = self.position().as_millis().min(u128::from(u64::MAX)) as u64;
+        let total_ms = self.timeline.total_duration().map(|duration| {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "millis fits in u64 for practical durations"
+            )]
+            {
+                duration.as_millis() as u64
+            }
+        });
+
+        self.emit_audio_event(AudioEvent::PlaybackProgress {
+            position_ms,
+            total_ms,
+            seek_epoch: self.validator.epoch,
+        });
+    }
+
+    fn emit_audio_event(&self, event: AudioEvent) {
+        self.bus.publish(event.clone());
+        let _ = self.audio_events_tx.send(event);
+    }
+
+    fn emit_post_seek_output_commit(&mut self, meta: Option<PcmMeta>) {
+        let Some(seek_epoch) = self.timeline.pending_seek_epoch() else {
+            return;
+        };
+        if seek_epoch != self.validator.epoch {
+            return;
+        }
+
+        let variant = meta.as_ref().and_then(|m| m.variant_index);
+        let segment_index = meta.as_ref().and_then(|m| m.segment_index);
+
+        self.emit_audio_event(AudioEvent::SeekLifecycle {
+            stage: SeekLifecycleStage::OutputCommitted,
+            seek_epoch,
+            task_id: seek_epoch,
+            variant,
+            segment_index,
+            byte_range_start: None,
+            byte_range_end: None,
+        });
+
+        self.emit_audio_event(AudioEvent::SeekComplete {
+            position: (*self).position(),
+            seek_epoch,
+        });
+        let _ = self.timeline.clear_pending_seek_epoch(seek_epoch);
+    }
+
     /// Check if end of stream has been reached.
     #[must_use]
     pub fn is_eof(&self) -> bool {
@@ -168,16 +253,7 @@ impl<S> Audio<S> {
     /// Calculated from samples read since last seek plus the seek base.
     #[must_use]
     pub fn position(&self) -> Duration {
-        let rate = f64::from(self.spec.sample_rate) * f64::from(self.spec.channels.max(1));
-        if rate == 0.0 {
-            return self.seek_base;
-        }
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "sample count precision loss is negligible"
-        )]
-        let samples = self.samples_read as f64;
-        self.seek_base + Duration::from_secs_f64(samples / rate)
+        self.timeline.committed_position()
     }
 
     /// Get total duration of the audio stream.
@@ -185,7 +261,7 @@ impl<S> Audio<S> {
     /// Returns `None` for streaming sources where duration is unknown.
     #[must_use]
     pub fn duration(&self) -> Option<Duration> {
-        self.total_duration
+        self.timeline.total_duration()
     }
 
     /// Get track metadata (title, artist, album, artwork).
@@ -207,6 +283,7 @@ impl<S> Audio<S> {
         }
 
         let mut written = 0;
+        let mut last_output_meta: Option<PcmMeta> = None;
 
         while written < buf.len() {
             // Try to read from current chunk
@@ -216,6 +293,7 @@ impl<S> Audio<S> {
 
                 buf[written..written + to_copy]
                     .copy_from_slice(&chunk.pcm[self.chunk_offset..self.chunk_offset + to_copy]);
+                last_output_meta = Some(chunk.meta);
 
                 written += to_copy;
                 self.chunk_offset += to_copy;
@@ -236,77 +314,51 @@ impl<S> Audio<S> {
             }
         }
 
-        self.samples_read += written as u64;
+        if written > 0 {
+            self.timeline.advance_committed_samples(
+                written as u64,
+                self.spec.sample_rate,
+                self.spec.channels,
+            );
+            self.emit_post_seek_output_commit(last_output_meta);
+            self.emit_playback_progress();
+        }
         written
     }
 
     /// Seek to position in the audio stream.
     ///
-    /// Note: Seek clears internal buffers and invalidates pending chunks.
+    /// This method never blocks. Seek coordination flows entirely through
+    /// Timeline atomics (`FLUSH_START`/`FLUSH_STOP` pattern). The worker thread reads
+    /// the seek target and epoch from Timeline and applies the seek.
     ///
     /// # Errors
     ///
-    /// Returns [`DecodeError::SeekError`] if the command channel is closed.
+    /// This method is infallible in practice but returns `DecodeResult` for
+    /// API compatibility.
     pub fn seek(&mut self, position: Duration) -> DecodeResult<()> {
-        // Increment epoch to invalidate pending chunks.
-        // Do NOT store to shared atomic here — the worker does it in handle_command().
-        // Storing here would race: the worker's fetch_next() could read the new epoch
-        // before processing the seek, stamping a pre-seek chunk with the new epoch
-        // and making it pass the consumer's epoch filter.
-        let new_epoch = self.validator.next_epoch();
+        // 1. Atomic write to Timeline — FLUSH_START
+        let epoch = self.timeline.initiate_seek(position);
+        self.timeline.mark_pending_seek_epoch(epoch);
 
-        // Send seek command to worker with new epoch.
-        // On wasm32 main thread, `Atomics.wait` is forbidden, so use `try_send()`
-        // to avoid blocking.  The command channel should always have capacity
-        // (bounded(1+) and the worker consumes commands promptly).
-        #[cfg(target_arch = "wasm32")]
-        self.cmd_tx
-            .try_send(AudioCommand::Seek {
-                position,
-                epoch: new_epoch,
-            })
-            .map_err(|_| DecodeError::SeekError("channel closed or full".to_string()))?;
-        #[cfg(not(target_arch = "wasm32"))]
-        self.cmd_tx
-            .send(AudioCommand::Seek {
-                position,
-                epoch: new_epoch,
-            })
-            .map_err(|_| DecodeError::SeekError("channel closed".to_string()))?;
-
-        // Clear local state (current_chunk auto-recycles via Drop)
+        // 2. Update local consumer state
+        self.validator.epoch = epoch;
         self.current_chunk = None;
         self.chunk_offset = 0;
         self.eof = false;
-        self.samples_read = 0;
-        self.seek_base = position;
 
-        // Drain stale chunks from channel to unblock worker.
-        // Stop if we encounter a valid chunk (save it for next read).
-        while let Ok(Some(fetch)) = self.pcm_rx.try_recv() {
-            if self.validator.is_valid(&fetch) {
-                // Found new valid chunk - save it and stop draining
-                if !fetch.is_eof() {
-                    let chunk = fetch.into_inner();
-                    self.spec = chunk.spec();
-                    self.current_chunk = Some(chunk);
-                    self.chunk_offset = 0;
-                    trace!("seek: saved first valid chunk after drain");
-                }
-                break;
-            }
-            // Stale chunk (old epoch) - discard and continue draining
-            trace!(
-                chunk_epoch = fetch.epoch(),
-                current_epoch = new_epoch,
-                "seek: discarding stale chunk"
-            );
+        // 3. Drain stale chunks from pcm channel to unblock worker
+        while let Ok(Some(_)) = self.pcm_rx.try_recv() {}
+
+        // 4. Wake blocked wait_range() calls for instant seek response
+        if let Some(ref notify) = self.notify_waiting {
+            notify();
         }
 
-        // Reset preload flag - first read after seek will be blocking if needed
+        // Reset preload flag — first read after seek will be blocking if needed
         self.preloaded = false;
 
-        debug!(?position, epoch = new_epoch, "seek initiated");
+        debug!(?position, epoch, "seek initiated via Timeline");
         Ok(())
     }
 
@@ -314,68 +366,76 @@ impl<S> Audio<S> {
     ///
     /// After `preload()`, non-blocking. Before `preload()`, blocks on first call.
     /// Returns `None` on EOF or channel close.
-    #[expect(
-        clippy::cognitive_complexity,
-        reason = "chunk validation with multiple conditions"
-    )]
     fn recv_valid_chunk(&mut self) -> Option<PcmChunk> {
         if self.eof {
             return None;
         }
 
         loop {
-            // On wasm32, blocking recv is forbidden (Atomics.wait cannot run
-            // on the browser main thread). Always use non-blocking try_recv.
-            #[cfg(target_arch = "wasm32")]
-            let use_nonblocking = true;
-            #[cfg(not(target_arch = "wasm32"))]
-            let use_nonblocking = self.preloaded;
-
-            let result = if use_nonblocking {
-                // Non-blocking mode
-                match self.pcm_rx.try_recv() {
-                    Ok(Some(fetch)) => Ok(fetch),
-                    Ok(None) => return None, // No data available
-                    Err(_) => {
-                        debug!("Audio: channel closed (EOF)");
-                        self.eof = true;
-                        return None;
-                    }
-                }
-            } else {
-                // Blocking mode before preload (native only, for tests/backward compat)
-                self.pcm_rx.recv().map_err(|_| ())
-            };
-
-            if let Ok(fetch) = result {
-                // Skip stale chunks (from before seek)
-                if !self.validator.is_valid(&fetch) {
-                    trace!(
-                        chunk_epoch = fetch.epoch(),
-                        current_epoch = self.validator.epoch,
-                        "skipping stale chunk"
-                    );
-                    continue;
-                }
-
-                if fetch.is_eof() {
-                    debug!(epoch = fetch.epoch(), "Audio: received EOF");
-                    self.eof = true;
-                    return None;
-                }
-
-                let chunk = fetch.into_inner();
-                trace!(
-                    samples = chunk.pcm.len(),
-                    spec = ?chunk.spec(),
-                    "Audio: received chunk"
-                );
-                return Some(chunk);
+            match self.recv_outcome() {
+                RecvOutcome::Item(fetch) => match self.process_fetch(fetch) {
+                    ChunkOutcome::Continue => continue,
+                    ChunkOutcome::Return(chunk) => return chunk,
+                },
+                RecvOutcome::Empty => return None,
+                RecvOutcome::Closed => return self.close_channel_and_mark_eof(),
             }
+        }
+    }
 
-            debug!("Audio: channel closed (EOF)");
+    fn recv_outcome(&mut self) -> RecvOutcome {
+        if self.use_nonblocking_recv() {
+            match self.pcm_rx.try_recv() {
+                Ok(Some(fetch)) => RecvOutcome::Item(fetch),
+                Ok(None) => RecvOutcome::Empty,
+                Err(_) => RecvOutcome::Closed,
+            }
+        } else {
+            self.pcm_rx
+                .recv()
+                .map_or_else(|_| RecvOutcome::Closed, RecvOutcome::Item)
+        }
+    }
+
+    fn process_fetch(&mut self, fetch: Fetch<PcmChunk>) -> ChunkOutcome {
+        if !self.validator.is_valid(&fetch) {
+            trace!(
+                chunk_epoch = fetch.epoch(),
+                current_epoch = self.validator.epoch,
+                "skipping stale chunk"
+            );
+            return ChunkOutcome::Continue;
+        }
+
+        if fetch.is_eof() {
+            debug!(epoch = fetch.epoch(), "Audio: received EOF");
             self.eof = true;
-            return None;
+            return ChunkOutcome::Return(None);
+        }
+
+        let chunk = fetch.into_inner();
+        trace!(
+            samples = chunk.pcm.len(),
+            spec = ?chunk.spec(),
+            "Audio: received chunk"
+        );
+        ChunkOutcome::Return(Some(chunk))
+    }
+
+    fn close_channel_and_mark_eof(&mut self) -> Option<PcmChunk> {
+        debug!("Audio: channel closed (EOF)");
+        self.eof = true;
+        None
+    }
+
+    fn use_nonblocking_recv(&self) -> bool {
+        #[cfg(target_arch = "wasm32")]
+        {
+            true
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.preloaded
         }
     }
 
@@ -401,6 +461,179 @@ impl<T> Audio<Stream<T>>
 where
     T: StreamType<Events = EventBus>,
 {
+    fn resolve_thread_pool(
+        stream_config: &T::Config,
+        thread_pool: Option<ThreadPool>,
+    ) -> ThreadPool {
+        thread_pool.unwrap_or_else(|| T::thread_pool(stream_config))
+    }
+
+    fn resolve_event_bus(stream_config: &T::Config, config_bus: Option<EventBus>) -> EventBus {
+        T::event_bus(stream_config)
+            .or(config_bus)
+            .unwrap_or_else(|| EventBus::new(DEFAULT_EVENT_CAPACITY))
+    }
+
+    async fn create_stream_with_probe(
+        thread_pool: &ThreadPool,
+        stream_config: T::Config,
+        byte_pool: kithara_bufpool::BytePool,
+    ) -> Result<Stream<T>, DecodeError> {
+        debug!("Audio::new — creating Stream...");
+        let stream = Stream::<T>::new(stream_config)
+            .await
+            .map_err(|e| DecodeError::Io(io::Error::other(e.to_string())))?;
+        debug!("Audio::new — Stream created");
+
+        debug!("Audio::new — spawning probe task on thread pool...");
+        let stream = thread_pool
+            .spawn_async(move || {
+                let mut stream = stream;
+                let mut probe_buf = byte_pool.get_with(|b| b.resize(1024, 0));
+                let _ = stream.read(&mut probe_buf);
+                stream.seek(SeekFrom::Start(0)).map_err(DecodeError::Io)?;
+                Ok::<_, DecodeError>(stream)
+            })
+            .await
+            .map_err(|e| {
+                DecodeError::Io(io::Error::other(format!("probe task panicked: {e}")))
+            })??;
+        debug!("Audio::new — probe task done");
+        Ok(stream)
+    }
+
+    async fn create_initial_decoder(
+        thread_pool: &ThreadPool,
+        shared_stream: SharedStream<T>,
+        initial_media_info: Option<MediaInfo>,
+        hint: Option<String>,
+        pcm_pool: PcmPool,
+        prefer_hardware: bool,
+        stream_ctx: Arc<dyn StreamContext>,
+    ) -> Result<Box<dyn kithara_decode::InnerDecoder>, DecodeError> {
+        debug!("Audio::new — spawning decoder creation on thread pool...");
+        let byte_len_handle = Arc::new(AtomicU64::new(shared_stream.len().unwrap_or(0)));
+        let decoder_config = kithara_decode::DecoderConfig {
+            prefer_hardware,
+            hint: hint.clone(),
+            byte_len_handle: Some(Arc::clone(&byte_len_handle)),
+            pcm_pool: Some(pcm_pool),
+            stream_ctx: Some(stream_ctx),
+            ..Default::default()
+        };
+        let hint_for_decoder = hint;
+        let initial_media_info_for_decoder = initial_media_info;
+        let decoder = thread_pool
+            .spawn_async(move || {
+                if let Some(ref info) = initial_media_info_for_decoder {
+                    kithara_decode::DecoderFactory::create_from_media_info(
+                        shared_stream,
+                        info,
+                        decoder_config,
+                    )
+                } else {
+                    kithara_decode::DecoderFactory::create_with_probe(
+                        shared_stream,
+                        hint_for_decoder.as_deref(),
+                        decoder_config,
+                    )
+                }
+            })
+            .await
+            .map_err(|e| {
+                DecodeError::Io(io::Error::other(format!("decoder task panicked: {e}")))
+            })??;
+        debug!("Audio::new — decoder created");
+        Ok(decoder)
+    }
+
+    fn create_channels(command_channel_capacity: usize, pcm_buffer_chunks: usize) -> AudioChannels {
+        let cmd_capacity = command_channel_capacity.max(1);
+        #[cfg(target_arch = "wasm32")]
+        let _ = cmd_capacity;
+        #[cfg(target_arch = "wasm32")]
+        let (cmd_tx, cmd_rx) = unbounded();
+        #[cfg(not(target_arch = "wasm32"))]
+        let (cmd_tx, cmd_rx) = bounded(cmd_capacity);
+        let (data_tx, data_rx) = bounded(pcm_buffer_chunks.max(1));
+        (cmd_tx, cmd_rx, data_tx, data_rx)
+    }
+
+    fn create_emit(
+        bus: &EventBus,
+        audio_events_tx: &broadcast::Sender<AudioEvent>,
+    ) -> Box<dyn Fn(AudioEvent) + Send> {
+        let emit_bus = bus.clone();
+        let emit_raw_tx = audio_events_tx.clone();
+        Box::new(move |event: AudioEvent| {
+            emit_bus.publish(event.clone());
+            let _ = emit_raw_tx.send(event);
+        })
+    }
+
+    fn create_decoder_factory(
+        prefer_hardware: bool,
+        stream_ctx: &Arc<dyn StreamContext>,
+        epoch: &Arc<AtomicU64>,
+        byte_len_handle: &Arc<AtomicU64>,
+        pool: &PcmPool,
+    ) -> super::source::DecoderFactory<T> {
+        let factory_stream_ctx = Arc::clone(stream_ctx);
+        let factory_epoch = Arc::clone(epoch);
+        let factory_byte_len = Arc::clone(byte_len_handle);
+        let factory_pool = pool.clone();
+        Box::new(move |stream, info, base_offset| {
+            let byte_len = stream
+                .len()
+                .map_or(0, |len| len.saturating_sub(base_offset));
+            factory_byte_len.store(byte_len, Ordering::Release);
+            let current_epoch = factory_epoch.load(Ordering::Acquire);
+            let config = kithara_decode::DecoderConfig {
+                prefer_hardware,
+                byte_len_handle: Some(Arc::clone(&factory_byte_len)),
+                pcm_pool: Some(factory_pool.clone()),
+                stream_ctx: Some(Arc::clone(&factory_stream_ctx)),
+                epoch: current_epoch,
+                ..Default::default()
+            };
+            match kithara_decode::DecoderFactory::create_for_recreate(
+                || OffsetReader::new(stream.clone(), base_offset),
+                info,
+                config,
+            ) {
+                Ok(d) => {
+                    d.update_byte_len(byte_len);
+                    Some(d)
+                }
+                Err(e) => {
+                    warn!(?e, "failed to recreate decoder");
+                    None
+                }
+            }
+        })
+    }
+
+    fn spawn_worker(
+        thread_pool: &ThreadPool,
+        audio_source: StreamAudioSource<T>,
+        cmd_rx: Receiver<AudioCommand>,
+        data_tx: Sender<Fetch<PcmChunk>>,
+        preload_notify: Arc<Notify>,
+        preload_chunks: usize,
+        worker_cancel: CancellationToken,
+    ) {
+        thread_pool.spawn(move || {
+            run_audio_loop(
+                audio_source,
+                &cmd_rx,
+                &data_tx,
+                &preload_notify,
+                preload_chunks,
+                &worker_cancel,
+            );
+        });
+    }
+
     /// Create audio pipeline from `AudioConfig`.
     ///
     /// This is the target API for Stream sources.
@@ -418,14 +651,9 @@ where
     /// let audio = Audio::new(config).await?;
     /// sink.append(audio);
     /// ```
-    #[expect(
-        clippy::cognitive_complexity,
-        reason = "pipeline setup with debug tracing"
-    )]
     pub async fn new(config: AudioConfig<T>) -> Result<Self, DecodeError> {
         let cancel = CancellationToken::new();
 
-        // Destructure config to avoid partial move issues.
         let AudioConfig {
             byte_pool,
             command_channel_capacity,
@@ -443,99 +671,40 @@ where
             effects: custom_effects,
         } = config;
 
-        // Resolve thread pool: AudioConfig overrides stream config, which overrides global.
-        let thread_pool = thread_pool.unwrap_or_else(|| T::thread_pool(&stream_config));
-
-        // Create event bus: prefer stream config bus (HlsConfig/FileConfig),
-        // fall back to AudioConfig bus, or create a new one.
-        let bus = T::event_bus(&stream_config)
-            .or(config_bus)
-            .unwrap_or_else(|| EventBus::new(DEFAULT_EVENT_CAPACITY));
-
-        // Create stream.
-        debug!("Audio::new — creating Stream...");
-        let stream = Stream::<T>::new(stream_config)
-            .await
-            .map_err(|e| DecodeError::Io(std::io::Error::other(e.to_string())))?;
-        debug!("Audio::new — Stream created");
-
-        // Resolve byte pool: config overrides global.
+        let thread_pool = Self::resolve_thread_pool(&stream_config, thread_pool);
+        let bus = Self::resolve_event_bus(&stream_config, config_bus);
         let byte_pool = byte_pool.unwrap_or_else(|| kithara_bufpool::byte_pool().clone());
+        let stream = Self::create_stream_with_probe(&thread_pool, stream_config, byte_pool).await?;
 
-        // Trigger first segment load to get MediaInfo for proper decoder creation.
-        debug!("Audio::new — spawning probe task on thread pool...");
-        let stream = thread_pool
-            .spawn_async(move || {
-                let mut stream = stream;
-                let mut probe_buf = byte_pool.get_with(|b| b.resize(1024, 0));
-                let _ = stream.read(&mut probe_buf);
-                stream.seek(SeekFrom::Start(0)).map_err(DecodeError::Io)?;
-                Ok::<_, DecodeError>(stream)
-            })
-            .await
-            .map_err(|e| {
-                DecodeError::Io(std::io::Error::other(format!("probe task panicked: {e}")))
-            })??;
-        debug!("Audio::new — probe task done");
-
-        // Get initial MediaInfo.
-        // For decoder creation: user-provided overrides stream-detected.
-        // For format change tracking: always use stream-detected (so ABR switches
-        // are detected correctly even when user overrides the format).
         let stream_media_info = stream.media_info();
+        let initial_byte_len = stream.len().unwrap_or(0);
+        let timeline = stream.timeline();
         let initial_media_info = user_media_info.or_else(|| stream_media_info.clone());
         debug!(?initial_media_info, "Initial MediaInfo from stream");
 
-        // Create shared stream for format change detection
         let shared_stream = SharedStream::new(stream);
-
-        // Build stream context once — shared across all decoder instances.
+        let byte_len_handle = Arc::new(AtomicU64::new(initial_byte_len));
         let stream_ctx = shared_stream.build_stream_context();
 
         let pool = pool.get_or_insert_with(|| pcm_pool().clone());
-
-        // Create initial decoder on the thread pool to avoid blocking tokio runtime.
-        // Symphonia probe() does blocking IO which would deadlock the async downloader.
-        debug!("Audio::new — spawning decoder creation on thread pool...");
-        let decoder_config = kithara_decode::DecoderConfig {
+        let decoder = Self::create_initial_decoder(
+            &thread_pool,
+            shared_stream.clone(),
+            initial_media_info.clone(),
+            hint.clone(),
+            pool.clone(),
             prefer_hardware,
-            hint: hint.clone(),
-            pcm_pool: Some(pool.clone()),
-            stream_ctx: Some(Arc::clone(&stream_ctx)),
-            ..Default::default()
-        };
-        let shared_stream_for_decoder = shared_stream.clone();
-        let hint_for_decoder = hint.clone();
-        let initial_media_info_for_decoder = initial_media_info.clone();
-        let decoder: Box<dyn kithara_decode::InnerDecoder> = thread_pool
-            .spawn_async(move || {
-                if let Some(ref info) = initial_media_info_for_decoder {
-                    kithara_decode::DecoderFactory::create_from_media_info(
-                        shared_stream_for_decoder,
-                        info,
-                        decoder_config,
-                    )
-                } else {
-                    kithara_decode::DecoderFactory::create_with_probe(
-                        shared_stream_for_decoder,
-                        hint_for_decoder.as_deref(),
-                        decoder_config,
-                    )
-                }
-            })
-            .await
-            .map_err(|e| {
-                DecodeError::Io(std::io::Error::other(format!("decoder task panicked: {e}")))
-            })??;
-        debug!("Audio::new — decoder created");
+            Arc::clone(&stream_ctx),
+        )
+        .await?;
 
         let initial_spec = decoder.spec();
-        let total_duration = decoder.duration();
+        let total_duration = decoder.duration().or_else(|| timeline.total_duration());
+        timeline.set_total_duration(total_duration);
         let metadata = decoder.metadata();
 
-        let cmd_capacity = command_channel_capacity.max(1);
-        let (cmd_tx, cmd_rx) = kanal::bounded(cmd_capacity);
-        let (data_tx, data_rx) = kanal::bounded(pcm_buffer_chunks.max(1));
+        let (cmd_tx, cmd_rx, data_tx, data_rx) =
+            Self::create_channels(command_channel_capacity, pcm_buffer_chunks);
 
         let epoch = Arc::new(AtomicU64::new(0));
         let (audio_events_tx, _) = broadcast::channel(DEFAULT_EVENT_CAPACITY);
@@ -557,88 +726,16 @@ where
             "Audio pipeline created"
         );
 
-        // Emit closure sends AudioEvent to both the EventBus and the raw channel.
-        let emit_bus = bus.clone();
-        let emit_raw_tx = audio_events_tx.clone();
-        let emit = Box::new(move |event: AudioEvent| {
-            emit_bus.publish(event.clone());
-            let _ = emit_raw_tx.send(event);
-        });
+        let emit = Self::create_emit(&bus, &audio_events_tx);
+        let decoder_factory = Self::create_decoder_factory(
+            prefer_hardware,
+            &stream_ctx,
+            &epoch,
+            &byte_len_handle,
+            pool,
+        );
+        let notify_waiting = shared_stream.make_notify_fn();
 
-        // Factory for creating decoders after ABR switch.
-        //
-        // Three-level fallback:
-        // 1. create_from_media_info — uses codec/container from HLS metadata
-        // 2. create_with_probe — uses extension hint for codec detection
-        // 3. create_with_symphonia_probe — lets Symphonia detect format from data
-        let factory_stream_ctx = Arc::clone(&stream_ctx);
-        let factory_epoch = Arc::clone(&epoch);
-        let factory_pool = pool.clone();
-        let decoder_factory: super::stream_source::DecoderFactory<T> =
-            Box::new(move |stream, info, base_offset| {
-                let current_epoch = factory_epoch.load(Ordering::Acquire);
-                let reader = OffsetReader::new(stream.clone(), base_offset);
-                let config = kithara_decode::DecoderConfig {
-                    prefer_hardware,
-                    pcm_pool: Some(factory_pool.clone()),
-                    stream_ctx: Some(Arc::clone(&factory_stream_ctx)),
-                    epoch: current_epoch,
-                    ..Default::default()
-                };
-                match kithara_decode::DecoderFactory::create_from_media_info(reader, info, config) {
-                    Ok(d) => {
-                        d.update_byte_len(0);
-                        Some(d)
-                    }
-                    Err(e) => {
-                        warn!(?e, "Failed to recreate decoder, trying probe fallback");
-                        let reader = OffsetReader::new(stream.clone(), base_offset);
-                        let config = kithara_decode::DecoderConfig {
-                            prefer_hardware,
-                            pcm_pool: Some(factory_pool.clone()),
-                            stream_ctx: Some(Arc::clone(&factory_stream_ctx)),
-                            epoch: current_epoch,
-                            ..Default::default()
-                        };
-                        match kithara_decode::DecoderFactory::create_with_probe(
-                            reader, None, config,
-                        ) {
-                            Ok(d) => {
-                                d.update_byte_len(0);
-                                Some(d)
-                            }
-                            Err(e) => {
-                                warn!(?e, "Probe fallback failed, trying Symphonia native probe");
-                                let reader = OffsetReader::new(stream, base_offset);
-                                let config = kithara_decode::DecoderConfig {
-                                    prefer_hardware,
-                                    pcm_pool: Some(factory_pool.clone()),
-                                    stream_ctx: Some(Arc::clone(&factory_stream_ctx)),
-                                    epoch: current_epoch,
-                                    ..Default::default()
-                                };
-                                match kithara_decode::DecoderFactory::create_with_symphonia_probe(
-                                    reader, config,
-                                ) {
-                                    Ok(d) => {
-                                        d.update_byte_len(0);
-                                        Some(d)
-                                    }
-                                    Err(e) => {
-                                        warn!(?e, "Symphonia native probe also failed");
-                                        None
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-
-        // Use StreamAudioSource for format change detection.
-        // Pass stream_media_info (not initial_media_info) so format change detection
-        // compares against what the stream actually reports, avoiding false positives
-        // when the user overrides media_info (e.g., WAV over HLS).
         let audio_source = StreamAudioSource::new(
             shared_stream,
             decoder,
@@ -650,20 +747,15 @@ where
         .with_emit(emit);
 
         let preload_notify = Arc::new(Notify::new());
-        let worker_notify = preload_notify.clone();
-
-        let worker_cancel = cancel.clone();
-
-        thread_pool.spawn(move || {
-            run_audio_loop(
-                audio_source,
-                &cmd_rx,
-                &data_tx,
-                &worker_notify,
-                preload_chunks.get(),
-                &worker_cancel,
-            );
-        });
+        Self::spawn_worker(
+            &thread_pool,
+            audio_source,
+            cmd_rx,
+            data_tx,
+            preload_notify.clone(),
+            preload_chunks.get(),
+            cancel.clone(),
+        );
 
         Ok(Self {
             cmd_tx,
@@ -674,9 +766,7 @@ where
             current_chunk: None,
             chunk_offset: 0,
             eof: false,
-            samples_read: 0,
-            seek_base: Duration::ZERO,
-            total_duration,
+            timeline,
             metadata,
             audio_events_tx,
             bus,
@@ -685,6 +775,7 @@ where
             host_sample_rate,
             preload_notify,
             preloaded: false,
+            notify_waiting,
             _marker: std::marker::PhantomData,
         })
     }
@@ -793,11 +884,11 @@ impl<S: Send> PcmReader for Audio<S> {
 
         let chunk = self.recv_valid_chunk()?;
         self.spec = chunk.spec();
-        self.samples_read += chunk.pcm.len() as u64;
+        self.timeline.advance_committed_samples(
+            chunk.pcm.len() as u64,
+            self.spec.sample_rate,
+            self.spec.channels,
+        );
         Some(chunk)
     }
 }
-
-#[cfg(test)]
-#[path = "audio_tests.rs"]
-mod tests;

@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![cfg(not(target_arch = "wasm32"))]
 
 //! Eviction integration tests.
 //!
@@ -13,19 +14,21 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use kithara::{
-    assets::{AssetStore, AssetStoreBuilder, Assets, EvictConfig, ResourceKey},
+    assets::{AssetStore, AssetStoreBuilder, EvictConfig, ResourceKey},
+    internal::Assets,
     storage::ResourceExt,
 };
 use kithara_test_utils::{cancel_token, temp_dir};
-use rstest::rstest;
 use tokio_util::sync::CancellationToken;
 
+#[cfg(not(target_arch = "wasm32"))]
 fn exists_asset_dir(root: &std::path::Path, asset_root: &str) -> bool {
     root.join(asset_root).exists()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn asset_store_with_root_and_limit(
-    temp_dir: &tempfile::TempDir,
+    temp_dir: &kithara_test_utils::TestTempDir,
     asset_root: &str,
     max_bytes: Option<u64>,
     cancel: CancellationToken,
@@ -38,15 +41,13 @@ fn asset_store_with_root_and_limit(
             max_bytes,
         })
         .cancel(cancel)
-        .build_disk()
+        .build()
 }
 
-#[rstest]
+#[kithara::test(native, tokio, timeout(Duration::from_secs(5)))]
 #[case(60, 60, "asset-a", "asset-b", "asset-c")]
 #[case(40, 80, "small-1", "small-2", "small-3")]
 #[case(90, 30, "large-1", "large-2", "large-3")]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
 async fn eviction_max_bytes_uses_explicit_touch_asset_bytes(
     #[case] bytes_a: usize,
     #[case] bytes_b: usize,
@@ -54,7 +55,7 @@ async fn eviction_max_bytes_uses_explicit_touch_asset_bytes(
     #[case] asset_b_name: &str,
     #[case] asset_c_name: &str,
     cancel_token: CancellationToken,
-    temp_dir: tempfile::TempDir,
+    temp_dir: kithara_test_utils::TestTempDir,
 ) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -144,17 +145,15 @@ async fn eviction_max_bytes_uses_explicit_touch_asset_bytes(
     );
 }
 
-#[rstest]
+#[kithara::test(native, timeout(Duration::from_secs(5)))]
 #[case(100, 150)] // Exactly at limit + overflow
 #[case(50, 120)] // Well below limit
 #[case(200, 50)] // Over limit with small new asset
-#[timeout(Duration::from_secs(5))]
-#[test]
 fn eviction_corner_cases_different_byte_limits(
     #[case] max_bytes: usize,
     #[case] new_asset_size: usize,
     cancel_token: CancellationToken,
-    temp_dir: tempfile::TempDir,
+    temp_dir: kithara_test_utils::TestTempDir,
 ) {
     let cancel = cancel_token;
     let dir = temp_dir.path().to_path_buf();

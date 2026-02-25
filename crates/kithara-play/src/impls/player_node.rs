@@ -1,7 +1,7 @@
 //! Player source node for the Firewheel audio graph.
 //!
 //! [`PlayerNode`] is a source node (zero inputs, stereo outputs) that
-//! communicates with its [`PlayerNodeProcessor`] via a kanal command
+//! communicates with its [`PlayerNodeProcessor`] via a command
 //! channel. This avoids Diff/Patch complexity with `Arc<Mutex<>>` types.
 //!
 //! The command channel and shared state are embedded in the node and
@@ -16,6 +16,7 @@ use firewheel::{
     node::{AudioNode, AudioNodeInfo, AudioNodeProcessor, ConstructProcessorContext, EmptyConfig},
 };
 use kithara_bufpool::PcmPool;
+use kithara_platform::Receiver;
 
 use super::{
     player_processor::{PlayerCmd, PlayerNodeProcessor},
@@ -25,7 +26,7 @@ use super::{
 /// A player source node that outputs mixed audio from loaded tracks.
 ///
 /// Commands (load, unload, seek, pause, fade) are sent to the processor
-/// via a kanal channel stored in the node. The `Diff`/`Patch` derives
+/// via a channel stored in the node. The `Diff`/`Patch` derives
 /// only apply to the `active` field; all runtime state is `#[diff(skip)]`.
 ///
 /// # Construction
@@ -40,7 +41,7 @@ pub(crate) struct PlayerNode {
 
     /// Receiver for commands from the main thread. Cloned into the processor.
     #[diff(skip)]
-    cmd_rx: kanal::Receiver<PlayerCmd>,
+    cmd_rx: Receiver<PlayerCmd>,
 
     /// PCM buffer pool for scratch buffer allocation.
     #[diff(skip)]
@@ -59,9 +60,9 @@ impl PlayerNode {
     /// from the main thread.
     #[cfg(test)]
     pub(crate) fn new() -> Self {
-        let (_, rx) = kanal::bounded(1);
+        let (_, rx) = kithara_platform::bounded(1);
         Self {
-            active: false,
+            active: true,
             cmd_rx: rx,
             pcm_pool: kithara_bufpool::pcm_pool().clone(),
             shared_state: Arc::new(SharedPlayerState::new()),
@@ -70,12 +71,12 @@ impl PlayerNode {
 
     /// Create a player node wired to the given command channel and shared state.
     pub(crate) fn with_channel(
-        cmd_rx: kanal::Receiver<PlayerCmd>,
+        cmd_rx: Receiver<PlayerCmd>,
         shared_state: Arc<SharedPlayerState>,
         pcm_pool: PcmPool,
     ) -> Self {
         Self {
-            active: false,
+            active: true,
             cmd_rx,
             pcm_pool,
             shared_state,
@@ -90,7 +91,7 @@ impl PlayerNode {
 
     /// Get a reference to the command receiver.
     #[expect(dead_code, reason = "accessor for future use")]
-    pub(crate) fn cmd_rx(&self) -> &kanal::Receiver<PlayerCmd> {
+    pub(crate) fn cmd_rx(&self) -> &Receiver<PlayerCmd> {
         &self.cmd_rx
     }
 }
@@ -124,17 +125,17 @@ impl AudioNode for PlayerNode {
 
 #[cfg(test)]
 mod tests {
-    use rstest::rstest;
+    use kithara_test_utils::kithara;
 
     use super::*;
 
-    #[test]
-    fn player_node_defaults_inactive() {
+    #[kithara::test]
+    fn player_node_defaults_active() {
         let node = PlayerNode::new();
-        assert!(!node.active);
+        assert!(node.active);
     }
 
-    #[test]
+    #[kithara::test]
     fn player_node_info_has_stereo_output() {
         let node = PlayerNode::new();
         let info = node.info(&EmptyConfig);
@@ -143,15 +144,15 @@ mod tests {
         let _ = info;
     }
 
-    #[rstest]
+    #[kithara::test]
     #[case(PlayerCmd::SetPaused(true))]
     #[case(PlayerCmd::SetPaused(false))]
     #[case(PlayerCmd::SetFadeDuration(0.25))]
     fn player_node_with_channel(#[case] cmd: PlayerCmd) {
-        let (tx, rx) = kanal::bounded(8);
+        let (tx, rx) = kithara_platform::bounded(8);
         let shared_state = Arc::new(SharedPlayerState::new());
         let node = PlayerNode::with_channel(rx, shared_state, kithara_bufpool::pcm_pool().clone());
-        assert!(!node.active);
+        assert!(node.active);
 
         // Verify the channel is connected
         tx.send(cmd).ok();
@@ -159,7 +160,7 @@ mod tests {
         assert!(matches!(received, Ok(Some(_))));
     }
 
-    #[test]
+    #[kithara::test]
     fn player_node_shared_state_accessible() {
         let node = PlayerNode::new();
         let state = node.shared_state();

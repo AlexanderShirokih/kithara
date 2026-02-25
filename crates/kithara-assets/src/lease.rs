@@ -85,6 +85,12 @@ where
         &self.inner
     }
 
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
     fn open_index(&self) -> AssetsResult<PinsIndex<A::IndexRes>> {
         PinsIndex::open(self.inner(), self.pool.clone())
     }
@@ -251,6 +257,18 @@ where
     type Context = A::Context;
     type IndexRes = A::IndexRes;
 
+    fn supports_evict(&self) -> bool {
+        self.inner.supports_evict()
+    }
+
+    fn supports_lease(&self) -> bool {
+        self.inner.supports_lease()
+    }
+
+    fn supports_cache(&self) -> bool {
+        self.inner.supports_cache()
+    }
+
     fn root_dir(&self) -> &Path {
         self.inner.root_dir()
     }
@@ -350,13 +368,14 @@ impl Drop for LeaseGuardInner {
 }
 
 #[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use std::time::Duration;
 
-    use rstest::rstest;
+    use kithara_test_utils::kithara;
 
     use super::*;
-    use crate::{base::DiskAssetStore, index::PinsIndex, key::ResourceKey};
+    use crate::{disk_store::DiskAssetStore, index::PinsIndex, key::ResourceKey};
 
     fn make_lease(dir: &Path) -> LeaseAssets<DiskAssetStore> {
         let disk = Arc::new(DiskAssetStore::new(
@@ -384,14 +403,11 @@ mod tests {
 
     fn load_persisted_pins(dir: &Path) -> HashSet<String> {
         let disk = DiskAssetStore::new(dir, "test_asset", CancellationToken::new());
-        match PinsIndex::open(&disk, crate::byte_pool().clone()) {
-            Ok(idx) => idx.load().unwrap_or_default(),
-            Err(_) => HashSet::new(),
-        }
+        PinsIndex::open(&disk, crate::byte_pool().clone())
+            .map_or_else(|_| HashSet::new(), |idx| idx.load().unwrap_or_default())
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(5))]
+    #[kithara::test(timeout(Duration::from_secs(5)))]
     fn pin_persists_immediately() {
         let dir = tempfile::tempdir().unwrap();
         let lease = make_lease(dir.path());
@@ -408,8 +424,7 @@ mod tests {
         );
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(5))]
+    #[kithara::test(timeout(Duration::from_secs(5)))]
     fn eager_flush_clears_dirty_flag() {
         let dir = tempfile::tempdir().unwrap();
         let lease = make_lease(dir.path());
@@ -427,8 +442,7 @@ mod tests {
         lease.flush_pins().unwrap();
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(5))]
+    #[kithara::test(timeout(Duration::from_secs(5)))]
     fn drop_guard_eagerly_persists_unpin() {
         let dir = tempfile::tempdir().unwrap();
         let key = ResourceKey::new("audio.mp3");
@@ -451,8 +465,7 @@ mod tests {
         );
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(5))]
+    #[kithara::test(timeout(Duration::from_secs(5)))]
     fn flush_persists_active_pins() {
         let dir = tempfile::tempdir().unwrap();
         let key = ResourceKey::new("audio.mp3");
@@ -469,8 +482,7 @@ mod tests {
         );
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(5))]
+    #[kithara::test(timeout(Duration::from_secs(5)))]
     fn clone_pin_persists_immediately() {
         let dir = tempfile::tempdir().unwrap();
         let key = ResourceKey::new("audio.mp3");
@@ -495,8 +507,7 @@ mod tests {
         );
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(5))]
+    #[kithara::test(timeout(Duration::from_secs(5)))]
     fn bypass_does_not_pin() {
         let dir = tempfile::tempdir().unwrap();
         let lease = make_lease_disabled(dir.path());
@@ -505,12 +516,10 @@ mod tests {
         let _res = lease.open_resource(&key).unwrap();
 
         // Pins should be empty when disabled
-        let pins = lease.pins.lock();
-        assert!(pins.is_empty(), "bypass should not pin");
+        assert!(lease.pins.lock().is_empty(), "bypass should not pin");
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(5))]
+    #[kithara::test(timeout(Duration::from_secs(5)))]
     fn bypass_flush_is_noop() {
         let dir = tempfile::tempdir().unwrap();
         let lease = make_lease_disabled(dir.path());
@@ -524,8 +533,7 @@ mod tests {
         assert!(on_disk.is_empty(), "bypass flush should not persist");
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(5))]
+    #[kithara::test(timeout(Duration::from_secs(5)))]
     fn bypass_still_returns_resources() {
         let dir = tempfile::tempdir().unwrap();
         let lease = make_lease_disabled(dir.path());

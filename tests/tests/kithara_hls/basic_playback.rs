@@ -9,9 +9,7 @@ use kithara::{
     hls::{Hls, HlsConfig},
     stream::Stream,
 };
-use kithara_test_utils::{cancel_token, temp_dir};
-use rstest::{fixture, rstest};
-use tempfile::TempDir;
+use kithara_test_utils::{TestTempDir, cancel_token, temp_dir};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -21,7 +19,7 @@ use super::fixture;
 
 // Fixtures
 
-#[fixture]
+#[kithara::fixture]
 fn tracing_setup() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
@@ -43,12 +41,10 @@ fn tracing_setup() {
 /// 3. Rodio decoder can be created from the stream
 ///
 /// Note: This test uses a local test server.
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn test_basic_hls_playback(
     _tracing_setup: (),
-    temp_dir: TempDir,
+    temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let server = TestServer::new().await;
@@ -82,7 +78,8 @@ async fn test_basic_hls_playback(
 
     // 3. Test: Create rodio decoder (this validates the stream format)
     info!("Creating rodio decoder...");
-    let decoder_result = tokio::task::spawn_blocking(move || rodio::Decoder::new(stream)).await;
+    let decoder_result =
+        kithara_platform::spawn_blocking(move || rodio::Decoder::new(stream)).await;
 
     match decoder_result {
         Ok(_decoder) => {
@@ -99,11 +96,9 @@ async fn test_basic_hls_playback(
 }
 
 /// Test that verifies HLS session creation without actual playback.
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn test_hls_session_creation(
-    temp_dir: TempDir,
+    temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let _ = tracing_subscriber::fmt()
@@ -138,11 +133,9 @@ async fn test_hls_session_creation(
 }
 
 /// Test HLS with init segments.
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn test_hls_with_init_segments(
-    temp_dir: TempDir,
+    temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let _ = tracing_subscriber::fmt()
@@ -165,11 +158,9 @@ async fn test_hls_with_init_segments(
 }
 
 /// Test HLS with different options configurations.
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn test_hls_with_different_options(
-    temp_dir: TempDir,
+    temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::default().add_directive("warn".parse().unwrap()))
@@ -192,15 +183,13 @@ async fn test_hls_with_different_options(
 }
 
 /// Test HLS session error handling with invalid URLs.
-#[rstest]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 #[case("http://invalid-domain-that-does-not-exist-12345.com/master.m3u8")]
 #[case("not-a-valid-url")]
 #[case("")]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
 async fn test_hls_invalid_url_handling(
     #[case] invalid_url: &str,
-    temp_dir: TempDir,
+    temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let _ = tracing_subscriber::fmt()
@@ -229,11 +218,9 @@ async fn test_hls_invalid_url_handling(
 
 /// Test that INIT segment comes first in byte stream (offset 0).
 /// This is critical for fMP4 HLS where decoder needs moov box before mdat.
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
 async fn test_init_segment_at_stream_start(
-    temp_dir: TempDir,
+    temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let _ = tracing_subscriber::fmt()
@@ -255,10 +242,10 @@ async fn test_init_segment_at_stream_start(
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Read from offset 0 - should get INIT data, not SEG-0.
-    // INIT data for variant 0: "V0-INIT:TEST_INIT_DATA" (22 bytes)
+    // Variant is ABR-dependent, so validate init marker generically.
     let mut buf = [0u8; 32];
 
-    let n = tokio::task::spawn_blocking(move || stream.read(&mut buf).map(|n| (n, buf)))
+    let n = kithara_platform::spawn_blocking(move || stream.read(&mut buf).map(|n| (n, buf)))
         .await?
         .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)?;
 
@@ -266,10 +253,11 @@ async fn test_init_segment_at_stream_start(
     assert!(bytes_read > 0, "Should read data from offset 0");
 
     let data = &data[..bytes_read];
+    let head = String::from_utf8_lossy(&data[..data.len().min(20)]);
     assert!(
-        data.starts_with(b"V0-INIT:"),
+        head.contains("-INIT:"),
         "Offset 0 should contain INIT data, got: {:?}",
-        String::from_utf8_lossy(&data[..data.len().min(20)])
+        head
     );
 
     info!("INIT segment correctly at stream start");
@@ -277,10 +265,8 @@ async fn test_init_segment_at_stream_start(
 }
 
 /// Test HLS with limited cache.
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[tokio::test]
-async fn test_hls_without_cache(temp_dir: TempDir) -> Result<(), Box<dyn Error + Send + Sync>> {
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(5)))]
+async fn test_hls_without_cache(temp_dir: TestTempDir) -> Result<(), Box<dyn Error + Send + Sync>> {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::default().add_directive("warn".parse().unwrap()))
         .with_test_writer()

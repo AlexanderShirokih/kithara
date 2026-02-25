@@ -91,6 +91,12 @@ where
     pub fn inner(&self) -> &A {
         &self.inner
     }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.enabled
+    }
 }
 
 impl<A> Assets for CachedAssets<A>
@@ -100,6 +106,18 @@ where
     type Res = A::Res;
     type Context = A::Context;
     type IndexRes = A::IndexRes;
+
+    fn supports_evict(&self) -> bool {
+        self.inner.supports_evict()
+    }
+
+    fn supports_lease(&self) -> bool {
+        self.inner.supports_lease()
+    }
+
+    fn supports_cache(&self) -> bool {
+        self.inner.supports_cache()
+    }
 
     fn root_dir(&self) -> &Path {
         self.inner.root_dir()
@@ -243,15 +261,17 @@ where
 }
 
 #[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use std::{sync::Arc, time::Duration};
 
+    use kithara_platform::thread;
     use kithara_storage::ResourceExt;
-    use rstest::rstest;
+    use kithara_test_utils::kithara;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-    use crate::base::DiskAssetStore;
+    use crate::disk_store::DiskAssetStore;
 
     fn make_cached(dir: &Path, capacity: NonZeroUsize) -> CachedAssets<DiskAssetStore> {
         let disk = Arc::new(DiskAssetStore::new(
@@ -271,8 +291,7 @@ mod tests {
         CachedAssets::with_options(disk, NonZeroUsize::new(5).unwrap(), false, false)
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(5))]
+    #[kithara::test(timeout(Duration::from_secs(5)))]
     fn evicts_at_custom_capacity() {
         let dir = tempfile::tempdir().unwrap();
         let cap = NonZeroUsize::new(3).unwrap();
@@ -288,12 +307,10 @@ mod tests {
         }
 
         // Cache should have exactly 3 entries (capacity)
-        let cache = cached.cache.lock();
-        assert_eq!(cache.len(), 3);
+        assert_eq!(cached.cache.lock().len(), 3);
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(5))]
+    #[kithara::test(timeout(Duration::from_secs(5)))]
     fn cache_hit_returns_same_resource() {
         let dir = tempfile::tempdir().unwrap();
         let cap = NonZeroUsize::new(5).unwrap();
@@ -307,8 +324,7 @@ mod tests {
         assert_eq!(res1.path(), res2.path());
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(5))]
+    #[kithara::test(timeout(Duration::from_secs(5)))]
     fn concurrent_opens_do_not_block_each_other() {
         let dir = tempfile::tempdir().unwrap();
         let cap = NonZeroUsize::new(5).unwrap();
@@ -317,7 +333,7 @@ mod tests {
         let handles: Vec<_> = (0..4)
             .map(|i| {
                 let c = cached.clone();
-                std::thread::spawn(move || {
+                thread::spawn(move || {
                     let key = ResourceKey::new(format!("seg_{i}.m4s"));
                     c.open_resource(&key).unwrap();
                 })
@@ -328,12 +344,10 @@ mod tests {
             h.join().unwrap();
         }
 
-        let cache = cached.cache.lock();
-        assert_eq!(cache.len(), 4);
+        assert_eq!(cached.cache.lock().len(), 4);
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(5))]
+    #[kithara::test(timeout(Duration::from_secs(5)))]
     fn bypass_does_not_cache() {
         let dir = tempfile::tempdir().unwrap();
         let cached = make_cached_disabled(dir.path());
@@ -347,12 +361,10 @@ mod tests {
         }
 
         // Cache should be empty when disabled
-        let cache = cached.cache.lock();
-        assert_eq!(cache.len(), 0);
+        assert_eq!(cached.cache.lock().len(), 0);
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(5))]
+    #[kithara::test(timeout(Duration::from_secs(5)))]
     fn bypass_still_returns_resources() {
         let dir = tempfile::tempdir().unwrap();
         let cached = make_cached_disabled(dir.path());
@@ -377,14 +389,14 @@ mod tests {
         let mem = Arc::new(crate::mem_store::MemAssetStore::new(
             "test_asset",
             CancellationToken::new(),
+            None,
             std::env::temp_dir(),
         ));
         let cached = CachedAssets::with_options(mem.clone(), capacity, true, remove_on_evict);
         (mem, cached)
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(5))]
+    #[kithara::test(timeout(Duration::from_secs(5)))]
     fn remove_on_evict_false_does_not_remove() {
         let cap = NonZeroUsize::new(2).unwrap();
         let (mem, cached) = make_mem_cached(cap, false);
@@ -402,8 +414,7 @@ mod tests {
         assert!(mem.open_resource_with_ctx(&k0, None).is_ok());
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(5))]
+    #[kithara::test(timeout(Duration::from_secs(5)))]
     fn remove_on_evict_true_removes_evicted_resource() {
         let cap = NonZeroUsize::new(2).unwrap();
         let (mem, cached) = make_mem_cached(cap, true);
@@ -426,8 +437,7 @@ mod tests {
         assert_eq!(reopened.len(), None, "evicted resource should be gone");
     }
 
-    #[rstest]
-    #[timeout(Duration::from_secs(5))]
+    #[kithara::test(timeout(Duration::from_secs(5)))]
     fn cache_hit_does_not_trigger_eviction() {
         let cap = NonZeroUsize::new(2).unwrap();
         let (mem, cached) = make_mem_cached(cap, true);

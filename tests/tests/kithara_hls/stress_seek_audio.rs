@@ -19,9 +19,7 @@ use kithara::{
     hls::{AbrMode, AbrOptions, Hls, HlsConfig},
     stream::{AudioCodec, ContainerFormat, MediaInfo, Stream},
 };
-use kithara_test_utils::{Xorshift64, wav::create_saw_wav};
-use rstest::rstest;
-use tempfile::TempDir;
+use kithara_test_utils::{TestTempDir, Xorshift64, wav::create_saw_wav};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -75,11 +73,9 @@ fn phase_distance(a: usize, b: usize) -> usize {
 ///    - Level 2: continuity (consecutive frames follow pattern)
 ///    - Level 3: position (decoded phase ≈ expected phase)
 /// 6. Final seek near end → read to EOF
-#[rstest]
+#[kithara::test(tokio, browser, timeout(Duration::from_secs(120)))]
 #[case::mmap(false)]
 #[case::ephemeral(true)]
-#[timeout(Duration::from_secs(120))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stress_seek_audio_hls_wav(#[case] ephemeral: bool) {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
@@ -114,7 +110,7 @@ async fn stress_seek_audio_hls_wav(#[case] ephemeral: bool) {
     info!(%url, segments = SEGMENT_COUNT, "HLS server ready");
 
     // Step 3: Create Audio<Stream<Hls>>
-    let temp_dir = TempDir::new().expect("temp dir");
+    let temp_dir = TestTempDir::new();
     let cancel = CancellationToken::new();
 
     let mut store = StoreOptions::new(temp_dir.path());
@@ -157,7 +153,7 @@ async fn stress_seek_audio_hls_wav(#[case] ephemeral: bool) {
     );
 
     // Steps 5-6 in blocking thread
-    let result = tokio::task::spawn_blocking(move || {
+    let result = kithara_platform::spawn_blocking(move || {
         // Compute chunk size: ~50ms of audio
         let chunk_duration_secs = 0.05;
         let chunk_samples =
@@ -364,12 +360,28 @@ async fn stress_seek_audio_hls_wav(#[case] ephemeral: bool) {
         );
 
         info!(remaining_samples, "Final read done — EOF confirmed");
+
+        // Step 7: Regression check — seek after EOF must resume playback.
+        // This catches false-EOF races where seek re-queues demand, but downloader
+        // marks EOF before demand is processed.
+        let resume_positions = [0.5_f64, total_secs * 0.25, total_secs * 0.75];
+        for (i, pos_secs) in resume_positions.iter().copied().enumerate() {
+            audio
+                .seek(Duration::from_secs_f64(pos_secs))
+                .unwrap_or_else(|e| panic!("seek-after-eof #{i} to {pos_secs:.4}s failed: {e}"));
+
+            let n = audio.read(&mut buf);
+            assert!(
+                n > 0,
+                "seek-after-eof #{i} returned 0 samples at {pos_secs:.4}s (is_eof={})",
+                audio.is_eof(),
+            );
+        }
     })
     .await;
 
     match result {
         Ok(()) => info!("Audio+HLS stress test passed"),
-        Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
         Err(e) => panic!("spawn_blocking failed: {e}"),
     }
 }

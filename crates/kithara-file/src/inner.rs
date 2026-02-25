@@ -2,20 +2,15 @@
 //!
 //! Provides `File` marker type implementing `StreamType` trait.
 
-use std::sync::{Arc, atomic::AtomicU64};
+use std::sync::Arc;
 
 use kithara_assets::{AssetStoreBuilder, asset_root_for_url};
 use kithara_events::{EventBus, FileEvent};
-use kithara_net::HttpClient;
+use kithara_net::{HttpClient, Net};
 use kithara_platform::ThreadPool;
 use kithara_storage::{ResourceExt, ResourceStatus};
-use kithara_stream::{Backend, NullStreamContext, StreamContext, StreamType};
+use kithara_stream::{Backend, NullStreamContext, StreamContext, StreamType, Timeline};
 use tokio_util::sync::CancellationToken;
-
-#[cfg(not(target_arch = "wasm32"))]
-use kithara_assets::Assets;
-#[cfg(not(target_arch = "wasm32"))]
-use kithara_assets::CoverageIndex;
 
 use crate::{
     config::{FileConfig, FileSrc},
@@ -51,11 +46,8 @@ impl StreamType for File {
         }
     }
 
-    fn build_stream_context(
-        _source: &Self::Source,
-        position: Arc<AtomicU64>,
-    ) -> Arc<dyn StreamContext> {
-        Arc::new(NullStreamContext::new(position))
+    fn build_stream_context(_source: &Self::Source, timeline: Timeline) -> Arc<dyn StreamContext> {
+        Arc::new(NullStreamContext::new(timeline))
     }
 }
 
@@ -78,9 +70,6 @@ impl File {
 
         let store = AssetStoreBuilder::new()
             .asset_root(None)
-            .cache_enabled(false)
-            .lease_enabled(false)
-            .evict_enabled(false)
             .cancel(cancel)
             .build();
 
@@ -92,13 +81,15 @@ impl File {
             .bus
             .unwrap_or_else(|| EventBus::new(config.event_channel_capacity));
 
-        let progress = Arc::new(Progress::new());
+        let timeline = Timeline::new();
+        timeline.set_total_bytes(len);
+        let progress = Arc::new(Progress::new(timeline.clone()));
         // Local file is fully available — mark download as complete.
         let total = len.unwrap_or(0);
         progress.set_download_pos(total);
         bus.publish(FileEvent::DownloadComplete { total_bytes: total });
 
-        Ok(FileSource::new(res, progress, bus, len))
+        Ok(FileSource::new(res, progress, bus))
     }
 
     /// Create a source for a remote file (HTTP/HTTPS).
@@ -108,29 +99,30 @@ impl File {
         cancel: CancellationToken,
     ) -> Result<FileSource, SourceError> {
         let asset_root = asset_root_for_url(&url, config.name.as_deref());
+        let net_client = HttpClient::new(config.net.clone());
+        let response_headers = net_client.head(url.clone(), config.headers.clone()).await?;
+        let expected_len = response_headers
+            .get("content-length")
+            .or_else(|| response_headers.get("Content-Length"))
+            .and_then(|value| value.parse::<u64>().ok());
 
-        let backend = AssetStoreBuilder::new()
+        let mut backend_builder = AssetStoreBuilder::new()
             .root_dir(&config.store.cache_dir)
             .asset_root(Some(asset_root.as_str()))
             .evict_config(config.store.to_evict_config())
             .ephemeral(config.store.ephemeral)
-            .cancel(cancel.clone())
-            .build();
+            .cancel(cancel.clone());
+        let uses_memory_backend = cfg!(target_arch = "wasm32") || config.store.ephemeral;
+        if uses_memory_backend
+            && let Some(capacity) = expected_len.and_then(|len| usize::try_from(len).ok())
+        {
+            backend_builder = backend_builder.mem_resource_capacity(capacity);
+        }
+        let backend = backend_builder.build();
 
-        // Open coverage index for crash-safe download tracking.
-        // Only available for disk-backed storage (ephemeral/mem doesn't need it).
-        #[cfg(not(target_arch = "wasm32"))]
-        let coverage_index = match &backend {
-            kithara_assets::AssetsBackend::Disk(store) => store
-                .open_coverage_index_resource()
-                .ok()
-                .map(|res| Arc::new(CoverageIndex::new(res))),
-            kithara_assets::AssetsBackend::Mem(_) => None,
-        };
-        #[cfg(target_arch = "wasm32")]
-        let coverage_index = None;
-
-        let net_client = HttpClient::new(config.net.clone());
+        let coverage_manager = backend
+            .open_coverage_manager()
+            .map_err(SourceError::Assets)?;
 
         let state = FileStreamState::create(
             Arc::new(backend),
@@ -143,7 +135,8 @@ impl File {
         )
         .await?;
 
-        let progress = Arc::new(Progress::new());
+        let timeline = state.timeline();
+        let progress = Arc::new(Progress::new(timeline));
         let shared = Arc::new(SharedFileState::new());
 
         // Determine if the resource is a complete cache or needs downloading.
@@ -183,7 +176,7 @@ impl File {
                 state.bus().clone(),
                 config.look_ahead_bytes,
                 shared.clone(),
-                coverage_index,
+                coverage_manager,
             )
             .await;
 
@@ -197,7 +190,6 @@ impl File {
                 state.res().clone(),
                 progress,
                 state.bus().clone(),
-                state.len(),
                 shared,
                 backend,
             );
@@ -206,12 +198,7 @@ impl File {
         }
 
         // Fully cached — create source without backend (no downloader needed).
-        let source = FileSource::new(
-            state.res().clone(),
-            progress,
-            state.bus().clone(),
-            state.len(),
-        );
+        let source = FileSource::new(state.res().clone(), progress, state.bus().clone());
 
         Ok(source)
     }

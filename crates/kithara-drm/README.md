@@ -55,7 +55,8 @@ IV derivation happens in `kithara-hls`'s `KeyManager`:
 
 - If `#EXT-X-KEY` provides an explicit IV, it is used directly.
 - Otherwise, IV is derived from the segment sequence number: `[0u8; 8] || sequence.to_be_bytes()`.
+- Optional key unwrapping/processing for in-house DRM is also performed by `KeyManager` before building `DecryptContext`.
 
 ## Integration
 
-Used by `kithara-hls` via `AssetsBackend<DecryptContext>`. The HLS crate sets up the processing callback when building the asset store, enabling transparent decryption of AES-128-CBC encrypted segments.
+Used by `kithara-hls` via `AssetStore<DecryptContext>`. The HLS crate sets up the processing callback when building the asset store, enabling transparent decryption of AES-128-CBC encrypted segments.

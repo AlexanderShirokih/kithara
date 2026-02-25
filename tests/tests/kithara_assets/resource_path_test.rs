@@ -1,18 +1,18 @@
 #![forbid(unsafe_code)]
+#![cfg(not(target_arch = "wasm32"))]
 
 use std::time::Duration;
 
 use kithara::{
-    assets::{AssetStore, AssetStoreBuilder, Assets, EvictConfig, ResourceKey},
+    assets::{AssetStore, AssetStoreBuilder, EvictConfig, ResourceKey},
+    internal::Assets,
     storage::ResourceExt,
 };
-use kithara_test_utils::temp_dir;
-use rstest::rstest;
-use tempfile::TempDir;
+use kithara_test_utils::{TestTempDir, temp_dir};
 
 // Test Fixtures
 
-fn asset_store_with_root(temp_dir: &TempDir, asset_root: &str) -> AssetStore {
+fn asset_store_with_root(temp_dir: &TestTempDir, asset_root: &str) -> AssetStore {
     AssetStoreBuilder::new()
         .root_dir(temp_dir.path())
         .asset_root(Some(asset_root))
@@ -20,15 +20,13 @@ fn asset_store_with_root(temp_dir: &TempDir, asset_root: &str) -> AssetStore {
             max_assets: None,
             max_bytes: None,
         })
-        .build_disk()
+        .build()
 }
 
 // AssetResource Path Tests
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
-fn asset_resource_path_method(temp_dir: TempDir) {
+#[kithara::test(native, timeout(Duration::from_secs(5)))]
+fn asset_resource_path_method(temp_dir: TestTempDir) {
     let asset_store = asset_store_with_root(&temp_dir, "test-asset");
     let key = ResourceKey::new("metadata.json");
     let asset_resource = asset_store
@@ -55,10 +53,8 @@ fn asset_resource_path_method(temp_dir: TempDir) {
     assert!(asset_path.file_name().unwrap() == "metadata.json");
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
-fn asset_resource_streaming_path_method(temp_dir: TempDir) {
+#[kithara::test(native, timeout(Duration::from_secs(5)))]
+fn asset_resource_streaming_path_method(temp_dir: TestTempDir) {
     let asset_store = asset_store_with_root(&temp_dir, "test-asset");
     let key = ResourceKey::new("media.bin");
     let asset_resource = asset_store
@@ -88,10 +84,8 @@ fn asset_resource_streaming_path_method(temp_dir: TempDir) {
     assert!(asset_path.file_name().unwrap() == "media.bin");
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
-fn asset_resource_path_consistency(temp_dir: TempDir) {
+#[kithara::test(native, timeout(Duration::from_secs(5)))]
+fn asset_resource_path_consistency(temp_dir: TestTempDir) {
     let asset_store = asset_store_with_root(&temp_dir, "test-asset");
     let key = ResourceKey::new("data.bin");
     let asset_resource = asset_store
@@ -112,10 +106,8 @@ fn asset_resource_path_consistency(temp_dir: TempDir) {
     assert!(!asset_resource.path().unwrap().as_os_str().is_empty());
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
-fn asset_resource_path_reflects_asset_root_and_resource_name(temp_dir: TempDir) {
+#[kithara::test(native, timeout(Duration::from_secs(5)))]
+fn asset_resource_path_reflects_asset_root_and_resource_name(temp_dir: TestTempDir) {
     let asset_root = "my-asset";
     let resource_name = "subdir/file.txt";
     let asset_store = asset_store_with_root(&temp_dir, asset_root);
@@ -140,10 +132,8 @@ fn asset_resource_path_reflects_asset_root_and_resource_name(temp_dir: TempDir) 
     assert!(relative_path.ends_with(resource_name));
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
-fn multiple_resources_same_asset_root_have_different_paths(temp_dir: TempDir) {
+#[kithara::test(native, timeout(Duration::from_secs(5)))]
+fn multiple_resources_same_asset_root_have_different_paths(temp_dir: TestTempDir) {
     let asset_root = "shared-asset";
     let asset_store = asset_store_with_root(&temp_dir, asset_root);
 

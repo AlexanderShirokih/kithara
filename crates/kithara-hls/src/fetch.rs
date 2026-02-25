@@ -6,7 +6,8 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use futures::StreamExt;
-use kithara_assets::{AssetResource, AssetsBackend, ResourceKey};
+use kithara_assets::{AssetResource, AssetStore, ResourceKey};
+use kithara_bufpool::byte_pool;
 use kithara_drm::DecryptContext;
 use kithara_net::{Headers, HttpClient, Net};
 use kithara_platform::{MaybeSend, MaybeSync, RwLock};
@@ -107,7 +108,7 @@ fn uri_basename_no_query(uri: &str) -> Option<&str> {
 /// and implements `Loader` for segment loading.
 #[derive(Clone)]
 pub struct FetchManager<N> {
-    backend: AssetsBackend<DecryptContext>,
+    backend: AssetStore<DecryptContext>,
     key_manager: Option<Arc<crate::keys::KeyManager>>,
     net: N,
     cancel: CancellationToken,
@@ -125,7 +126,7 @@ pub struct FetchManager<N> {
 }
 
 impl<N: Net> FetchManager<N> {
-    pub fn new(backend: AssetsBackend<DecryptContext>, net: N, cancel: CancellationToken) -> Self {
+    pub fn new(backend: AssetStore<DecryptContext>, net: N, cancel: CancellationToken) -> Self {
         Self {
             backend,
             key_manager: None,
@@ -198,17 +199,25 @@ impl<N: Net> FetchManager<N> {
         self.backend.asset_root()
     }
 
-    pub fn backend(&self) -> &AssetsBackend<DecryptContext> {
+    pub fn backend(&self) -> &AssetStore<DecryptContext> {
         &self.backend
     }
 
     // Low-level fetch
 
+    /// Fetch a playlist-like resource and cache it in the assets backend.
+    ///
+    /// # Errors
+    /// Returns an error when cache access, network fetch, or URL/resource handling fails.
     pub async fn fetch_playlist(&self, url: &Url, rel_path: &str) -> HlsResult<Bytes> {
         self.fetch_atomic_internal(url, rel_path, self.headers.clone(), "playlist")
             .await
     }
 
+    /// Fetch a key resource and cache it in the assets backend.
+    ///
+    /// # Errors
+    /// Returns an error when cache access, network fetch, or URL/resource handling fails.
     pub async fn fetch_key(
         &self,
         url: &Url,
@@ -230,7 +239,7 @@ impl<N: Net> FetchManager<N> {
         let key = ResourceKey::from_url(url);
         let res = self.backend.open_resource(&key)?;
 
-        let mut buf = kithara_assets::byte_pool().get();
+        let mut buf = byte_pool().get();
         let n = res.read_into(&mut buf)?;
         if n > 0 {
             debug!(
@@ -307,6 +316,10 @@ impl<N: Net> FetchManager<N> {
 
     // Playlist management
 
+    /// Load and parse the master playlist.
+    ///
+    /// # Errors
+    /// Returns an error when fetching/parsing fails or the URL basename cannot be derived.
     pub async fn master_playlist(&self, url: &Url) -> HlsResult<MasterPlaylist> {
         let master = self
             .master
@@ -319,6 +332,10 @@ impl<N: Net> FetchManager<N> {
         Ok(master.clone())
     }
 
+    /// Load and parse the media playlist for a specific variant.
+    ///
+    /// # Errors
+    /// Returns an error when fetching/parsing fails or the URL basename cannot be derived.
     pub async fn media_playlist(
         &self,
         url: &Url,
@@ -348,6 +365,10 @@ impl<N: Net> FetchManager<N> {
         self.master.get().map(|m| m.variants.clone())
     }
 
+    /// Resolve a possibly relative target URL.
+    ///
+    /// # Errors
+    /// Returns an error when URL joining fails.
     pub fn resolve_url(&self, base: &Url, target: &str) -> HlsResult<Url> {
         let resolved = if let Some(ref base_url) = self.base_url {
             base_url.join(target).map_err(|e| {
@@ -501,6 +522,9 @@ impl<N: Net> FetchManager<N> {
     ///
     /// First caller downloads, concurrent callers wait on the same cell.
     /// Pattern matches `media_playlist()`.
+    ///
+    /// # Errors
+    /// Returns an error when playlist loading, URL resolution, fetch, or content-length detection fails.
     pub async fn load_init_segment(&self, variant: usize) -> HlsResult<SegmentMeta> {
         let cell = {
             let mut guard = self.init_segments.write();
@@ -515,6 +539,81 @@ impl<N: Net> FetchManager<N> {
             .await?;
 
         Ok(meta.clone())
+    }
+
+    pub(crate) async fn load_media_segment_with_source(
+        &self,
+        variant: usize,
+        segment_index: usize,
+    ) -> HlsResult<(SegmentMeta, bool)> {
+        let (media_url, playlist) = self.load_media_playlist(variant).await?;
+
+        let container = if playlist.init_segment.is_some() {
+            Some(ContainerFormat::Fmp4)
+        } else {
+            Some(ContainerFormat::MpegTs)
+        };
+
+        let segment = playlist.segments.get(segment_index).ok_or_else(|| {
+            HlsError::SegmentNotFound(format!(
+                "segment {segment_index} not found in variant {variant} playlist",
+            ))
+        })?;
+
+        let segment_url = media_url
+            .join(&segment.uri)
+            .map_err(|e| HlsError::InvalidUrl(format!("Failed to resolve segment URL: {e}")))?;
+
+        // Resolve DRM context for encrypted segments
+        let decrypt_ctx = self
+            .resolve_decrypt_context(segment.key.as_ref(), &segment_url, segment.sequence)
+            .await?;
+
+        let fetch_result = self.start_fetch(&segment_url, decrypt_ctx).await?;
+
+        let (segment_len, cached) = match fetch_result {
+            FetchResult::Cached { bytes } => (bytes, true),
+            FetchResult::Active(mut writer, res) => {
+                let mut total = 0u64;
+                while let Some(result) = writer.next().await {
+                    match result {
+                        Ok(WriterItem::ChunkWritten { len, .. }) => {
+                            total += len as u64;
+                        }
+                        Ok(WriterItem::StreamEnded { total_bytes }) => {
+                            total = total_bytes;
+                            break;
+                        }
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+                if total == 0 {
+                    res.fail("segment: 0 bytes downloaded".to_string());
+                    return Err(HlsError::SegmentNotFound(format!(
+                        "segment {segment_index} download yielded 0 bytes",
+                    )));
+                }
+                // Commit — ProcessingAssets decrypts on commit if ctx was provided.
+                // Committed length may be shorter (PKCS7 padding removed).
+                let committed_len = {
+                    res.commit(Some(total)).map_err(HlsError::from)?;
+                    res.len().unwrap_or(total)
+                };
+                (committed_len, false)
+            }
+        };
+
+        let meta = SegmentMeta {
+            variant,
+            segment_type: SegmentType::Media(segment_index),
+            sequence: segment.sequence,
+            url: segment_url,
+            duration: Some(segment.duration),
+            key: segment.key.clone(),
+            len: segment_len,
+            container,
+        };
+        Ok((meta, cached))
     }
 
     // Loader helpers
@@ -543,6 +642,9 @@ impl<N: Net> FetchManager<N> {
     /// Get Content-Length for a URL using HEAD request.
     ///
     /// Returns the size in bytes if Content-Length header is present and parseable.
+    ///
+    /// # Errors
+    /// Returns an error when the request fails, header is missing, or header value cannot be parsed.
     pub async fn get_content_length(&self, url: &Url) -> HlsResult<u64> {
         let resp = self.net.head(url.clone(), self.headers.clone()).await?;
         let content_length = resp
@@ -572,70 +674,10 @@ impl<N: Net> Loader for FetchManager<N> {
         variant: usize,
         segment_index: usize,
     ) -> HlsResult<SegmentMeta> {
-        let (media_url, playlist) = self.load_media_playlist(variant).await?;
-
-        let container = if playlist.init_segment.is_some() {
-            Some(ContainerFormat::Fmp4)
-        } else {
-            Some(ContainerFormat::MpegTs)
-        };
-
-        let segment = playlist.segments.get(segment_index).ok_or_else(|| {
-            HlsError::SegmentNotFound(format!(
-                "segment {segment_index} not found in variant {variant} playlist",
-            ))
-        })?;
-
-        let segment_url = media_url
-            .join(&segment.uri)
-            .map_err(|e| HlsError::InvalidUrl(format!("Failed to resolve segment URL: {e}")))?;
-
-        // Resolve DRM context for encrypted segments
-        let decrypt_ctx = self
-            .resolve_decrypt_context(segment.key.as_ref(), &segment_url, segment.sequence)
+        let (meta, _cached) = self
+            .load_media_segment_with_source(variant, segment_index)
             .await?;
-
-        let fetch_result = self.start_fetch(&segment_url, decrypt_ctx).await?;
-
-        let segment_len = match fetch_result {
-            FetchResult::Cached { bytes } => bytes,
-            FetchResult::Active(mut writer, res) => {
-                let mut total = 0u64;
-                while let Some(result) = writer.next().await {
-                    match result {
-                        Ok(WriterItem::ChunkWritten { len, .. }) => {
-                            total += len as u64;
-                        }
-                        Ok(WriterItem::StreamEnded { total_bytes }) => {
-                            total = total_bytes;
-                            break;
-                        }
-                        Err(e) => return Err(e.into()),
-                    }
-                }
-                if total == 0 {
-                    res.fail("segment: 0 bytes downloaded".to_string());
-                    return Err(HlsError::SegmentNotFound(format!(
-                        "segment {segment_index} download yielded 0 bytes",
-                    )));
-                }
-                // Commit — ProcessingAssets decrypts on commit if ctx was provided.
-                // Committed length may be shorter (PKCS7 padding removed).
-                res.commit(Some(total)).map_err(HlsError::from)?;
-                res.len().unwrap_or(total)
-            }
-        };
-
-        Ok(SegmentMeta {
-            variant,
-            segment_type: SegmentType::Media(segment_index),
-            sequence: segment.sequence,
-            url: segment_url,
-            duration: Some(segment.duration),
-            key: segment.key.clone(),
-            len: segment_len,
-            container,
-        })
+        Ok(meta)
     }
 
     async fn load_init_segment(&self, variant: usize) -> HlsResult<SegmentMeta> {
@@ -664,15 +706,16 @@ impl<N: Net> Loader for FetchManager<N> {
 }
 
 #[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 
     use bytes::Bytes;
     use futures::stream;
-    use kithara_assets::{AssetStoreBuilder, AssetsBackend, ProcessChunkFn};
+    use kithara_assets::{AssetStore, AssetStoreBuilder, ProcessChunkFn};
     use kithara_drm::{DecryptContext, aes128_cbc_process_chunk};
     use kithara_net::{ByteStream, Headers, NetError, mock::NetMock};
-    use rstest::rstest;
+    use kithara_test_utils::kithara;
     use tempfile::TempDir;
     use tokio_util::sync::CancellationToken;
     use unimock::{MockFn, Unimock, matching};
@@ -681,7 +724,7 @@ mod tests {
     use super::*;
 
     /// Build a test backend with DRM process function.
-    fn test_backend(asset_root: &str, root_dir: &Path) -> AssetsBackend<DecryptContext> {
+    fn test_backend(asset_root: &str, root_dir: &Path) -> AssetStore<DecryptContext> {
         let drm_fn: ProcessChunkFn<DecryptContext> =
             Arc::new(|input, output, ctx: &mut DecryptContext, is_last| {
                 aes128_cbc_process_chunk(input, output, ctx, is_last)
@@ -766,10 +809,9 @@ mod tests {
 
     // FetchManager tests
 
-    #[rstest]
+    #[kithara::test(tokio)]
     #[case(FetchKind::Playlist)]
     #[case(FetchKind::Key)]
-    #[tokio::test]
     async fn test_fetch_with_mock_net(#[case] kind: FetchKind) {
         let (url, rel_path, expected) = match kind {
             FetchKind::Playlist => (
@@ -794,7 +836,7 @@ mod tests {
         assert_eq!(result.unwrap(), expected);
     }
 
-    #[tokio::test]
+    #[kithara::test(tokio)]
     async fn test_fetch_playlist_uses_cache() {
         let url = test_url("http://example.com/playlist.m3u8");
         let playlist_content = b"#EXTM3U\n#EXT-X-VERSION:6\n";
@@ -810,10 +852,9 @@ mod tests {
         assert_eq!(result1.unwrap(), result2.unwrap());
     }
 
-    #[rstest]
+    #[kithara::test(tokio)]
     #[case(FetchKind::Playlist)]
     #[case(FetchKind::Key)]
-    #[tokio::test]
     async fn test_fetch_with_network_error(#[case] kind: FetchKind) {
         let (url, rel_path) = match kind {
             FetchKind::Playlist => (
@@ -832,7 +873,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[tokio::test]
+    #[kithara::test(tokio)]
     async fn test_matcher_url_path_matching() {
         let master_content = b"#EXTM3U\n#EXT-X-VERSION:6\n";
         let media_content = b"#EXTINF:4.0\nseg0.bin\n";
@@ -856,7 +897,7 @@ mod tests {
         assert!(media.is_ok());
     }
 
-    #[tokio::test]
+    #[kithara::test(tokio)]
     async fn test_matcher_url_domain_matching() {
         let content = b"test content";
 
@@ -873,7 +914,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[tokio::test]
+    #[kithara::test(tokio)]
     async fn test_matcher_headers_matching() {
         let key_content = vec![0u8; 16];
 
@@ -913,7 +954,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[kithara::test(tokio)]
     async fn test_mock_loader_basic() {
         let loader = Unimock::new((
             LoaderMock::num_variants
@@ -936,7 +977,7 @@ mod tests {
         assert_eq!(meta.len, 200_000);
     }
 
-    #[tokio::test]
+    #[kithara::test(tokio)]
     async fn test_mock_loader_multi_variant() {
         let loader = Unimock::new(
             LoaderMock::load_media_segment
@@ -961,11 +1002,18 @@ mod tests {
 
     // Partial segment tests
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "signature must match NetMock::stream callback shape in tests"
+    )]
     fn stream_with_timeout(
         _mock: &Unimock,
-        _url: Url,
+        url: Url,
         _headers: Option<Headers>,
     ) -> Result<ByteStream, NetError> {
+        if url.host_str().is_none() {
+            return Err(NetError::Unimplemented);
+        }
         let stream = stream::iter(vec![
             Ok(Bytes::from(vec![0xFF; 1000])),
             Err(NetError::Timeout),
@@ -973,19 +1021,25 @@ mod tests {
         Ok(Box::pin(stream) as ByteStream)
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "signature must match NetMock::stream callback shape in tests"
+    )]
     fn empty_stream(
         _mock: &Unimock,
-        _url: Url,
+        url: Url,
         _headers: Option<Headers>,
     ) -> Result<ByteStream, NetError> {
+        if url.host_str().is_none() {
+            return Err(NetError::Unimplemented);
+        }
         let stream = stream::empty::<Result<Bytes, NetError>>();
         Ok(Box::pin(stream) as ByteStream)
     }
 
-    #[rstest]
+    #[kithara::test(tokio)]
     #[case(&stream_with_timeout)]
     #[case(&empty_stream)]
-    #[tokio::test]
     async fn test_load_media_segment_invalid_stream_returns_err(
         #[case] stream_answer: &'static StreamAnswer,
     ) {

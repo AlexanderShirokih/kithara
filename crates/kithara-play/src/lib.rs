@@ -1,11 +1,23 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc, clippy::ignored_unit_patterns)]
 
+#[cfg(all(target_arch = "wasm32", not(feature = "backend-cpal")))]
+compile_error!("kithara-play: wasm32 build requires `backend-cpal`");
+
+#[cfg(all(target_arch = "wasm32", not(feature = "wasm-bindgen")))]
+compile_error!("kithara-play: wasm32 build requires `wasm-bindgen`");
+
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "backend-cpal")))]
+compile_error!("kithara-play: non-wasm build requires `backend-cpal`");
+
 mod error;
 mod events;
 mod metadata;
 mod time;
 mod types;
+
+#[cfg(feature = "internal")]
+pub mod internal;
 
 pub mod impls;
 pub mod traits;
@@ -49,6 +61,6 @@ pub use traits::{
     },
 };
 pub use types::{
-    ActionAtItemEnd, EqBand, ItemStatus, ObserverId, PlayerStatus, SlotId, TimeControlStatus,
-    TimeRange, WaitingReason,
+    ActionAtItemEnd, EqBand, ItemStatus, ObserverId, PlayerStatus, SessionDuckingMode, SlotId,
+    TimeControlStatus, TimeRange, WaitingReason,
 };

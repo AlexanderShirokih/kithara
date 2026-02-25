@@ -1,14 +1,62 @@
 // StreamingResource tests (merged from edge cases)
 use std::time::Duration;
 
-use kithara::storage::{
-    MmapOptions, MmapResource, OpenMode, Resource, ResourceExt, ResourceStatus, StorageError,
-    WaitOutcome,
-};
-use kithara_test_utils::{cancel_token, temp_dir};
-use rstest::*;
-use tempfile::TempDir;
+#[cfg(target_arch = "wasm32")]
+use kithara::storage::MemResource;
+#[cfg(not(target_arch = "wasm32"))]
+use kithara::storage::Resource;
+#[cfg(not(target_arch = "wasm32"))]
+use kithara::storage::{MmapOptions, MmapResource, OpenMode};
+use kithara::storage::{ResourceExt, ResourceStatus, StorageError, WaitOutcome};
+use kithara_test_utils::{TestTempDir, cancel_token, temp_dir};
 use tokio_util::sync::CancellationToken;
+
+#[cfg(not(target_arch = "wasm32"))]
+type TestResource = MmapResource;
+#[cfg(target_arch = "wasm32")]
+type TestResource = MemResource;
+
+fn open_test_resource(
+    temp_dir: &TestTempDir,
+    name: &str,
+    cancel: CancellationToken,
+) -> TestResource {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Resource::open(
+            cancel,
+            MmapOptions {
+                path: temp_dir.path().join(name),
+                initial_len: None,
+                mode: OpenMode::Auto,
+            },
+        )
+        .expect("open should succeed")
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (temp_dir, name);
+        MemResource::new(cancel)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn open_test_resource_with_len(
+    temp_dir: &TestTempDir,
+    name: &str,
+    len: u64,
+    cancel: CancellationToken,
+) -> TestResource {
+    Resource::open(
+        cancel,
+        MmapOptions {
+            path: temp_dir.path().join(name),
+            initial_len: Some(len),
+            mode: OpenMode::Auto,
+        },
+    )
+    .expect("open should succeed")
+}
 
 /// Helper to read bytes from resource into a new Vec
 fn read_bytes<R: ResourceExt>(res: &R, offset: u64, len: usize) -> Vec<u8> {
@@ -18,10 +66,8 @@ fn read_bytes<R: ResourceExt>(res: &R, offset: u64, len: usize) -> Vec<u8> {
     buf
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
-fn streaming_resource_path_method(temp_dir: TempDir, cancel_token: CancellationToken) {
+#[kithara::test(native, timeout(Duration::from_secs(5)))]
+fn streaming_resource_path_method(temp_dir: TestTempDir, cancel_token: CancellationToken) {
     let file_path = temp_dir.path().join("streaming.dat");
     let streaming: MmapResource = Resource::open(
         cancel_token,
@@ -41,31 +87,17 @@ fn streaming_resource_path_method(temp_dir: TempDir, cancel_token: CancellationT
     assert_eq!(streaming.path(), Some(file_path.as_path()));
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(10))]
-#[test]
-fn streaming_resource_open_and_status_new(temp_dir: TempDir, cancel_token: CancellationToken) {
-    let file_path = temp_dir.path().join("stream.dat");
-
-    let resource: MmapResource = Resource::open(
-        cancel_token,
-        MmapOptions {
-            path: file_path,
-            initial_len: None,
-            mode: OpenMode::Auto,
-        },
-    )
-    .unwrap();
+#[kithara::test(timeout(Duration::from_secs(10)))]
+fn streaming_resource_open_and_status_new(temp_dir: TestTempDir, cancel_token: CancellationToken) {
+    let resource = open_test_resource(&temp_dir, "stream.dat", cancel_token);
 
     // A brand new resource should be Active
     assert_eq!(resource.status(), ResourceStatus::Active);
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(10))]
-#[test]
+#[kithara::test(native, timeout(Duration::from_secs(10)))]
 fn streaming_resource_open_existing_is_committed(
-    temp_dir: TempDir,
+    temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) {
     let file_path = temp_dir.path().join("stream.dat");
@@ -104,20 +136,12 @@ fn streaming_resource_open_existing_is_committed(
     );
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
-fn streaming_resource_range_write_wait_read(temp_dir: TempDir, cancel_token: CancellationToken) {
-    let file_path = temp_dir.path().join("ranges.dat");
-    let resource: MmapResource = Resource::open(
-        cancel_token,
-        MmapOptions {
-            path: file_path,
-            initial_len: None,
-            mode: OpenMode::Auto,
-        },
-    )
-    .unwrap();
+#[kithara::test(timeout(Duration::from_secs(5)))]
+fn streaming_resource_range_write_wait_read(
+    temp_dir: TestTempDir,
+    cancel_token: CancellationToken,
+) {
+    let resource = open_test_resource(&temp_dir, "ranges.dat", cancel_token);
 
     resource.write_at(0, b"Hello, ").unwrap();
     resource.write_at(7, b"World!").unwrap();
@@ -127,23 +151,12 @@ fn streaming_resource_range_write_wait_read(temp_dir: TempDir, cancel_token: Can
     assert_eq!(&data, b"Hello, World!");
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
+#[kithara::test(timeout(Duration::from_secs(5)))]
 fn streaming_resource_sparse_file_behavior() {
-    let temp_dir = TempDir::new().unwrap();
-    let file_path = temp_dir.path().join("sparse.dat");
+    let temp_dir = TestTempDir::new();
     let cancel_token = CancellationToken::new();
 
-    let resource: MmapResource = Resource::open(
-        cancel_token,
-        MmapOptions {
-            path: file_path,
-            initial_len: None,
-            mode: OpenMode::Auto,
-        },
-    )
-    .unwrap();
+    let resource = open_test_resource(&temp_dir, "sparse.dat", cancel_token);
 
     resource.write_at(100, b"start").unwrap();
     resource.write_at(1000, b"middle").unwrap();
@@ -158,23 +171,12 @@ fn streaming_resource_sparse_file_behavior() {
     assert_eq!(&*read_bytes(&resource, 10000, 3), b"end");
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
+#[kithara::test(timeout(Duration::from_secs(5)))]
 fn streaming_resource_overlapping_writes() {
-    let temp_dir = TempDir::new().unwrap();
-    let file_path = temp_dir.path().join("overlap.dat");
+    let temp_dir = TestTempDir::new();
     let cancel_token = CancellationToken::new();
 
-    let resource: MmapResource = Resource::open(
-        cancel_token,
-        MmapOptions {
-            path: file_path,
-            initial_len: None,
-            mode: OpenMode::Auto,
-        },
-    )
-    .unwrap();
+    let resource = open_test_resource(&temp_dir, "overlap.dat", cancel_token);
 
     resource.write_at(0, b"Hello World!").unwrap();
     resource.write_at(6, b"Kithara!").unwrap();
@@ -184,23 +186,12 @@ fn streaming_resource_overlapping_writes() {
     assert_eq!(&data, b"Hello Kithara!");
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
+#[kithara::test(timeout(Duration::from_secs(5)))]
 fn streaming_resource_zero_length_commit() {
-    let temp_dir = TempDir::new().unwrap();
-    let file_path = temp_dir.path().join("zero.dat");
+    let temp_dir = TestTempDir::new();
     let cancel_token = CancellationToken::new();
 
-    let resource: MmapResource = Resource::open(
-        cancel_token,
-        MmapOptions {
-            path: file_path,
-            initial_len: None,
-            mode: OpenMode::Auto,
-        },
-    )
-    .unwrap();
+    let resource = open_test_resource(&temp_dir, "zero.dat", cancel_token);
 
     resource.commit(Some(0)).unwrap();
 
@@ -214,23 +205,12 @@ fn streaming_resource_zero_length_commit() {
     assert!(data.is_empty());
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
+#[kithara::test(timeout(Duration::from_secs(5)))]
 fn streaming_resource_edge_case_ranges() {
-    let temp_dir = TempDir::new().unwrap();
-    let file_path = temp_dir.path().join("edges.dat");
+    let temp_dir = TestTempDir::new();
     let cancel_token = CancellationToken::new();
 
-    let resource: MmapResource = Resource::open(
-        cancel_token,
-        MmapOptions {
-            path: file_path,
-            initial_len: None,
-            mode: OpenMode::Auto,
-        },
-    )
-    .unwrap();
+    let resource = open_test_resource(&temp_dir, "edges.dat", cancel_token);
 
     resource.write_at(0, b"X").unwrap();
 
@@ -246,28 +226,17 @@ fn streaming_resource_edge_case_ranges() {
     assert_eq!(&data, b"X");
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
+#[kithara::test(timeout(Duration::from_secs(5)))]
 fn streaming_resource_concurrent_wait_and_write() {
-    let temp_dir = TempDir::new().unwrap();
-    let file_path = temp_dir.path().join("concurrent_wait.dat");
+    let temp_dir = TestTempDir::new();
     let cancel_token = CancellationToken::new();
 
-    let resource: MmapResource = Resource::open(
-        cancel_token,
-        MmapOptions {
-            path: file_path,
-            initial_len: None,
-            mode: OpenMode::Auto,
-        },
-    )
-    .unwrap();
+    let resource = open_test_resource(&temp_dir, "concurrent_wait.dat", cancel_token);
 
     let resource_clone = resource.clone();
-    let wait_handle = std::thread::spawn(move || resource_clone.wait_range(0..10));
+    let wait_handle = kithara_platform::thread::spawn(move || resource_clone.wait_range(0..10));
 
-    std::thread::sleep(Duration::from_millis(10));
+    kithara_platform::thread::sleep(Duration::from_millis(10));
 
     resource.write_at(0, b"0123456789").unwrap();
 
@@ -275,11 +244,9 @@ fn streaming_resource_concurrent_wait_and_write() {
     assert_eq!(wait_result, WaitOutcome::Ready);
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
+#[kithara::test(native, timeout(Duration::from_secs(5)))]
 fn streaming_resource_persists_across_reopen() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = TestTempDir::new();
     let file_path = temp_dir.path().join("reopen.dat");
     let cancel_token = CancellationToken::new();
 
@@ -317,11 +284,9 @@ fn streaming_resource_persists_across_reopen() {
     assert_eq!(&data, b"persisted data");
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
+#[kithara::test(native, timeout(Duration::from_secs(5)))]
 fn streaming_resource_wait_after_reopen() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = TestTempDir::new();
     let file_path = temp_dir.path().join("wait_reopen.dat");
     let cancel_token = CancellationToken::new();
     let payload = b"waited bytes";
@@ -360,29 +325,18 @@ fn streaming_resource_wait_after_reopen() {
     assert_eq!(&data, payload);
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
+#[kithara::test(timeout(Duration::from_secs(5)))]
 fn streaming_resource_wait_range_partial_coverage() {
-    let temp_dir = TempDir::new().unwrap();
-    let file_path = temp_dir.path().join("partial.dat");
+    let temp_dir = TestTempDir::new();
     let cancel_token = CancellationToken::new();
 
-    let resource: MmapResource = Resource::open(
-        cancel_token.clone(),
-        MmapOptions {
-            path: file_path,
-            initial_len: None,
-            mode: OpenMode::Auto,
-        },
-    )
-    .unwrap();
+    let resource = open_test_resource(&temp_dir, "partial.dat", cancel_token.clone());
 
     resource.write_at(0, b"Hello").unwrap();
 
     let resource_clone = resource.clone();
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    kithara_platform::thread::spawn(move || {
         let result = resource_clone.wait_range(0..10);
         let _ = tx.send(result);
     });
@@ -399,20 +353,9 @@ fn streaming_resource_wait_range_partial_coverage() {
     resource.wait_range(0..13).unwrap();
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
-fn streaming_resource_commit_and_eof(temp_dir: TempDir, cancel_token: CancellationToken) {
-    let file_path = temp_dir.path().join("commit.dat");
-    let resource: MmapResource = Resource::open(
-        cancel_token,
-        MmapOptions {
-            path: file_path,
-            initial_len: None,
-            mode: OpenMode::Auto,
-        },
-    )
-    .unwrap();
+#[kithara::test(timeout(Duration::from_secs(5)))]
+fn streaming_resource_commit_and_eof(temp_dir: TestTempDir, cancel_token: CancellationToken) {
+    let resource = open_test_resource(&temp_dir, "commit.dat", cancel_token);
 
     resource.write_at(0, b"Hello").unwrap();
 
@@ -428,23 +371,12 @@ fn streaming_resource_commit_and_eof(temp_dir: TempDir, cancel_token: Cancellati
     assert!(data.is_empty());
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
+#[kithara::test(timeout(Duration::from_secs(5)))]
 fn streaming_resource_commit_without_final_len() {
-    let temp_dir = TempDir::new().unwrap();
-    let file_path = temp_dir.path().join("commit_no_len.dat");
+    let temp_dir = TestTempDir::new();
     let cancel_token = CancellationToken::new();
 
-    let resource: MmapResource = Resource::open(
-        cancel_token,
-        MmapOptions {
-            path: file_path,
-            initial_len: None,
-            mode: OpenMode::Auto,
-        },
-    )
-    .unwrap();
+    let resource = open_test_resource(&temp_dir, "commit_no_len.dat", cancel_token);
 
     resource.write_at(0, b"Hello").unwrap();
     resource.commit(None).unwrap();
@@ -459,23 +391,12 @@ fn streaming_resource_commit_without_final_len() {
     assert_eq!(&data, b"Hello");
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
+#[kithara::test(timeout(Duration::from_secs(5)))]
 fn streaming_resource_sealed_after_commit() {
-    let temp_dir = TempDir::new().unwrap();
-    let file_path = temp_dir.path().join("sealed.dat");
+    let temp_dir = TestTempDir::new();
     let cancel_token = CancellationToken::new();
 
-    let resource: MmapResource = Resource::open(
-        cancel_token,
-        MmapOptions {
-            path: file_path,
-            initial_len: None,
-            mode: OpenMode::Auto,
-        },
-    )
-    .unwrap();
+    let resource = open_test_resource(&temp_dir, "sealed.dat", cancel_token);
 
     // First commit with zero — resource is committed but empty
     resource.commit(Some(0)).unwrap();
@@ -488,58 +409,36 @@ fn streaming_resource_sealed_after_commit() {
     assert_eq!(&data, b"data");
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
+#[kithara::test(timeout(Duration::from_secs(5)))]
 fn streaming_resource_cancel_during_wait() {
-    let temp_dir = TempDir::new().unwrap();
-    let file_path = temp_dir.path().join("cancel_wait.dat");
+    let temp_dir = TestTempDir::new();
     let cancel_token = CancellationToken::new();
 
-    let resource: MmapResource = Resource::open(
-        cancel_token.clone(),
-        MmapOptions {
-            path: file_path,
-            initial_len: None,
-            mode: OpenMode::Auto,
-        },
-    )
-    .unwrap();
+    let resource = open_test_resource(&temp_dir, "cancel_wait.dat", cancel_token.clone());
 
     let resource_clone = resource.clone();
-    let wait_handle = std::thread::spawn(move || resource_clone.wait_range(0..10));
+    let wait_handle = kithara_platform::thread::spawn(move || resource_clone.wait_range(0..10));
 
-    std::thread::sleep(Duration::from_millis(50));
+    kithara_platform::thread::sleep(Duration::from_millis(50));
     cancel_token.cancel();
 
     let wait_result = wait_handle.join().unwrap();
     assert!(matches!(wait_result, Err(StorageError::Cancelled)));
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
+#[kithara::test(timeout(Duration::from_secs(5)))]
 fn streaming_resource_fail_wakes_waiters() {
-    let temp_dir = TempDir::new().unwrap();
-    let file_path = temp_dir.path().join("fail_waiters.dat");
+    let temp_dir = TestTempDir::new();
     let cancel_token = CancellationToken::new();
 
-    let resource: MmapResource = Resource::open(
-        cancel_token,
-        MmapOptions {
-            path: file_path,
-            initial_len: None,
-            mode: OpenMode::Auto,
-        },
-    )
-    .unwrap();
+    let resource = open_test_resource(&temp_dir, "fail_waiters.dat", cancel_token);
 
     let resource_clone = resource.clone();
-    let wait_handle = std::thread::spawn(move || resource_clone.wait_range(0..10));
+    let wait_handle = kithara_platform::thread::spawn(move || resource_clone.wait_range(0..10));
 
     let resource_clone = resource.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(50));
+    kithara_platform::thread::spawn(move || {
+        kithara_platform::thread::sleep(Duration::from_millis(50));
         resource_clone.fail("test failure".to_string());
     });
 
@@ -547,30 +446,19 @@ fn streaming_resource_fail_wakes_waiters() {
     assert!(matches!(wait_result, Err(StorageError::Failed(_))));
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
+#[kithara::test(timeout(Duration::from_secs(5)))]
 fn streaming_resource_concurrent_operations() {
-    let temp_dir = TempDir::new().unwrap();
-    let file_path = temp_dir.path().join("concurrent_ops.dat");
+    let temp_dir = TestTempDir::new();
     let cancel_token = CancellationToken::new();
 
-    let resource: MmapResource = Resource::open(
-        cancel_token,
-        MmapOptions {
-            path: file_path,
-            initial_len: None,
-            mode: OpenMode::Auto,
-        },
-    )
-    .unwrap();
+    let resource = open_test_resource(&temp_dir, "concurrent_ops.dat", cancel_token);
 
     let resource_clone = resource.clone();
-    let handle1 = std::thread::spawn(move || resource_clone.write_at(0, b"Hello"));
+    let handle1 = kithara_platform::thread::spawn(move || resource_clone.write_at(0, b"Hello"));
 
     let resource_clone = resource.clone();
-    let handle2 = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(10));
+    let handle2 = kithara_platform::thread::spawn(move || {
+        kithara_platform::thread::sleep(Duration::from_millis(10));
         resource_clone.write_at(5, b"World")
     });
 
@@ -587,23 +475,12 @@ fn streaming_resource_concurrent_operations() {
     assert_eq!(&data[5..], b"World");
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
+#[kithara::test(timeout(Duration::from_secs(5)))]
 fn streaming_resource_invalid_ranges() {
-    let temp_dir = TempDir::new().unwrap();
-    let file_path = temp_dir.path().join("invalid_ranges.dat");
+    let temp_dir = TestTempDir::new();
     let cancel_token = CancellationToken::new();
 
-    let resource: MmapResource = Resource::open(
-        cancel_token,
-        MmapOptions {
-            path: file_path,
-            initial_len: None,
-            mode: OpenMode::Auto,
-        },
-    )
-    .unwrap();
+    let resource = open_test_resource(&temp_dir, "invalid_ranges.dat", cancel_token);
 
     // Reversed range (start > end) should return InvalidRange
     assert!(matches!(
@@ -621,23 +498,12 @@ fn streaming_resource_invalid_ranges() {
     assert!(result.is_err());
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
+#[kithara::test(timeout(Duration::from_secs(5)))]
 fn streaming_resource_whole_object_operations() {
-    let temp_dir = TempDir::new().unwrap();
-    let file_path = temp_dir.path().join("whole_object.dat");
+    let temp_dir = TestTempDir::new();
     let cancel_token = CancellationToken::new();
 
-    let resource: MmapResource = Resource::open(
-        cancel_token,
-        MmapOptions {
-            path: file_path,
-            initial_len: None,
-            mode: OpenMode::Auto,
-        },
-    )
-    .unwrap();
+    let resource = open_test_resource(&temp_dir, "whole_object.dat", cancel_token);
 
     resource.write_at(0, b"Hello, World!").unwrap();
     resource.commit(Some(13)).unwrap();
@@ -655,23 +521,12 @@ fn streaming_resource_whole_object_operations() {
     assert_eq!(&data, b"Hello, World!");
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
+#[kithara::test(timeout(Duration::from_secs(5)))]
 fn streaming_resource_empty_operations() {
-    let temp_dir = TempDir::new().unwrap();
-    let file_path = temp_dir.path().join("empty_ops.dat");
+    let temp_dir = TestTempDir::new();
     let cancel_token = CancellationToken::new();
 
-    let resource: MmapResource = Resource::open(
-        cancel_token,
-        MmapOptions {
-            path: file_path,
-            initial_len: None,
-            mode: OpenMode::Auto,
-        },
-    )
-    .unwrap();
+    let resource = open_test_resource(&temp_dir, "empty_ops.dat", cancel_token);
 
     // Empty write is a no-op
     resource.write_at(0, b"").unwrap();
@@ -686,30 +541,19 @@ fn streaming_resource_empty_operations() {
     assert!(data.is_empty());
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
+#[kithara::test(timeout(Duration::from_secs(5)))]
 fn streaming_resource_complex_range_scenario() {
-    let temp_dir = TempDir::new().unwrap();
-    let file_path = temp_dir.path().join("complex_ranges.dat");
+    let temp_dir = TestTempDir::new();
     let cancel_token = CancellationToken::new();
 
-    let resource: MmapResource = Resource::open(
-        cancel_token,
-        MmapOptions {
-            path: file_path,
-            initial_len: None,
-            mode: OpenMode::Auto,
-        },
-    )
-    .unwrap();
+    let resource = open_test_resource(&temp_dir, "complex_ranges.dat", cancel_token);
 
     resource.write_at(0, b"0123456789").unwrap();
     resource.write_at(20, b"0123456789").unwrap();
 
     let resource_clone = resource.clone();
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    kithara_platform::thread::spawn(move || {
         let result = resource_clone.wait_range(0..15);
         let _ = tx.send(result);
     });
@@ -732,24 +576,13 @@ fn streaming_resource_complex_range_scenario() {
     assert_eq!(outcome, WaitOutcome::Eof);
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
+#[kithara::test(native, timeout(Duration::from_secs(5)))]
 fn streaming_resource_initial_len_hint() {
-    let temp_dir = TempDir::new().unwrap();
-    let file_path = temp_dir.path().join("initial_hint.dat");
+    let temp_dir = TestTempDir::new();
     let cancel_token = CancellationToken::new();
 
     // initial_len is a hint for backing file size, not data availability
-    let resource: MmapResource = Resource::open(
-        cancel_token,
-        MmapOptions {
-            path: file_path,
-            initial_len: Some(100),
-            mode: OpenMode::Auto,
-        },
-    )
-    .unwrap();
+    let resource = open_test_resource_with_len(&temp_dir, "initial_hint.dat", 100, cancel_token);
 
     // Resource is Active (not committed), no data available yet
     assert_eq!(resource.status(), ResourceStatus::Active);

@@ -3,48 +3,72 @@
 use std::{sync::Arc, time::Duration};
 
 use kithara_decode::PcmChunk;
-use kithara_stream::Fetch;
+use kithara_platform::{Receiver, Sender};
+use kithara_stream::{Fetch, Timeline};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
-use tracing::trace;
+use tracing::{debug, trace};
 
 use crate::traits::AudioEffect;
 
-/// Command for audio worker.
+/// Command for audio worker (non-seek commands only).
+///
+/// Seek flows entirely through [`Timeline`] atomics.
 #[derive(Debug)]
 pub(crate) enum AudioCommand {
-    /// Seek to position with new epoch.
-    Seek { position: Duration, epoch: u64 },
+    // Seek removed — flows through Timeline::initiate_seek / complete_seek.
 }
 
 /// Trait for audio sources processed in a blocking worker thread.
-pub(super) trait AudioWorkerSource: Send + 'static {
+pub(crate) trait AudioWorkerSource: Send + 'static {
     type Chunk: Send + 'static;
     type Command: Send + 'static;
 
     fn fetch_next(&mut self) -> Fetch<Self::Chunk>;
     fn handle_command(&mut self, cmd: Self::Command);
+
+    /// Access the shared timeline for flushing checks.
+    fn timeline(&self) -> &Timeline;
+
+    /// Apply a pending seek read from the Timeline.
+    ///
+    /// Called by the worker loop when `timeline().is_flushing()` is true.
+    /// Reads target/epoch from Timeline, performs the seek on the decoder,
+    /// then calls `timeline().complete_seek(epoch)`.
+    fn apply_pending_seek(&mut self);
 }
 
 const BACKOFF_BUSY: Duration = Duration::from_micros(100);
 const BACKOFF_EOF: Duration = Duration::from_millis(100);
 
-fn drain_commands<S: AudioWorkerSource>(
-    source: &mut S,
-    cmd_rx: &kanal::Receiver<S::Command>,
-) -> bool {
-    let mut handled = false;
+enum WorkerControl {
+    Continue,
+    Stop,
+}
+
+fn drain_commands<S: AudioWorkerSource>(source: &mut S, cmd_rx: &Receiver<S::Command>) -> bool {
+    let mut dropped = 0usize;
+    let mut latest = None;
     while let Ok(Some(cmd)) = cmd_rx.try_recv() {
-        source.handle_command(cmd);
-        handled = true;
+        if latest.is_some() {
+            dropped += 1;
+        }
+        latest = Some(cmd);
     }
-    handled
+    if dropped > 0 {
+        trace!(dropped, "audio worker coalesced pending commands");
+    }
+    if let Some(cmd) = latest {
+        source.handle_command(cmd);
+        return true;
+    }
+    false
 }
 
 fn send_with_backpressure<S: AudioWorkerSource>(
     source: &mut S,
-    cmd_rx: &kanal::Receiver<S::Command>,
-    data_tx: &kanal::Sender<Fetch<S::Chunk>>,
+    cmd_rx: &Receiver<S::Command>,
+    data_tx: &Sender<Fetch<S::Chunk>>,
     cancel: &CancellationToken,
     fetch: Fetch<S::Chunk>,
 ) -> Result<bool, ()> {
@@ -55,25 +79,104 @@ fn send_with_backpressure<S: AudioWorkerSource>(
             return Err(());
         }
 
+        // Drop chunk and return to main loop if a seek is pending.
+        if source.timeline().is_flushing() {
+            return Ok(false);
+        }
+
         match data_tx.try_send_option(&mut item) {
             Ok(true) => return Ok(true), // sent
-            Ok(false) => match cmd_rx.try_recv() {
-                Ok(Some(cmd)) => {
+            Ok(false) => {
+                // Removed: debug!("worker: channel full, backpressure spin");
+                let mut latest_cmd = None;
+                loop {
+                    match cmd_rx.try_recv() {
+                        Ok(Some(cmd)) => latest_cmd = Some(cmd),
+                        Ok(None) => break,
+                        Err(_) => return Err(()), // channel closed
+                    }
+                }
+                if let Some(cmd) = latest_cmd {
                     source.handle_command(cmd);
                     return Ok(false); // command handled, refetch
                 }
-                Ok(None) => {
-                    if cancel.is_cancelled() {
-                        trace!("audio worker cancelled during backpressure");
-                        return Err(());
-                    }
-                    std::thread::sleep(BACKOFF_BUSY); // back off and retry
+                if cancel.is_cancelled() {
+                    trace!("audio worker cancelled during backpressure");
+                    return Err(());
                 }
-                Err(_) => return Err(()), // channel closed
-            },
+                // Also check flushing during backpressure spin.
+                if source.timeline().is_flushing() {
+                    return Ok(false);
+                }
+                kithara_platform::thread::sleep(BACKOFF_BUSY); // back off and retry
+            }
             Err(_) => return Err(()), // channel closed
         }
     }
+}
+
+fn apply_pending_seek_if_flushing<S: AudioWorkerSource>(source: &mut S, at_eof: &mut bool) -> bool {
+    if !source.timeline().is_flushing() {
+        return false;
+    }
+    source.apply_pending_seek();
+    *at_eof = false;
+    true
+}
+
+fn handle_eof_idle<S: AudioWorkerSource>(
+    source: &mut S,
+    cmd_rx: &Receiver<S::Command>,
+    cancel: &CancellationToken,
+    at_eof: &mut bool,
+) -> WorkerControl {
+    if apply_pending_seek_if_flushing(source, at_eof) {
+        return WorkerControl::Continue;
+    }
+
+    match cmd_rx.try_recv() {
+        Ok(Some(cmd)) => {
+            source.handle_command(cmd);
+            *at_eof = false;
+            WorkerControl::Continue
+        }
+        Ok(None) => {
+            if cancel.is_cancelled() {
+                trace!("audio worker cancelled at EOF");
+                return WorkerControl::Stop;
+            }
+            kithara_platform::thread::sleep(BACKOFF_EOF);
+            WorkerControl::Continue
+        }
+        Err(_) => {
+            trace!("audio worker stopped (cmd channel closed)");
+            WorkerControl::Stop
+        }
+    }
+}
+
+fn mark_preload_progress(
+    preloaded: &mut bool,
+    chunks_sent: &mut usize,
+    preload_chunks: usize,
+    preload_notify: &Notify,
+) {
+    if *preloaded {
+        return;
+    }
+    *chunks_sent += 1;
+    if *chunks_sent >= preload_chunks {
+        preload_notify.notify_one();
+        *preloaded = true;
+    }
+}
+
+fn mark_eof(preloaded: &mut bool, preload_notify: &Notify, at_eof: &mut bool) {
+    if !*preloaded {
+        preload_notify.notify_one();
+        *preloaded = true;
+    }
+    *at_eof = true;
 }
 
 /// Run a blocking audio loop: drain commands, fetch data, send through channel.
@@ -84,12 +187,12 @@ fn send_with_backpressure<S: AudioWorkerSource>(
 /// `cancel` token signals graceful shutdown when Audio is dropped.
 #[expect(
     clippy::cognitive_complexity,
-    reason = "audio event loop with multiple states"
+    reason = "diagnostic debug!() temporarily raises complexity"
 )]
 pub(super) fn run_audio_loop<S: AudioWorkerSource>(
     mut source: S,
-    cmd_rx: &kanal::Receiver<S::Command>,
-    data_tx: &kanal::Sender<Fetch<S::Chunk>>,
+    cmd_rx: &Receiver<S::Command>,
+    data_tx: &Sender<Fetch<S::Chunk>>,
     preload_notify: &Arc<Notify>,
     preload_chunks: usize,
     cancel: &CancellationToken,
@@ -105,63 +208,49 @@ pub(super) fn run_audio_loop<S: AudioWorkerSource>(
             return;
         }
 
+        if apply_pending_seek_if_flushing(&mut source, &mut at_eof) {
+            continue;
+        }
+
         // Apply pending commands eagerly.
         if drain_commands(&mut source, cmd_rx) {
             at_eof = false;
         }
 
         if at_eof {
-            // Idle until a new command or cancellation.
-            match cmd_rx.try_recv() {
-                Ok(Some(cmd)) => {
-                    source.handle_command(cmd);
-                    at_eof = false;
-                }
-                Ok(None) => {
-                    if cancel.is_cancelled() {
-                        trace!("audio worker cancelled at EOF");
-                        return;
-                    }
-                    std::thread::sleep(BACKOFF_EOF);
-                }
-                Err(_) => {
-                    trace!("audio worker stopped (cmd channel closed)");
-                    return;
-                }
+            if let WorkerControl::Stop = handle_eof_idle(&mut source, cmd_rx, cancel, &mut at_eof) {
+                return;
             }
             continue;
         }
 
+        debug!(chunks_sent, "worker: fetching next chunk");
         let fetch = source.fetch_next();
         let is_eof = fetch.is_eof();
+        debug!(is_eof, chunks_sent, "worker: fetch_next returned");
 
         match send_with_backpressure(&mut source, cmd_rx, data_tx, cancel, fetch) {
             Ok(true) => {
-                if !preloaded {
-                    chunks_sent += 1;
-                    if chunks_sent >= preload_chunks {
-                        preload_notify.notify_one();
-                        preloaded = true;
-                    }
-                }
+                mark_preload_progress(
+                    &mut preloaded,
+                    &mut chunks_sent,
+                    preload_chunks,
+                    preload_notify,
+                );
             }
             Ok(false) => {
-                // Command handled during backpressure: refetch next loop.
+                debug!("worker: backpressure or command, refetching");
                 continue;
             }
             Err(()) => {
+                debug!("worker: data channel closed, stopping");
                 trace!("audio worker stopped (data channel closed)");
                 return;
             }
         }
 
         if is_eof {
-            if !preloaded {
-                // short stream — unblock readers even if we didn't hit preload_chunks
-                preload_notify.notify_one();
-                preloaded = true;
-            }
-            at_eof = true;
+            mark_eof(&mut preloaded, preload_notify, &mut at_eof);
         }
     }
 }

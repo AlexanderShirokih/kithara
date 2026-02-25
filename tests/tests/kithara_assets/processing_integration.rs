@@ -8,20 +8,22 @@
 //! - Caching of processed resources (via `CachedAssets`)
 //! - Reads from disk after processing
 
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::Duration,
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
 };
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
 
+#[cfg(not(target_arch = "wasm32"))]
+use kithara::assets::EvictConfig;
+#[cfg(not(target_arch = "wasm32"))]
+use kithara::internal::Assets;
 use kithara::{
-    assets::{AssetStoreBuilder, Assets, EvictConfig, ProcessChunkFn, ResourceKey},
+    assets::{AssetStoreBuilder, ProcessChunkFn, ResourceKey},
     storage::ResourceExt,
 };
 use kithara_test_utils::temp_dir;
-use rstest::rstest;
 
 /// Context for test processing callback.
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Default)]
@@ -44,21 +46,65 @@ fn create_xor_chunk_callback(call_count: Arc<AtomicUsize>) -> ProcessChunkFn<Tes
     )
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
-fn processing_transforms_data_on_commit(temp_dir: tempfile::TempDir) {
+fn build_test_processing_store(
+    temp_dir: &kithara_test_utils::TestTempDir,
+    asset_root: &str,
+    process_fn: ProcessChunkFn<TestContext>,
+) -> kithara::assets::AssetStore<TestContext> {
+    let builder = AssetStoreBuilder::new()
+        .asset_root(Some(asset_root))
+        .process_fn(process_fn);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        builder
+            .root_dir(temp_dir.path())
+            .evict_config(EvictConfig {
+                max_assets: None,
+                max_bytes: None,
+            })
+            .build()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = temp_dir;
+        builder.ephemeral(true).build()
+    }
+}
+
+fn build_test_store_no_processing(
+    temp_dir: &kithara_test_utils::TestTempDir,
+    asset_root: &str,
+) -> kithara::assets::AssetStore {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        AssetStoreBuilder::new()
+            .root_dir(temp_dir.path())
+            .asset_root(Some(asset_root))
+            .evict_config(EvictConfig {
+                max_assets: None,
+                max_bytes: None,
+            })
+            .build()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = temp_dir;
+        AssetStoreBuilder::new()
+            .ephemeral(true)
+            .asset_root(Some(asset_root))
+            .build()
+    }
+}
+
+#[kithara::test(timeout(Duration::from_secs(5)))]
+fn processing_transforms_data_on_commit(temp_dir: kithara_test_utils::TestTempDir) {
     let call_count = Arc::new(AtomicUsize::new(0));
 
-    let store = AssetStoreBuilder::new()
-        .root_dir(temp_dir.path())
-        .asset_root(Some("test-processing"))
-        .evict_config(EvictConfig {
-            max_assets: None,
-            max_bytes: None,
-        })
-        .process_fn(create_xor_chunk_callback(Arc::clone(&call_count)))
-        .build_disk();
+    let store = build_test_processing_store(
+        &temp_dir,
+        "test-processing",
+        create_xor_chunk_callback(Arc::clone(&call_count)),
+    );
 
     let key = ResourceKey::new("data.bin");
 
@@ -90,21 +136,15 @@ fn processing_transforms_data_on_commit(temp_dir: tempfile::TempDir) {
     assert_eq!(buf, expected);
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
-fn processing_caches_result_on_subsequent_reads(temp_dir: tempfile::TempDir) {
+#[kithara::test(timeout(Duration::from_secs(5)))]
+fn processing_caches_result_on_subsequent_reads(temp_dir: kithara_test_utils::TestTempDir) {
     let call_count = Arc::new(AtomicUsize::new(0));
 
-    let store = AssetStoreBuilder::new()
-        .root_dir(temp_dir.path())
-        .asset_root(Some("test-cache"))
-        .evict_config(EvictConfig {
-            max_assets: None,
-            max_bytes: None,
-        })
-        .process_fn(create_xor_chunk_callback(Arc::clone(&call_count)))
-        .build_disk();
+    let store = build_test_processing_store(
+        &temp_dir,
+        "test-cache",
+        create_xor_chunk_callback(Arc::clone(&call_count)),
+    );
 
     let key = ResourceKey::new("cached.bin");
     let ctx = TestContext { xor_key: 0xAB };
@@ -142,21 +182,15 @@ fn processing_caches_result_on_subsequent_reads(temp_dir: tempfile::TempDir) {
     assert_eq!(call_count.load(Ordering::SeqCst), count_after_commit);
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
-fn processing_partial_reads_work_correctly(temp_dir: tempfile::TempDir) {
+#[kithara::test(timeout(Duration::from_secs(5)))]
+fn processing_partial_reads_work_correctly(temp_dir: kithara_test_utils::TestTempDir) {
     let call_count = Arc::new(AtomicUsize::new(0));
 
-    let store = AssetStoreBuilder::new()
-        .root_dir(temp_dir.path())
-        .asset_root(Some("test-partial"))
-        .evict_config(EvictConfig {
-            max_assets: None,
-            max_bytes: None,
-        })
-        .process_fn(create_xor_chunk_callback(Arc::clone(&call_count)))
-        .build_disk();
+    let store = build_test_processing_store(
+        &temp_dir,
+        "test-partial",
+        create_xor_chunk_callback(Arc::clone(&call_count)),
+    );
 
     let key = ResourceKey::new("partial.bin");
     let ctx = TestContext { xor_key: 0xFF };
@@ -191,21 +225,15 @@ fn processing_partial_reads_work_correctly(temp_dir: tempfile::TempDir) {
     assert_eq!(&buf_end[..10], &expected_end[..]);
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
-fn processing_read_past_end_returns_zero(temp_dir: tempfile::TempDir) {
+#[kithara::test(timeout(Duration::from_secs(5)))]
+fn processing_read_past_end_returns_zero(temp_dir: kithara_test_utils::TestTempDir) {
     let call_count = Arc::new(AtomicUsize::new(0));
 
-    let store = AssetStoreBuilder::new()
-        .root_dir(temp_dir.path())
-        .asset_root(Some("test-eof"))
-        .evict_config(EvictConfig {
-            max_assets: None,
-            max_bytes: None,
-        })
-        .process_fn(create_xor_chunk_callback(Arc::clone(&call_count)))
-        .build_disk();
+    let store = build_test_processing_store(
+        &temp_dir,
+        "test-eof",
+        create_xor_chunk_callback(Arc::clone(&call_count)),
+    );
 
     let key = ResourceKey::new("eof.bin");
     let ctx = TestContext { xor_key: 0x00 };
@@ -228,19 +256,10 @@ fn processing_read_past_end_returns_zero(temp_dir: tempfile::TempDir) {
     assert_eq!(n, 0);
 }
 
-#[rstest]
-#[timeout(Duration::from_secs(5))]
-#[test]
-fn store_without_processing_works_normally(temp_dir: tempfile::TempDir) {
+#[kithara::test(timeout(Duration::from_secs(5)))]
+fn store_without_processing_works_normally(temp_dir: kithara_test_utils::TestTempDir) {
     // Build store WITHOUT custom process_fn (uses default pass-through).
-    let store = AssetStoreBuilder::new()
-        .root_dir(temp_dir.path())
-        .asset_root(Some("no-processing"))
-        .evict_config(EvictConfig {
-            max_assets: None,
-            max_bytes: None,
-        })
-        .build_disk();
+    let store = build_test_store_no_processing(&temp_dir, "no-processing");
 
     let key = ResourceKey::new("test.bin");
 

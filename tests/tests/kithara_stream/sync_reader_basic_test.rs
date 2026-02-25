@@ -4,7 +4,7 @@
 
 use std::io::{Cursor, Read};
 
-#[test]
+#[kithara::test]
 fn test_cursor_reads_all_binary_segments() {
     // Create 3 binary segments (same format as MockDecoder expects)
     let mut data = Vec::new();
