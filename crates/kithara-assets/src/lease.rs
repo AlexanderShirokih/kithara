@@ -40,7 +40,6 @@ where
     byte_recorder: Option<Arc<dyn ByteRecorder>>,
     cancel: CancellationToken,
     dirty: Arc<AtomicBool>,
-    enabled: bool,
     inner: Arc<A>,
     pins: Arc<Mutex<HashSet<String>>>,
     pool: BytePool,
@@ -55,26 +54,23 @@ where
             byte_recorder: None,
             cancel,
             dirty: Arc::new(AtomicBool::new(false)),
-            enabled: true,
             inner,
             pins: Arc::new(Mutex::new(HashSet::new())),
             pool,
         }
     }
 
-    /// Create with explicit enabled flag. When `false`, lease/pin logic is bypassed.
-    pub fn with_options(
+    /// Create with byte recorder for asset-size tracking.
+    pub fn with_byte_recorder(
         inner: Arc<A>,
         cancel: CancellationToken,
         byte_recorder: Option<Arc<dyn ByteRecorder>>,
-        enabled: bool,
         pool: BytePool,
     ) -> Self {
         Self {
             byte_recorder,
             cancel,
             dirty: Arc::new(AtomicBool::new(false)),
-            enabled,
             inner,
             pins: Arc::new(Mutex::new(HashSet::new())),
             pool,
@@ -85,10 +81,10 @@ where
         &self.inner
     }
 
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn is_enabled(&self) -> bool {
-        self.enabled
+    fn is_active(&self) -> bool {
+        self.inner
+            .capabilities()
+            .contains(crate::base::Capabilities::LEASE)
     }
 
     fn open_index(&self) -> AssetsResult<PinsIndex<A::IndexRes>> {
@@ -106,14 +102,14 @@ where
     }
 
     fn ensure_loaded_best_effort(&self) -> AssetsResult<()> {
-        let is_empty = self.pins.lock().is_empty();
+        let is_empty = self.pins.lock_sync().is_empty();
 
         if !is_empty {
             return Ok(());
         }
 
         let loaded = self.load_pins_best_effort()?;
-        let mut guard = self.pins.lock();
+        let mut guard = self.pins.lock_sync();
         for p in loaded {
             guard.insert(p);
         }
@@ -127,10 +123,10 @@ where
     ///
     /// Returns `AssetsError` if the pin index cannot be opened or written to disk.
     pub fn flush_pins(&self) -> AssetsResult<()> {
-        if !self.enabled || !self.dirty.swap(false, Ordering::AcqRel) {
+        if !self.is_active() || !self.dirty.swap(false, Ordering::AcqRel) {
             return Ok(());
         }
-        let snapshot = self.pins.lock().clone();
+        let snapshot = self.pins.lock_sync().clone();
         self.persist_pins_best_effort(&snapshot)
     }
 
@@ -138,7 +134,7 @@ where
         self.ensure_loaded_best_effort()?;
 
         {
-            let mut pins = self.pins.lock();
+            let mut pins = self.pins.lock_sync();
             if pins.insert(asset_root.to_string()) {
                 self.dirty.store(true, Ordering::Release);
             }
@@ -161,7 +157,7 @@ where
                     tracing::trace!(asset_root = %ar, "LeaseGuard::drop - removing pin");
 
                     {
-                        let mut pins = owner.pins.lock();
+                        let mut pins = owner.pins.lock_sync();
                         if pins.remove(&ar) {
                             owner.dirty.store(true, Ordering::Release);
                         }
@@ -201,16 +197,19 @@ where
     R: ResourceExt + Send + Sync + Clone + Debug + 'static,
     L: Send + Sync + Clone + 'static,
 {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> StorageResult<usize> {
-        self.inner.read_at(offset, buf)
-    }
-
-    fn write_at(&self, offset: u64, data: &[u8]) -> StorageResult<()> {
-        self.inner.write_at(offset, data)
-    }
-
-    fn wait_range(&self, range: Range<u64>) -> StorageResult<WaitOutcome> {
-        self.inner.wait_range(range)
+    delegate::delegate! {
+        to self.inner {
+            fn read_at(&self, offset: u64, buf: &mut [u8]) -> StorageResult<usize>;
+            fn write_at(&self, offset: u64, data: &[u8]) -> StorageResult<()>;
+            fn wait_range(&self, range: Range<u64>) -> StorageResult<WaitOutcome>;
+            fn fail(&self, reason: String);
+            fn path(&self) -> Option<&Path>;
+            fn len(&self) -> Option<u64>;
+            fn reactivate(&self) -> StorageResult<()>;
+            fn status(&self) -> ResourceStatus;
+            fn contains_range(&self, range: Range<u64>) -> bool;
+            fn next_gap(&self, from: u64, limit: u64) -> Option<Range<u64>>;
+        }
     }
 
     fn commit(&self, final_len: Option<u64>) -> StorageResult<()> {
@@ -227,26 +226,6 @@ where
 
         Ok(())
     }
-
-    fn fail(&self, reason: String) {
-        self.inner.fail(reason);
-    }
-
-    fn path(&self) -> Option<&Path> {
-        self.inner.path()
-    }
-
-    fn len(&self) -> Option<u64> {
-        self.inner.len()
-    }
-
-    fn reactivate(&self) -> StorageResult<()> {
-        self.inner.reactivate()
-    }
-
-    fn status(&self) -> ResourceStatus {
-        self.inner.status()
-    }
 }
 
 impl<A> Assets for LeaseAssets<A>
@@ -257,24 +236,16 @@ where
     type Context = A::Context;
     type IndexRes = A::IndexRes;
 
-    fn supports_evict(&self) -> bool {
-        self.inner.supports_evict()
-    }
-
-    fn supports_lease(&self) -> bool {
-        self.inner.supports_lease()
-    }
-
-    fn supports_cache(&self) -> bool {
-        self.inner.supports_cache()
-    }
-
-    fn root_dir(&self) -> &Path {
-        self.inner.root_dir()
-    }
-
-    fn asset_root(&self) -> &str {
-        self.inner.asset_root()
+    delegate::delegate! {
+        to self.inner {
+            fn capabilities(&self) -> crate::base::Capabilities;
+            fn root_dir(&self) -> &Path;
+            fn asset_root(&self) -> &str;
+            fn open_pins_index_resource(&self) -> AssetsResult<Self::IndexRes>;
+            fn open_lru_index_resource(&self) -> AssetsResult<Self::IndexRes>;
+            fn delete_asset(&self) -> AssetsResult<()>;
+            fn remove_resource(&self, key: &ResourceKey) -> AssetsResult<()>;
+        }
     }
 
     fn open_resource_with_ctx(
@@ -284,7 +255,7 @@ where
     ) -> AssetsResult<Self::Res> {
         let inner = self.inner.open_resource_with_ctx(key, ctx)?;
 
-        if !self.enabled {
+        if !self.is_active() {
             return Ok(LeaseResource {
                 inner,
                 _lease: LeaseGuard { inner: None },
@@ -302,28 +273,6 @@ where
             byte_recorder: self.byte_recorder.clone(),
         })
     }
-
-    fn open_pins_index_resource(&self) -> AssetsResult<Self::IndexRes> {
-        // Pins index must be opened without pinning to avoid recursion
-        self.inner.open_pins_index_resource()
-    }
-
-    fn open_lru_index_resource(&self) -> AssetsResult<Self::IndexRes> {
-        // LRU index must be opened without pinning
-        self.inner.open_lru_index_resource()
-    }
-
-    fn open_coverage_index_resource(&self) -> AssetsResult<Self::IndexRes> {
-        self.inner.open_coverage_index_resource()
-    }
-
-    fn delete_asset(&self) -> AssetsResult<()> {
-        self.inner.delete_asset()
-    }
-
-    fn remove_resource(&self, key: &ResourceKey) -> AssetsResult<()> {
-        self.inner.remove_resource(key)
-    }
 }
 
 impl<A> Drop for LeaseAssets<A>
@@ -331,12 +280,12 @@ where
     A: Assets,
 {
     fn drop(&mut self) {
-        if !self.enabled {
+        if !self.is_active() {
             return;
         }
         // Only persist on the last clone (all Arc fields share the same refcount via `pins`)
         if Arc::strong_count(&self.pins) == 1 && self.dirty.load(Ordering::Acquire) {
-            let snapshot = self.pins.lock().clone();
+            let snapshot = self.pins.lock_sync().clone();
             let _ = self.persist_pins_best_effort(&snapshot);
         }
     }
@@ -370,8 +319,7 @@ impl Drop for LeaseGuardInner {
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests {
-    use std::time::Duration;
-
+    use kithara_platform::time::Duration;
     use kithara_test_utils::kithara;
 
     use super::*;
@@ -386,19 +334,10 @@ mod tests {
         LeaseAssets::new(disk, CancellationToken::new(), crate::byte_pool().clone())
     }
 
+    /// Bypass test: empty asset_root → capabilities lack LEASE.
     fn make_lease_disabled(dir: &Path) -> LeaseAssets<DiskAssetStore> {
-        let disk = Arc::new(DiskAssetStore::new(
-            dir,
-            "test_asset",
-            CancellationToken::new(),
-        ));
-        LeaseAssets::with_options(
-            disk,
-            CancellationToken::new(),
-            None,
-            false,
-            crate::byte_pool().clone(),
-        )
+        let disk = Arc::new(DiskAssetStore::new(dir, "", CancellationToken::new()));
+        LeaseAssets::new(disk, CancellationToken::new(), crate::byte_pool().clone())
     }
 
     fn load_persisted_pins(dir: &Path) -> HashSet<String> {
@@ -511,19 +450,23 @@ mod tests {
     fn bypass_does_not_pin() {
         let dir = tempfile::tempdir().unwrap();
         let lease = make_lease_disabled(dir.path());
-        let key = ResourceKey::new("audio.mp3");
+        let p = dir.path().join("audio.mp3");
+        std::fs::write(&p, b"data").unwrap();
+        let key = ResourceKey::absolute(&p);
 
         let _res = lease.open_resource(&key).unwrap();
 
-        // Pins should be empty when disabled
-        assert!(lease.pins.lock().is_empty(), "bypass should not pin");
+        // Pins should be empty when capability absent
+        assert!(lease.pins.lock_sync().is_empty(), "bypass should not pin");
     }
 
     #[kithara::test(timeout(Duration::from_secs(5)))]
     fn bypass_flush_is_noop() {
         let dir = tempfile::tempdir().unwrap();
         let lease = make_lease_disabled(dir.path());
-        let key = ResourceKey::new("audio.mp3");
+        let p = dir.path().join("audio.mp3");
+        std::fs::write(&p, b"data").unwrap();
+        let key = ResourceKey::absolute(&p);
 
         let _res = lease.open_resource(&key).unwrap();
         lease.flush_pins().unwrap();
@@ -537,15 +480,16 @@ mod tests {
     fn bypass_still_returns_resources() {
         let dir = tempfile::tempdir().unwrap();
         let lease = make_lease_disabled(dir.path());
-        let key = ResourceKey::new("audio.mp3");
+        let p = dir.path().join("audio.mp3");
+        std::fs::write(&p, b"data").unwrap();
+        let key = ResourceKey::absolute(&p);
 
         let res = lease.open_resource(&key).unwrap();
 
-        // Resource should still be usable
-        res.write_at(0, b"hello").unwrap();
-        let mut buf = [0u8; 5];
+        // Resource should still be usable (read-only for absolute keys)
+        let mut buf = [0u8; 4];
         let n = res.read_at(0, &mut buf).unwrap();
-        assert_eq!(n, 5);
-        assert_eq!(&buf, b"hello");
+        assert_eq!(n, 4);
+        assert_eq!(&buf, b"data");
     }
 }

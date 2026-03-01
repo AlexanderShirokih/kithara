@@ -8,7 +8,7 @@
 //!    and leaves the temp directory empty (no files created on disk).
 
 #[cfg(not(target_arch = "wasm32"))]
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use kithara::{assets::AssetStoreBuilder, storage::ResourceExt};
 #[cfg(not(target_arch = "wasm32"))]
@@ -18,6 +18,7 @@ use kithara::{
     hls::{AbrMode, AbrOptions, Hls, HlsConfig},
     stream::{AudioCodec, ContainerFormat, MediaInfo, Stream},
 };
+use kithara_platform::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use kithara_test_utils::TestTempDir;
 #[cfg(not(target_arch = "wasm32"))]
@@ -97,15 +98,14 @@ fn count_files(dir: &std::path::Path) -> usize {
     count
 }
 
-#[kithara::test(native, tokio, timeout(Duration::from_secs(60)))]
+#[kithara::test(native, tokio, serial, timeout(Duration::from_secs(60)))]
 async fn ephemeral_pipeline_no_disk_writes() {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
         .with_max_level(tracing::Level::DEBUG)
-        .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| {
-            "kithara_audio=debug,kithara_decode=debug,kithara_hls=debug,kithara_stream=debug"
-                .to_string()
-        }))
+        .with_env_filter(kithara_test_utils::rust_log_filter(
+            "kithara_audio=debug,kithara_decode=debug,kithara_hls=debug,kithara_stream=debug",
+        ))
         .try_init();
 
     // Generate saw-tooth WAV

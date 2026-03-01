@@ -10,7 +10,7 @@
 //! This test verifies that Stream<Hls> reads continuous bytes without skips during ABR
 //! variant switches.
 
-use std::{env, error::Error, io::Read as _, time::Duration};
+use std::{error::Error, io::Read as _, time::Duration};
 
 use kithara::{
     assets::StoreOptions,
@@ -38,7 +38,12 @@ use crate::kithara_hls::fixture::abr::{AbrTestServer, master_playlist};
 /// - All bytes should be readable sequentially
 /// - Variant switch should be seamless from reader's perspective
 /// - No gaps or duplicates in byte stream
-#[kithara::test(tokio, timeout(Duration::from_secs(30)))]
+#[kithara::test(
+    native,
+    tokio,
+    timeout(Duration::from_secs(30)),
+    env(KITHARA_HANG_TIMEOUT_SECS = "30")
+)]
 async fn test_abr_variant_switch_no_byte_glitches(
     temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -46,10 +51,9 @@ async fn test_abr_variant_switch_no_byte_glitches(
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
         .with_max_level(tracing::Level::DEBUG)
-        .with_env_filter(
-            env::var("RUST_LOG")
-                .unwrap_or_else(|_| "kithara_decode=debug,kithara_hls=debug".to_string()),
-        )
+        .with_env_filter(kithara_test_utils::rust_log_filter(
+            "kithara_decode=debug,kithara_hls=debug",
+        ))
         .try_init();
 
     // Create test server with ABR-triggering configuration:
@@ -122,7 +126,7 @@ async fn test_abr_variant_switch_no_byte_glitches(
     info!("Reading bytes from Stream<Hls>");
 
     // Give ABR some time to trigger and load segments
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    kithara_platform::time::sleep(Duration::from_millis(100)).await;
 
     // Read bytes in blocking thread
     let result = kithara_platform::spawn_blocking(
@@ -191,7 +195,7 @@ async fn test_abr_variant_switch_no_byte_glitches(
 }
 
 /// Simpler test without ABR - just verify basic multi-segment reading works
-#[kithara::test(tokio, timeout(Duration::from_secs(10)))]
+#[kithara::test(native, tokio, timeout(Duration::from_secs(10)))]
 async fn test_basic_multi_segment_reading(
     temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -262,7 +266,7 @@ async fn test_basic_multi_segment_reading(
 /// 4. Reader seeks back to offset 0 - this requires loading segment 0 from variant 2
 /// 5. BUG: `first_media_segment` stays at 2 instead of updating to 0
 /// 6. This causes gap detection or incorrect offset calculations
-#[kithara::test(tokio, timeout(Duration::from_secs(30)))]
+#[kithara::test(native, tokio, timeout(Duration::from_secs(30)))]
 async fn test_abr_variant_switch_with_seek_backward(
     temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -324,7 +328,7 @@ async fn test_abr_variant_switch_with_seek_backward(
     });
 
     // Give ABR time to trigger and load some segments
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    kithara_platform::time::sleep(Duration::from_millis(100)).await;
 
     kithara_platform::spawn_blocking(move || -> Result<(), Box<dyn Error + Send + Sync>> {
         use std::io::SeekFrom;

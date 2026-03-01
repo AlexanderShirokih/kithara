@@ -52,7 +52,7 @@ test-utils = [
     "kithara-stream/test-utils",
     "kithara-play/test-utils",
 ]
-rodio = ["dep:rodio", "rodio/playback", "kithara-audio/rodio", "kithara-play/rodio"]
+rodio = ["dep:rodio", "rodio/playback", "rodio/mp3", "rodio/mp4", "rodio/flac", "rodio/vorbis", "rodio/wav", "kithara-audio/rodio", "kithara-play/rodio"]
 perf = [
     "kithara-audio/perf",
     "kithara-decode/perf",
@@ -62,6 +62,10 @@ perf = [
     "kithara-file/perf",
     "kithara-hls/perf",
     "kithara-net/perf",
+]
+disable-hang-detector = [
+    "kithara-audio/disable-hang-detector",
+    "kithara-hls?/disable-hang-detector",
 ]
 full = ["file", "hls", "assets", "net", "bufpool"]
 internal = [

@@ -13,8 +13,6 @@
 //! smaller Content-Length for HEAD than the actual GET body.
 
 use std::io::{Read, Seek, SeekFrom};
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Duration;
 
 use fixture::scalable_server::{HlsTestServer, HlsTestServerConfig};
 use kithara::{
@@ -22,6 +20,7 @@ use kithara::{
     hls::{AbrMode, AbrOptions, Hls, HlsConfig},
     stream::Stream,
 };
+use kithara_platform::time::Duration;
 use kithara_test_utils::{TestTempDir, cancel_token, debug_tracing_setup, temp_dir};
 use tokio_util::sync::CancellationToken;
 

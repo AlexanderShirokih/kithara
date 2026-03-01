@@ -2,11 +2,13 @@
 //!
 //! # Synchronization
 //!
-//! On native targets, re-exports [`parking_lot`] types directly.
+//! Re-exports [`sync`] primitives (`Mutex`, `Condvar`, `RwLock`, `mpsc`)
+//! backed by [`parking_lot`] / `std` on native and [`wasm_safe_thread`] on WASM.
 //!
-//! On `wasm32`, provides wrapper types that use `try_lock()` + spin loop
-//! instead of blocking `lock()`. This avoids `Atomics.wait()` panics on
-//! the browser main thread where `Atomics.wait` is forbidden.
+//! # Async tasks
+//!
+//! [`task`] module mirrors [`tokio::task`] layout: [`task::spawn`],
+//! [`task::spawn_blocking`], [`task::yield_now`].
 //!
 //! # Conditional trait bounds
 //!
@@ -17,41 +19,32 @@
 //!
 //! # Async utilities
 //!
-//! [`sleep`] delegates to `tokio::time::sleep` on native and is a no-op on
-//! wasm32 (browser fetch has its own retry/timeout mechanisms).
+//! [`time::sleep`] delegates to `tokio::time::sleep` on native and to
+//! `setTimeout` on wasm32.
 
-mod blocking;
-mod channel;
 mod maybe_send;
-mod pool;
-mod task;
+pub mod sync;
+pub mod task;
 pub mod thread;
-mod thread_pool_init;
 pub mod time;
 
 #[cfg(feature = "internal")]
 pub mod internal;
 
-pub use blocking::{BlockingError, BlockingHandle, spawn_blocking};
-pub use channel::{ReceiveError, Receiver, SendError, Sender, bounded, unbounded};
-pub use maybe_send::{MaybeSend, MaybeSync};
-pub use pool::ThreadPool;
-pub use task::spawn_task;
-pub use thread::{Duration, JoinHandle, sleep, spawn, yield_now};
-pub use thread_pool_init::ensure_thread_pool;
+pub use kithara_hang_detector::{HangDetector, hang_watchdog};
+pub use maybe_send::{MaybeSend, MaybeSync, WasmSend};
+pub use sync::{
+    Condvar, Mutex, MutexGuard, NotAvailable, RwLock, RwLockReadGuard, RwLockWriteGuard,
+    WaitTimeoutResult,
+};
+// Backward-compatible re-exports for the rename.
+pub use task::spawn as spawn_task;
+pub use task::{BlockingError, BlockingHandle, spawn_blocking, yield_now};
+pub use thread::{Duration, JoinHandle, sleep, spawn};
 
-// On native: re-export parking_lot types directly (zero overhead).
 #[cfg(not(target_arch = "wasm32"))]
-mod native {
-    pub use parking_lot::{Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+#[must_use]
+pub fn test_env_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
 }
-
-#[cfg(not(target_arch = "wasm32"))]
-pub use native::*;
-
-// On wasm32: wrapper types using try_lock + spin loop.
-#[cfg(target_arch = "wasm32")]
-mod wasm;
-
-#[cfg(target_arch = "wasm32")]
-pub use wasm::*;

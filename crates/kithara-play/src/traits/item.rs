@@ -1,6 +1,4 @@
-use std::time::Duration;
-
-use kithara_platform::{MaybeSend, MaybeSync};
+use kithara_platform::{MaybeSend, MaybeSync, time::Duration};
 
 use crate::{
     error::PlayError,

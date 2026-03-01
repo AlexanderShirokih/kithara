@@ -7,10 +7,8 @@
 //! Deterministic [`Xorshift64`] PRNG guarantees reproducibility.
 //! No external network required.
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Duration;
 use std::{
-    io::{Read, Seek, SeekFrom},
+    io::{ErrorKind, Read, Seek, SeekFrom},
     sync::Arc,
 };
 
@@ -19,6 +17,7 @@ use kithara::{
     hls::{AbrMode, AbrOptions, Hls, HlsConfig},
     stream::Stream,
 };
+use kithara_platform::time::{Duration, Instant};
 use kithara_test_utils::{TestTempDir, Xorshift64};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -35,7 +34,7 @@ use super::fixture::{EncryptionConfig, HlsTestServer, HlsTestServerConfig};
 /// 5. Sample `seek_iterations` random seek positions in `(0, len - chunk_size)`
 /// 6. For each: seek → read → verify every byte matches `expected_byte_at`
 /// 7. Final: seek to `len - chunk_size`, read all → verify EOF
-#[kithara::test(tokio, browser, timeout(Duration::from_secs(120)))]
+#[kithara::test(tokio, browser, serial, timeout(Duration::from_secs(120)))]
 #[case::small(50_000, 20, 200, false, false)]
 #[case::medium(100_000, 50, 500, false, false)]
 #[case::large(200_000, 100, 1000, false, false)]
@@ -53,10 +52,9 @@ async fn stress_random_seek_read_hls(
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
         .with_max_level(tracing::Level::DEBUG)
-        .with_env_filter(
-            std::env::var("RUST_LOG")
-                .unwrap_or_else(|_| "kithara_hls=debug,kithara_stream=debug".to_string()),
-        )
+        .with_env_filter(kithara_test_utils::rust_log_filter(
+            "kithara_hls=debug,kithara_stream=debug",
+        ))
         .try_init();
 
     // Init data
@@ -123,9 +121,19 @@ async fn stress_random_seek_read_hls(
 
         // Trigger initial download + verify first bytes
         let mut probe = [0u8; 64];
-        let n = stream.read(&mut probe).unwrap_or_else(|e| {
-            panic!("initial probe read failed: {e}");
-        });
+        let probe_deadline = Instant::now() + Duration::from_secs(5);
+        let n = loop {
+            match stream.read(&mut probe) {
+                Ok(0) if Instant::now() < probe_deadline => {
+                    kithara_platform::thread::sleep(Duration::from_millis(10));
+                }
+                Ok(n) => break n,
+                Err(e) if e.kind() == ErrorKind::Interrupted && Instant::now() < probe_deadline => {
+                    kithara_platform::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => panic!("initial probe read failed: {e}"),
+            }
+        };
         assert!(n > 0, "probe read returned 0");
 
         if with_init {

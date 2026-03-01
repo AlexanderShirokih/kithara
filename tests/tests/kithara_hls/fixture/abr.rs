@@ -7,9 +7,8 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
-    use std::time::Duration;
-
     use axum::{Router, routing::get};
+    use kithara_platform::time::Duration;
     use kithara_test_utils::TestHttpServer;
     use url::Url;
 
@@ -148,7 +147,7 @@ mod native {
         total_len: usize,
     ) -> Vec<u8> {
         if delay != Duration::ZERO {
-            tokio::time::sleep(delay).await;
+            kithara_platform::time::sleep(delay).await;
         }
 
         let mut data = Vec::new();
@@ -184,7 +183,7 @@ mod wasm {
         pub(crate) async fn new(
             master_playlist: String,
             init: bool,
-            segment0_delay: std::time::Duration,
+            segment0_delay: kithara_platform::time::Duration,
         ) -> Self {
             let config = AbrSessionConfig {
                 master_playlist,
@@ -235,16 +234,4 @@ v1.m3u8
 v2.m3u8
 "#
     )
-}
-
-/// Fixture: default ABR test server
-#[cfg(not(target_arch = "wasm32"))]
-#[kithara::fixture]
-pub(crate) async fn abr_server_default() -> AbrTestServer {
-    AbrTestServer::new(
-        master_playlist(256_000, 512_000, 1_024_000),
-        false,
-        std::time::Duration::from_millis(1),
-    )
-    .await
 }

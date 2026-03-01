@@ -6,7 +6,6 @@
 use std::{
     future::Future,
     sync::atomic::{AtomicBool, Ordering},
-    time::{Duration, Instant},
 };
 
 use futures::future::{Either, select};
@@ -14,21 +13,18 @@ use kithara_assets::StoreOptions;
 use kithara_audio::{Audio, AudioConfig};
 use kithara_events::{AudioEvent, Event, EventBus, SeekLifecycleStage};
 use kithara_hls::{AbrMode, AbrOptions, Hls, HlsConfig};
-use kithara_platform::ThreadPool;
+use kithara_platform::time::{Duration, Instant};
 use kithara_stream::{AudioCodec, ContainerFormat, MediaInfo, Stream};
 use tracing::{info, warn};
 use url::Url;
-use wasm_bindgen_futures::JsFuture;
-
 mod kithara {
     pub(crate) use kithara_test_macros::test;
 }
 
-/// Number of rayon worker threads for the thread pool.
-const THREAD_COUNT: usize = 2;
 const EVENT_BUS_CAPACITY: usize = 4096;
+const REAL_HLS_STREAM_URL: &str = "http://127.0.0.1:3333/hls/master.m3u8";
 
-/// Guard: `init_thread_pool` panics if called twice in the same page.
+/// Guard: init must only run once per page.
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Get HLS test URL from compile-time env or fall back to default.
@@ -67,22 +63,17 @@ impl Xorshift64 {
     }
 }
 
-/// One-time initialization: panic hook, tracing, rayon thread pool.
+/// One-time initialization: panic hook + tracing.
 ///
 /// Idempotent — safe to call from every test. All tests share one page
-/// in `wasm_bindgen_test`, so `init_thread_pool` must only run once.
+/// in `wasm_bindgen_test`, so init must only run once.
 async fn init() {
     if INITIALIZED.swap(true, Ordering::SeqCst) {
         return;
     }
     console_error_panic_hook::set_once();
     tracing_wasm::set_as_global_default();
-
-    // Initialize rayon thread pool (Web Workers).
-    JsFuture::from(kithara_wasm::init_thread_pool(THREAD_COUNT))
-        .await
-        .unwrap();
-    info!("Rayon thread pool initialized with {THREAD_COUNT} workers");
+    info!("WASM test environment initialized");
 }
 
 /// Create an `Audio<Stream<Hls>>` pipeline in ephemeral mode.
@@ -91,11 +82,9 @@ async fn create_pipeline() -> Audio<Stream<Hls>> {
 }
 
 async fn create_pipeline_with_url(url: Url) -> Audio<Stream<Hls>> {
-    let pool = ThreadPool::global();
     let bus = EventBus::new(EVENT_BUS_CAPACITY);
 
     let hls_config = HlsConfig::new(url)
-        .with_thread_pool(pool)
         .with_events(bus)
         .with_store(StoreOptions::default().with_ephemeral(true))
         .with_abr(AbrOptions {
@@ -332,6 +321,14 @@ async fn select_with_retry(
     false
 }
 
+fn trim_events_tail(events: &str) -> String {
+    if events.len() <= 2048 {
+        events.to_string()
+    } else {
+        format!("...{}", &events[events.len() - 2048..])
+    }
+}
+
 // ── Saw-tooth verification helpers ──
 //
 // The HLS fixture server (`hls_fixture_server`) serves a deterministic saw-tooth
@@ -356,7 +353,7 @@ fn phase_distance(a: usize, b: usize) -> usize {
     d.min(SAW_PERIOD - d)
 }
 
-#[kithara::test(wasm)]
+#[kithara::test(wasm, serial, timeout(Duration::from_secs(90)))]
 async fn stress_read_samples_integrity() {
     init().await;
     info!("Starting stress_read_samples_integrity");
@@ -479,7 +476,7 @@ async fn stress_read_samples_integrity() {
     );
 }
 
-#[kithara::test(wasm)]
+#[kithara::test(wasm, serial, timeout(Duration::from_secs(90)))]
 async fn stress_seek_and_read() {
     init().await;
     info!("Starting stress_seek_and_read");
@@ -607,7 +604,7 @@ async fn stress_seek_and_read() {
 ///
 /// Verifies that after selecting an HLS track the player reports duration,
 /// advances position while playing, pauses correctly, and keeps seek behavior sane.
-#[kithara::test(wasm)]
+#[kithara::test(wasm, serial, timeout(Duration::from_secs(90)))]
 async fn wasm_player_playlist_add_track_validation() {
     init().await;
 
@@ -628,7 +625,7 @@ async fn wasm_player_playlist_add_track_validation() {
     );
 }
 
-#[kithara::test(wasm)]
+#[kithara::test(wasm, serial, timeout(Duration::from_secs(90)))]
 async fn wasm_player_eq_controls_roundtrip() {
     init().await;
 
@@ -672,7 +669,7 @@ async fn wasm_player_eq_controls_roundtrip() {
     assert!(reset_gain.abs() < 0.1, "eq gain must reset close to zero");
 }
 
-#[kithara::test(wasm)]
+#[kithara::test(wasm, serial, timeout(Duration::from_secs(90)))]
 async fn wasm_player_select_track_crossfade_switch() {
     init().await;
 
@@ -715,7 +712,7 @@ async fn wasm_player_select_track_crossfade_switch() {
     }
 }
 
-#[kithara::test(wasm)]
+#[kithara::test(wasm, serial, timeout(Duration::from_secs(90)))]
 async fn wasm_player_play_without_loaded_track_must_not_panic_or_hang() {
     init().await;
 
@@ -728,7 +725,7 @@ async fn wasm_player_play_without_loaded_track_must_not_panic_or_hang() {
     let _ = player.is_playing();
 }
 
-#[kithara::test(wasm)]
+#[kithara::test(wasm, serial, timeout(Duration::from_secs(90)))]
 #[case(2_u32, 20_u32)]
 #[case(3_u32, 20_u32)]
 async fn wasm_player_double_play_click_must_not_hang(
@@ -768,7 +765,7 @@ async fn wasm_player_double_play_click_must_not_hang(
 ///
 /// Verifies that after selecting an HLS track the player reports duration,
 /// advances position while playing, pauses correctly, and keeps seek behavior sane.
-#[kithara::test(wasm)]
+#[kithara::test(wasm, serial, timeout(Duration::from_secs(90)))]
 async fn fill_buffer_position_must_not_drift() {
     init().await;
     info!("Starting fill_buffer_position_must_not_drift (new API)");
@@ -824,6 +821,126 @@ async fn fill_buffer_position_must_not_drift() {
     );
 }
 
+#[kithara::test(wasm, serial, timeout(Duration::from_secs(90)))]
+async fn wasm_player_real_hls_repro_freeze_probe() {
+    init().await;
+    info!("Starting wasm_player_real_hls_repro_freeze_probe");
+
+    let url = option_env!("KITHARA_REAL_HLS_STREAM_URL").unwrap_or(REAL_HLS_STREAM_URL);
+    let mut player = kithara_wasm::WasmPlayer::new();
+    let idx = match player.add_track(url.to_string()) {
+        Ok(idx) => idx,
+        Err(err) => {
+            warn!("real HLS repro: add_track failed: {:?}", err);
+            return;
+        }
+    };
+
+    if !select_with_retry(&mut player, idx, 12).await {
+        warn!("real HLS repro: select_track retries exhausted");
+        return;
+    }
+
+    let duration_ms = wait_duration_ms(&player).await;
+    if duration_ms <= 0.0 {
+        warn!("real HLS repro: duration is not available; skip");
+        return;
+    }
+
+    player.play();
+    assert!(
+        player.is_playing(),
+        "real HLS repro: play() should start playback"
+    );
+
+    let start_ms = player.get_position_ms();
+    assert!(
+        wait_position_advance(&player, start_ms).await,
+        "real HLS repro: position must advance after initial play"
+    );
+
+    let mut last_position_ms = player.get_position_ms();
+    let mut last_process_count = player.process_count();
+    let mut stable_position_iterations = 0u32;
+    let mut last_events = String::new();
+    let mut seek_executed = false;
+    let mut seek_progress = false;
+
+    for i in 0..80 {
+        yield_ms(250).await;
+
+        if let Err(err) = player.tick() {
+            warn!(iteration = i, "real HLS repro: tick() failed: {:?}", err);
+        }
+
+        let position_ms = player.get_position_ms();
+        let process_count = player.process_count();
+        let events = player.take_events();
+        if !events.is_empty() {
+            last_events = trim_events_tail(&events);
+        }
+
+        if position_ms > last_position_ms + 10.0 {
+            stable_position_iterations = 0;
+            last_position_ms = position_ms;
+        } else {
+            stable_position_iterations += 1;
+        }
+
+        if process_count > last_process_count {
+            last_process_count = process_count;
+        }
+
+        if i == 40 && !seek_executed {
+            let seek_ms = (duration_ms * 0.4).clamp(500.0, (duration_ms - 500.0).max(500.0));
+            match player.seek(seek_ms) {
+                Ok(()) => {
+                    seek_executed = true;
+                    let before_seek_ms = player.get_position_ms();
+                    if wait_position_advance(&player, before_seek_ms).await {
+                        seek_progress = true;
+                    }
+                }
+                Err(err) => warn!(
+                    iteration = i,
+                    seek_ms, "real HLS repro: midstream seek failed: {:?}", err
+                ),
+            }
+        }
+
+        if i % 20 == 0 {
+            info!(
+                iteration = i,
+                position_ms = position_ms,
+                process_count = process_count,
+                is_playing = player.is_playing(),
+                "real HLS repro probe"
+            );
+        }
+
+        if stable_position_iterations >= 20 {
+            panic!(
+                "real HLS repro: position stalled for {stable_position_iterations} consecutive iterations (~{}ms) on stream {url}; \
+                 last_pos_ms={position_ms}, process_count={process_count}, seek_executed={seek_executed}, \
+                 seek_progress={seek_progress}, last_events={}",
+                stable_position_iterations * 250,
+                last_events
+            );
+        }
+    }
+
+    assert!(
+        seek_executed,
+        "real HLS repro: midstream seek was not executed"
+    );
+    if seek_executed {
+        assert!(
+            seek_progress,
+            "real HLS repro: midstream seek should resume position progress before finish"
+        );
+    }
+}
+
 /// Aggressive seek stress test: 1000 rapid random seeks.
 ///
 /// Catches the bug where `read()` returns 0 after seek and the pipeline
@@ -835,7 +952,7 @@ async fn fill_buffer_position_must_not_drift() {
 /// - After each seek: read_with_yield must produce >0 samples (not stuck)
 /// - All samples must be finite and in [-1.0, 1.0]
 /// - Tolerate at most 1% dead seeks (pipeline restart race)
-#[kithara::test(wasm)]
+#[kithara::test(wasm, serial, timeout(Duration::from_secs(90)))]
 async fn stress_rapid_seeks_must_not_stall() {
     init().await;
     info!("Starting stress_rapid_seeks_must_not_stall");
@@ -996,7 +1113,7 @@ async fn stress_rapid_seeks_must_not_stall() {
 /// - Reset: seek to 0
 /// - Verify: read at least 50 chunks from the beginning, all valid
 /// - Position must be near 0 after seeking, then advance monotonically
-#[kithara::test(wasm)]
+#[kithara::test(wasm, serial, timeout(Duration::from_secs(90)))]
 async fn stress_seek_to_zero_after_pressure() {
     init().await;
     info!("Starting stress_seek_to_zero_after_pressure");
@@ -1158,7 +1275,7 @@ async fn stress_seek_to_zero_after_pressure() {
 
 /// Regression: after long playback from the middle, seek near start (but not 0)
 /// must land inside segment 0, not at segment 1 boundary.
-#[kithara::test(wasm)]
+#[kithara::test(wasm, serial, timeout(Duration::from_secs(90)))]
 async fn stress_seek_near_start_after_mid_playback_must_land_inside_first_segment() {
     init().await;
     info!("Starting stress_seek_near_start_after_mid_playback_must_land_inside_first_segment");
@@ -1268,7 +1385,7 @@ async fn stress_seek_near_start_after_mid_playback_must_land_inside_first_segmen
 /// Event-level regression guard for seek behavior in browser path:
 /// one seek command should produce one seek-complete, and playback progress
 /// after that seek should advance without extra backward resets.
-#[kithara::test(wasm)]
+#[kithara::test(wasm, serial, timeout(Duration::from_secs(90)))]
 async fn stress_seek_events_single_reset_and_monotonic_progress() {
     init().await;
     info!("Starting stress_seek_events_single_reset_and_monotonic_progress");
@@ -1422,7 +1539,7 @@ async fn stress_seek_events_single_reset_and_monotonic_progress() {
 ///
 /// For the deterministic saw-tooth fixture, this early window must be strictly
 /// contiguous frame-by-frame (no tiny backward jumps / repeated fragments).
-#[kithara::test(wasm)]
+#[kithara::test(wasm, serial, timeout(Duration::from_secs(90)))]
 async fn stress_seek_pcm_window_after_seek_must_not_loop_fragment() {
     init().await;
     info!("Starting stress_seek_pcm_window_after_seek_must_not_loop_fragment");
@@ -1430,7 +1547,7 @@ async fn stress_seek_pcm_window_after_seek_must_not_loop_fragment() {
     run_seek_pcm_window_check(create_pipeline().await).await;
 }
 
-#[kithara::test(wasm)]
+#[kithara::test(wasm, serial, timeout(Duration::from_secs(90)))]
 async fn stress_seek_pcm_window_after_seek_must_not_loop_fragment_jitter() {
     init().await;
     info!("Starting stress_seek_pcm_window_after_seek_must_not_loop_fragment_jitter");
@@ -1440,7 +1557,7 @@ async fn stress_seek_pcm_window_after_seek_must_not_loop_fragment_jitter() {
 
 /// Full `WasmPlayer` lifecycle under pressure: play → rapid seeks → pause →
 /// seek to 0 → play → verify position flow.
-#[kithara::test(wasm)]
+#[kithara::test(wasm, serial, timeout(Duration::from_secs(90)))]
 async fn stress_player_lifecycle_seek_pressure() {
     init().await;
     info!("Starting stress_player_lifecycle_seek_pressure");

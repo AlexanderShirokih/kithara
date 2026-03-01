@@ -1,18 +1,15 @@
 //! Concurrent File instance tests.
 //!
 //! Verifies that 2, 4, and 8 `Audio<Stream<File>>` instances can run
-//! concurrently on a shared `ThreadPool` and each reads PCM data to EOF.
-
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Duration;
+//! concurrently and each reads PCM data to EOF.
 
 use kithara::{
     assets::StoreOptions,
     audio::{Audio, AudioConfig},
     file::{File, FileConfig},
-    platform::ThreadPool,
     stream::Stream,
 };
+use kithara_platform::time::Duration;
 use kithara_test_utils::TestTempDir;
 use tracing::info;
 
@@ -40,18 +37,10 @@ fn read_to_eof(audio: &mut Audio<Stream<File>>) -> u64 {
 }
 
 /// Create an `Audio<Stream<File>>` for a remote MP3 URL.
-async fn create_file_audio(
-    url: url::Url,
-    cache_dir: &std::path::Path,
-    pool: &ThreadPool,
-) -> Audio<Stream<File>> {
-    let file_config = FileConfig::new(url.into())
-        .with_store(StoreOptions::new(cache_dir))
-        .with_thread_pool(pool.clone());
+async fn create_file_audio(url: url::Url, cache_dir: &std::path::Path) -> Audio<Stream<File>> {
+    let file_config = FileConfig::new(url.into()).with_store(StoreOptions::new(cache_dir));
 
-    let config = AudioConfig::<File>::new(file_config)
-        .with_hint("mp3")
-        .with_thread_pool(pool.clone());
+    let config = AudioConfig::<File>::new(file_config).with_hint("mp3");
 
     Audio::<Stream<File>>::new(config)
         .await
@@ -79,7 +68,7 @@ fn assert_consistent_counts(results: &[(usize, u64)]) {
 ///
 /// Each Audio instance uses 2 pool threads (downloader + audio_loop),
 /// so pool size must be >= 2 * N to avoid starvation.
-#[kithara::test(tokio, timeout(Duration::from_secs(120)))]
+#[kithara::test(tokio, serial, timeout(Duration::from_secs(120)))]
 async fn two_file_instances() {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
@@ -87,13 +76,12 @@ async fn two_file_instances() {
         .try_init();
 
     let server = AudioTestServer::new().await;
-    let pool = ThreadPool::with_num_threads(6).expect("thread pool");
 
     let mut handles = Vec::new();
     let mut temps = Vec::new();
     for i in 0..2 {
         let temp = TestTempDir::new();
-        let audio = create_file_audio(server.mp3_url(), temp.path(), &pool).await;
+        let audio = create_file_audio(server.mp3_url(), temp.path()).await;
         temps.push(temp);
         handles.push(kithara_platform::spawn_blocking(move || {
             let mut audio = audio;
@@ -117,7 +105,7 @@ async fn two_file_instances() {
 }
 
 /// 4 concurrent File instances on a shared pool.
-#[kithara::test(tokio, timeout(Duration::from_secs(120)))]
+#[kithara::test(tokio, serial, timeout(Duration::from_secs(120)))]
 async fn four_file_instances() {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
@@ -125,13 +113,12 @@ async fn four_file_instances() {
         .try_init();
 
     let server = AudioTestServer::new().await;
-    let pool = ThreadPool::with_num_threads(10).expect("thread pool");
 
     let mut handles = Vec::new();
     let mut temps = Vec::new();
     for i in 0..4 {
         let temp = TestTempDir::new();
-        let audio = create_file_audio(server.mp3_url(), temp.path(), &pool).await;
+        let audio = create_file_audio(server.mp3_url(), temp.path()).await;
         temps.push(temp);
         handles.push(kithara_platform::spawn_blocking(move || {
             let mut audio = audio;
@@ -155,7 +142,7 @@ async fn four_file_instances() {
 }
 
 /// 8 concurrent File instances on a shared pool.
-#[kithara::test(tokio, timeout(Duration::from_secs(180)))]
+#[kithara::test(tokio, serial, timeout(Duration::from_secs(180)))]
 async fn eight_file_instances() {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
@@ -163,13 +150,12 @@ async fn eight_file_instances() {
         .try_init();
 
     let server = AudioTestServer::new().await;
-    let pool = ThreadPool::with_num_threads(18).expect("thread pool");
 
     let mut handles = Vec::new();
     let mut temps = Vec::new();
     for i in 0..8 {
         let temp = TestTempDir::new();
-        let audio = create_file_audio(server.mp3_url(), temp.path(), &pool).await;
+        let audio = create_file_audio(server.mp3_url(), temp.path()).await;
         temps.push(temp);
         handles.push(kithara_platform::spawn_blocking(move || {
             let mut audio = audio;

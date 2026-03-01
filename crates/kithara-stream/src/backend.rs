@@ -13,7 +13,7 @@
 #[cfg(test)]
 use std::future::Future;
 
-use kithara_platform::ThreadPool;
+use kithara_platform::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
@@ -34,7 +34,7 @@ enum LoopControl {
 /// Source is owned by Reader and accessed directly (sync).
 ///
 /// Backend manages the downloader lifecycle:
-/// - On creation, spawns the downloader on the provided [`ThreadPool`].
+/// - On creation, spawns the downloader on a dedicated thread.
 /// - On drop, cancels the child token, causing the downloader loop to exit.
 ///
 /// Store the Backend alongside the Source to ensure the downloader is
@@ -43,39 +43,64 @@ pub struct Backend {
     /// Child token created from the caller's cancel token.
     /// Cancelled on drop to stop the downloader.
     cancel: CancellationToken,
+
+    /// Worker thread handle (joined on drop after cancellation).
+    _worker: Option<JoinHandle<()>>,
 }
 
 impl Backend {
-    /// Spawn a downloader task on the given thread pool.
+    /// Spawn a downloader task on a dedicated thread.
     ///
     /// The downloader runs in the background writing data to storage.
     /// A child cancellation token is created: dropping this Backend
     /// cancels the child (and thus the downloader) without affecting
     /// the parent token.
-    pub fn new<D: Downloader>(
-        downloader: D,
-        cancel: &CancellationToken,
-        pool: &ThreadPool,
-    ) -> Self {
+    ///
+    /// # Panics
+    ///
+    /// Panics if creating the dedicated current-thread Tokio runtime fails.
+    pub fn new<D: Downloader + Send>(downloader: D, cancel: &CancellationToken) -> Self {
         let child_cancel = cancel.child_token();
         let task_cancel = child_cancel.clone();
 
         #[cfg(not(target_arch = "wasm32"))]
-        {
+        let worker = {
             let handle = tokio::runtime::Handle::current();
-            pool.spawn(move || {
-                handle.block_on(Self::run_downloader(downloader, task_cancel));
-            });
-        }
+            if matches!(
+                handle.runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::CurrentThread
+            ) {
+                // `Handle::block_on` from a foreign thread can starve current-thread
+                // runtimes. Run downloader on a dedicated single-thread runtime
+                // inside the worker thread.
+                kithara_platform::spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("failed to build downloader runtime");
+                    rt.block_on(Self::run_downloader(downloader, task_cancel));
+                })
+            } else {
+                kithara_platform::spawn(move || {
+                    handle.block_on(Self::run_downloader(downloader, task_cancel));
+                })
+            }
+        };
 
         #[cfg(target_arch = "wasm32")]
-        {
-            let _ = pool; // suppress unused warning
-            wasm_bindgen_futures::spawn_local(Self::run_downloader(downloader, task_cancel));
-        }
+        let worker = {
+            // Run downloader in a Web Worker to avoid blocking the main thread.
+            // thread::spawn creates a Worker; spawn_task queues the async task
+            // on the worker's JS event loop.
+            // task_begin/task_finished keep the Worker alive while async work runs.
+            kithara_platform::thread::spawn(move || {
+                kithara_platform::spawn_task(Self::run_downloader(downloader, task_cancel));
+            })
+        };
 
         Self {
             cancel: child_cancel,
+            _worker: Some(worker),
         }
     }
 
@@ -83,46 +108,52 @@ impl Backend {
         debug!("Downloader task started");
         let yield_interval = DEFAULT_YIELD_INTERVAL;
         let mut steps_since_yield: usize = 0;
-
-        loop {
-            if cancel.is_cancelled() {
-                debug!("Downloader cancelled");
-                return;
-            }
-
-            if Self::wait_while_throttled(&mut dl, &cancel).await.is_err() {
-                return;
-            }
-            if Self::drain_demand_requests(&mut dl, &cancel).await.is_err() {
-                return;
-            }
-
-            let Ok(outcome) = Self::plan_next(&mut dl, &cancel).await else {
-                return;
-            };
-
-            let control = match outcome {
-                PlanOutcome::Batch(plans) => Self::handle_batch(&mut dl, &cancel, plans).await,
-                PlanOutcome::Step => Self::handle_step(&mut dl, &cancel).await,
-                PlanOutcome::Complete => {
-                    debug!("Downloader complete");
-                    LoopControl::Exit
+        kithara_platform::hang_watchdog! {
+            thread: "stream.downloader";
+            loop {
+                if cancel.is_cancelled() {
+                    debug!("Downloader cancelled");
+                    return;
                 }
-            };
 
-            match control {
-                LoopControl::Exit => return,
-                LoopControl::Restart => continue,
-                LoopControl::Proceed => {
-                    steps_since_yield += 1;
+                if Self::wait_while_throttled(&mut dl, &cancel).await.is_err() {
+                    return;
                 }
-            }
+                if Self::drain_demand_requests(&mut dl, &cancel).await.is_err() {
+                    return;
+                }
 
-            // 4. Periodic yield (only when not throttled — backpressure loop
-            //    already yields to runtime via wait_ready).
-            if !dl.should_throttle() && steps_since_yield >= yield_interval {
-                tokio::task::yield_now().await;
-                steps_since_yield = 0;
+                hang_tick!();
+                kithara_platform::thread::yield_now();
+                let Ok(outcome) = Self::plan_next(&mut dl, &cancel).await else {
+                    return;
+                };
+
+                let control = match outcome {
+                    PlanOutcome::Batch(plans) => Self::handle_batch(&mut dl, &cancel, plans).await,
+                    PlanOutcome::Step => Self::handle_step(&mut dl, &cancel).await,
+                    PlanOutcome::Complete => {
+                        debug!("Downloader complete");
+                        LoopControl::Exit
+                    }
+                    PlanOutcome::Idle => Self::handle_idle(&mut dl, &cancel).await,
+                };
+
+                match control {
+                    LoopControl::Exit => return,
+                    LoopControl::Restart => continue,
+                    LoopControl::Proceed => {
+                        hang_reset!();
+                        steps_since_yield += 1;
+                    }
+                }
+
+                // 4. Periodic yield (only when not throttled — backpressure loop
+                //    already yields to runtime via wait_ready).
+                if !dl.should_throttle() && steps_since_yield >= yield_interval {
+                    kithara_platform::yield_now().await;
+                    steps_since_yield = 0;
+                }
             }
         }
     }
@@ -181,13 +212,25 @@ impl Backend {
         }
     }
 
+    async fn handle_idle<D: Downloader>(dl: &mut D, cancel: &CancellationToken) -> LoopControl {
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => LoopControl::Exit,
+            () = dl.wait_for_work() => {
+                // Yield to let other tasks run (e.g. TUI updates).
+                kithara_platform::yield_now().await;
+                LoopControl::Proceed
+            }
+        }
+    }
+
     async fn handle_batch<D: Downloader>(
         dl: &mut D,
         cancel: &CancellationToken,
         plans: Vec<D::Plan>,
     ) -> LoopControl {
         if plans.is_empty() {
-            tokio::task::yield_now().await;
+            kithara_platform::yield_now().await;
             return LoopControl::Restart;
         }
 
@@ -314,7 +357,7 @@ mod tests {
 
     use std::{sync::Arc, time::Duration};
 
-    use kithara_platform::{Mutex, ThreadPool};
+    use kithara_platform::Mutex;
     use tokio::sync::Notify;
     use tokio_util::sync::CancellationToken;
 
@@ -370,7 +413,7 @@ mod tests {
         }
 
         async fn poll_demand(&mut self) -> Option<u64> {
-            self.demand_queue.lock().pop()
+            self.demand_queue.lock_sync().pop()
         }
 
         async fn plan(&mut self) -> PlanOutcome<u64> {
@@ -429,14 +472,13 @@ mod tests {
         };
 
         let cancel = CancellationToken::new();
-        let pool = ThreadPool::global();
-        let _backend = Backend::new(downloader, &cancel, &pool);
+        let _backend = Backend::new(downloader, &cancel);
 
         // Wait for the downloader to enter step() (blocked on slow stream).
         step_entered.notified().await;
 
         // Queue demand while step() is blocked (simulates reader seek).
-        demand_queue.lock().push(42);
+        demand_queue.lock_sync().push(42);
         demand_notify.notify_one();
 
         // Must resolve promptly — if step() blocks demand, the 2s timeout fires.

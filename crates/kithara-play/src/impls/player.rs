@@ -12,8 +12,9 @@ use std::sync::{
 use derivative::Derivative;
 use derive_setters::Setters;
 use kithara_bufpool::{PcmPool, pcm_pool};
-use kithara_platform::{Mutex, ThreadPool};
+use kithara_platform::Mutex;
 use portable_atomic::AtomicF32;
+use ringbuf::traits::Consumer;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
@@ -55,11 +56,6 @@ pub struct PlayerConfig {
     /// Propagated to the underlying [`EngineImpl`]. When `None`, the global
     /// PCM pool is used.
     pub pcm_pool: Option<PcmPool>,
-    /// Thread pool for the engine thread and background work.
-    ///
-    /// Propagated to the underlying [`EngineImpl`]. When `None`, the global
-    /// rayon pool is used.
-    pub thread_pool: Option<ThreadPool>,
 }
 
 // -- PlayerImpl -------------------------------------------------------------------
@@ -100,7 +96,6 @@ impl PlayerImpl {
             eq_bands: config.eq_bands,
             max_slots: config.max_slots,
             pcm_pool: Some(resolved_pool.clone()),
-            thread_pool: config.thread_pool.clone(),
             ..EngineConfig::default()
         };
         let engine = EngineImpl::new(engine_config);
@@ -125,12 +120,25 @@ impl PlayerImpl {
 
     /// Get the number of items in the queue (including consumed items).
     pub fn item_count(&self) -> usize {
-        self.items.lock().len()
+        self.items.lock_sync().len()
+    }
+
+    /// Replace a consumed (or existing) resource at the given index.
+    ///
+    /// Use this to re-load a track that was previously played and consumed
+    /// by [`load_current_item`]. Does nothing if `index` is out of bounds.
+    pub fn replace_item(&self, index: usize, resource: Resource) {
+        let mut items = self.items.lock_sync();
+        if index < items.len() {
+            items[index] = Some(resource);
+            drop(items);
+            debug!(index, "item replaced");
+        }
     }
 
     /// Append a resource at the end of the queue (or after a specific index).
     pub fn insert(&self, resource: Resource, after_index: Option<usize>) {
-        let mut items = self.items.lock();
+        let mut items = self.items.lock_sync();
         let pos = after_index.map_or(items.len(), |i| (i + 1).min(items.len()));
         items.insert(pos, Some(resource));
         debug!(count = items.len(), pos, "item inserted");
@@ -139,7 +147,7 @@ impl PlayerImpl {
     /// Remove item at index. Returns the removed resource, or `None` if out of bounds
     /// or already consumed.
     pub fn remove_at(&self, index: usize) -> Option<Resource> {
-        let mut items = self.items.lock();
+        let mut items = self.items.lock_sync();
         if index >= items.len() {
             return None;
         }
@@ -158,7 +166,7 @@ impl PlayerImpl {
 
     /// Remove all items from the queue.
     pub fn remove_all_items(&self) {
-        self.items.lock().clear();
+        self.items.lock_sync().clear();
         self.current_index.store(0, Ordering::Relaxed);
         self.set_status(PlayerStatus::Unknown);
         debug!("all items removed");
@@ -253,7 +261,7 @@ impl PlayerImpl {
     ///
     /// Does nothing if the current item is already the last one.
     pub fn advance_to_next_item(&self) {
-        let items = self.items.lock();
+        let items = self.items.lock_sync();
         let current = self.current_index.load(Ordering::Relaxed);
         if current + 1 < items.len() {
             self.current_index.store(current + 1, Ordering::Relaxed);
@@ -265,17 +273,17 @@ impl PlayerImpl {
 
     /// Get current player status.
     pub fn status(&self) -> PlayerStatus {
-        *self.status.lock()
+        *self.status.lock_sync()
     }
 
     /// Set action to perform when the current item ends.
     pub fn set_action_at_item_end(&self, action: ActionAtItemEnd) {
-        *self.action_at_item_end.lock() = action;
+        *self.action_at_item_end.lock_sync() = action;
     }
 
     /// Get action to perform when the current item ends.
     pub fn action_at_item_end(&self) -> ActionAtItemEnd {
-        *self.action_at_item_end.lock()
+        *self.action_at_item_end.lock_sync()
     }
 
     /// Set crossfade duration in seconds.
@@ -307,7 +315,7 @@ impl PlayerImpl {
 
     /// Seek active tracks to position in seconds.
     pub fn seek_seconds(&self, seconds: f64) -> Result<(), PlayError> {
-        let slot_id = *self.current_slot.lock();
+        let slot_id = *self.current_slot.lock_sync();
         let Some(slot_id) = slot_id else {
             return Err(PlayError::NotReady);
         };
@@ -327,21 +335,21 @@ impl PlayerImpl {
 
     /// Current playback position in seconds.
     pub fn position_seconds(&self) -> Option<f64> {
-        let slot_id = (*self.current_slot.lock())?;
+        let slot_id = (*self.current_slot.lock_sync())?;
         let state = self.engine.slot_shared_state(slot_id)?;
         Some(state.position.load(Ordering::Relaxed))
     }
 
     /// Current media duration in seconds.
     pub fn duration_seconds(&self) -> Option<f64> {
-        let slot_id = (*self.current_slot.lock())?;
+        let slot_id = (*self.current_slot.lock_sync())?;
         let state = self.engine.slot_shared_state(slot_id)?;
         Some(state.duration.load(Ordering::Relaxed))
     }
 
     /// Diagnostic: number of times the audio processor's `process()` has been called.
     pub fn process_count(&self) -> u64 {
-        let Some(slot_id) = *self.current_slot.lock() else {
+        let Some(slot_id) = *self.current_slot.lock_sync() else {
             return 0;
         };
         let Some(state) = self.engine.slot_shared_state(slot_id) else {
@@ -352,7 +360,7 @@ impl PlayerImpl {
 
     /// Returns `true` if the player is in playing state.
     pub fn is_playing(&self) -> bool {
-        let Some(slot_id) = *self.current_slot.lock() else {
+        let Some(slot_id) = *self.current_slot.lock_sync() else {
             return false;
         };
         let Some(state) = self.engine.slot_shared_state(slot_id) else {
@@ -368,7 +376,7 @@ impl PlayerImpl {
 
     /// Drain audio-thread notifications for the active slot.
     pub fn drain_notifications(&self) -> Vec<String> {
-        let Some(slot_id) = *self.current_slot.lock() else {
+        let Some(slot_id) = *self.current_slot.lock_sync() else {
             return Vec::new();
         };
         let Some(state) = self.engine.slot_shared_state(slot_id) else {
@@ -376,7 +384,7 @@ impl PlayerImpl {
         };
 
         let mut out = Vec::new();
-        while let Ok(Some(notification)) = state.notification_rx.try_recv() {
+        while let Some(notification) = state.notification_rx.lock_sync().try_pop() {
             out.push(format!("{notification:?}"));
         }
         out
@@ -389,13 +397,13 @@ impl PlayerImpl {
 
     /// Get EQ gain for a band in dB.
     pub fn eq_gain(&self, band: usize) -> Option<f32> {
-        let slot_id = (*self.current_slot.lock())?;
+        let slot_id = (*self.current_slot.lock_sync())?;
         self.engine.slot_eq(slot_id).and_then(|eq| eq.gain(band))
     }
 
     /// Set EQ gain for a band in dB.
     pub fn set_eq_gain(&self, band: usize, gain_db: f32) -> Result<(), PlayError> {
-        let slot_id = (*self.current_slot.lock())
+        let slot_id = (*self.current_slot.lock_sync())
             .ok_or_else(|| PlayError::Internal("no active slot".into()))?;
         let eq = self
             .engine
@@ -407,7 +415,7 @@ impl PlayerImpl {
 
     /// Reset EQ gains to 0 dB for all bands.
     pub fn reset_eq(&self) -> Result<(), PlayError> {
-        let slot_id = (*self.current_slot.lock())
+        let slot_id = (*self.current_slot.lock_sync())
             .ok_or_else(|| PlayError::Internal("no active slot".into()))?;
         let eq = self
             .engine
@@ -464,7 +472,7 @@ impl PlayerImpl {
 
     /// Internal: set status and emit event if changed.
     fn set_status(&self, new_status: PlayerStatus) {
-        let mut status = self.status.lock();
+        let mut status = self.status.lock_sync();
         if *status != new_status {
             *status = new_status;
             drop(status);
@@ -484,7 +492,7 @@ impl PlayerImpl {
 
     /// Ensure we have an active slot, allocating one if needed.
     fn ensure_slot(&self) -> Result<SlotId, PlayError> {
-        let mut slot = self.current_slot.lock();
+        let mut slot = self.current_slot.lock_sync();
         if let Some(id) = *slot {
             return Ok(id);
         }
@@ -497,17 +505,9 @@ impl PlayerImpl {
 
     /// Send a command to the current slot's processor.
     fn send_to_slot(&self, cmd: PlayerCmd) -> Result<(), PlayError> {
-        let slot_id = (*self.current_slot.lock())
+        let slot_id = (*self.current_slot.lock_sync())
             .ok_or_else(|| PlayError::Internal("no active slot".into()))?;
-        let tx = self
-            .engine
-            .slot_cmd_tx(slot_id)
-            .ok_or_else(|| PlayError::Internal("slot handle not found".into()))?;
-        match tx.try_send(cmd) {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(PlayError::Internal("slot channel full".into())),
-            Err(_) => Err(PlayError::Internal("slot channel closed".into())),
-        }
+        self.engine.send_slot_cmd(slot_id, cmd)
     }
 
     /// Load the current queue item into the active slot.
@@ -515,7 +515,7 @@ impl PlayerImpl {
     /// Takes the resource out of the queue (replacing with `None`), wraps it
     /// in [`PlayerResource`], and sends `LoadTrack` + `FadeIn` to the processor.
     fn load_current_item(&self) {
-        let mut items = self.items.lock();
+        let mut items = self.items.lock_sync();
         let index = self.current_index.load(Ordering::Relaxed);
         if index >= items.len() {
             return;
@@ -648,7 +648,7 @@ mod tests {
 
     #[kithara::test]
     fn player_session_ducking_roundtrip() {
-        let _lock = crate::impls::engine::ducking_test_lock().lock().unwrap();
+        let _lock = crate::impls::engine::ducking_test_lock().lock_sync();
         let player = PlayerImpl::new(PlayerConfig::default());
         player
             .set_session_ducking(SessionDuckingMode::Soft)
@@ -683,7 +683,6 @@ mod tests {
             eq_bands: 5,
             max_slots: 2,
             pcm_pool: None,
-            thread_pool: None,
         };
         let player = PlayerImpl::new(config);
         assert!((player.crossfade_duration() - 2.0).abs() < f32::EPSILON);
@@ -691,33 +690,15 @@ mod tests {
 
     #[kithara::test]
     fn player_config_builder() {
-        let pool = ThreadPool::global();
         let config = PlayerConfig::default()
             .with_max_slots(8)
             .with_default_rate(0.5)
             .with_crossfade_duration(2.5)
-            .with_eq_bands(5)
-            .with_thread_pool(pool);
+            .with_eq_bands(5);
         assert_eq!(config.max_slots, 8);
         assert!((config.default_rate - 0.5).abs() < f32::EPSILON);
         assert!((config.crossfade_duration - 2.5).abs() < f32::EPSILON);
         assert_eq!(config.eq_bands, 5);
-        assert!(config.thread_pool.is_some());
-    }
-
-    #[kithara::test]
-    fn player_config_default_thread_pool_is_none() {
-        let config = PlayerConfig::default();
-        assert!(config.thread_pool.is_none());
-    }
-
-    #[kithara::test]
-    fn player_propagates_thread_pool_to_engine() {
-        let pool = ThreadPool::global();
-        let config = PlayerConfig::default().with_thread_pool(pool);
-        // Should not panic — engine uses the player's thread pool.
-        let player = PlayerImpl::new(config);
-        assert!(!player.engine().is_running());
     }
 
     // -- Integration tests (player + resource + queue) ----------------------------

@@ -7,10 +7,10 @@ use std::{error::Error, fmt, future::Future, ops::Range, sync::Arc};
 
 use futures::StreamExt;
 use kithara_assets::AssetResource;
-use kithara_coverage::{Coverage, CoverageManager, DiskCoverage};
 use kithara_events::{EventBus, FileEvent};
 use kithara_net::{Headers, HttpClient, RangeSpec};
-use kithara_storage::{ResourceExt, ResourceStatus, StorageResource};
+use kithara_platform::WasmSend;
+use kithara_storage::ResourceExt;
 use kithara_stream::{Downloader, DownloaderIo, PlanOutcome, StepResult, Writer, WriterItem};
 use tokio_util::sync::CancellationToken;
 
@@ -38,7 +38,7 @@ pub(crate) enum FileFetch {
     /// A chunk was written during sequential streaming.
     Chunk { offset: u64, len: u64 },
     /// A range request completed.
-    RangeDone { range: Range<u64> },
+    RangeDone,
     /// Sequential stream ended.
     StreamEnded { total_bytes: u64 },
 }
@@ -86,9 +86,7 @@ impl DownloaderIo for FileIo {
                     }
                 }
                 tracing::debug!(start = range.start, end = range.end, "range fetched");
-                Ok(FileFetch::RangeDone {
-                    range: range.clone(),
-                })
+                Ok(FileFetch::RangeDone)
             }
             Err(e) => {
                 tracing::warn!(?e, "failed to start range request");
@@ -116,9 +114,19 @@ enum FilePhase {
 /// - Sequential: initial download from start (streaming step mode)
 /// - `GapFilling`: fill holes via HTTP Range requests (batch mode)
 /// - Complete: all data downloaded
+///
+/// The sequential `Writer` is created lazily on the first `step()` call,
+/// matching the HLS pattern where I/O is deferred to the download loop.
+/// This keeps `FileDownloader` `Send` on WASM (no `!Send` JS objects
+/// in the struct) so the downloader can run in a Web Worker.
 pub(crate) struct FileDownloader {
     io: FileIo,
-    writer: Writer,
+    /// Sequential writer — created lazily on first `step()`.
+    /// Wrapped in `WasmSend` because `Writer` is `!Send` on WASM (contains
+    /// `JsValue`-backed response stream). The writer is always `None` when
+    /// the struct is moved to a Web Worker, and only populated inside the
+    /// worker via `ensure_writer()`.
+    writer: WasmSend<Option<Writer>>,
     res: AssetResource,
     progress: Arc<Progress>,
     bus: EventBus,
@@ -126,58 +134,24 @@ pub(crate) struct FileDownloader {
     /// Backpressure threshold. None = no backpressure.
     look_ahead_bytes: Option<u64>,
     shared: Arc<SharedFileState>,
-    /// Coverage tracker for downloaded ranges.
-    coverage: DiskCoverage<StorageResource>,
     /// Current download phase.
     phase: FilePhase,
 }
 
 impl FileDownloader {
-    pub(crate) async fn new(
+    pub(crate) fn new(
         net_client: &HttpClient,
-        state: Arc<FileStreamState>,
+        state: &Arc<FileStreamState>,
         progress: Arc<Progress>,
         bus: EventBus,
         look_ahead_bytes: Option<u64>,
         shared: Arc<SharedFileState>,
-        coverage_manager: CoverageManager<StorageResource>,
     ) -> Self {
         let url = state.url().clone();
         let total = state.len();
         let res = state.res().clone();
         let cancel = state.cancel().clone();
         let req_headers = state.headers().cloned();
-
-        let writer = match net_client.stream(url.clone(), req_headers.clone()).await {
-            Ok(stream) => Writer::new(stream, res.clone(), cancel.clone()),
-            Err(e) => {
-                tracing::warn!("failed to open stream: {}", e);
-                res.fail(e.to_string());
-                bus.publish(FileEvent::DownloadError {
-                    error: e.to_string(),
-                });
-                // Return a writer from an empty stream so step() returns error immediately
-                let empty = futures::stream::empty();
-                let boxed: kithara_net::ByteStream = Box::pin(empty);
-                Writer::new(boxed, state.res().clone(), CancellationToken::new())
-            }
-        };
-
-        let mut coverage = coverage_manager.open_state(url.to_string());
-        if let Some(size) = total {
-            coverage.set_total_size(size);
-        }
-
-        // Bootstrap coverage only for fully committed resources.
-        // For active resources sparse write_at ranges may leave a head gap,
-        // and marking 0..len would hide that gap from wait_range/probe.
-        if matches!(res.status(), ResourceStatus::Committed { .. })
-            && let Some(len) = res.len()
-            && len > 0
-            && coverage.next_gap(len).is_some_and(|g| g.start == 0)
-        {
-            coverage.mark(0..len);
-        }
 
         let io = FileIo {
             net_client: net_client.clone(),
@@ -189,16 +163,80 @@ impl FileDownloader {
 
         Self {
             io,
-            writer,
+            writer: WasmSend::new(None), // Created lazily on first step()
             res,
             progress,
             bus,
             total,
             look_ahead_bytes,
             shared,
-            coverage,
             phase: FilePhase::Sequential,
         }
+    }
+
+    /// Set a pre-opened Writer from an already-opened HTTP stream.
+    ///
+    /// Used by `File::create_remote()` to pass the streaming GET connection
+    /// directly to the downloader, avoiding a second HTTP request.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn with_initial_writer(mut self, writer: Writer) -> Self {
+        *self.writer.get_mut() = Some(writer);
+        self
+    }
+
+    /// Create or return the sequential Writer.
+    ///
+    /// When a pre-opened writer was set via `with_initial_writer()`, returns
+    /// it directly. Otherwise falls back to opening a new HTTP stream.
+    async fn ensure_writer(&mut self) -> Result<&mut Writer, FileDownloadError> {
+        let slot = self.writer.get_mut();
+        if slot.is_none() {
+            match self
+                .io
+                .net_client
+                .stream(self.io.url.clone(), self.io.headers.clone())
+                .await
+            {
+                Ok(byte_stream) => {
+                    // Discover content-length from response headers if unknown
+                    // (fallback path — normally set by create_remote via
+                    // with_initial_writer before we reach here).
+                    if self.total.is_none()
+                        && let Some(cl) = byte_stream
+                            .headers
+                            .get("content-length")
+                            .or_else(|| byte_stream.headers.get("Content-Length"))
+                            .and_then(|v| v.parse::<u64>().ok())
+                    {
+                        tracing::debug!(
+                            content_length = cl,
+                            "discovered total from stream headers"
+                        );
+                        self.total = Some(cl);
+                        self.progress.timeline().set_total_bytes(Some(cl));
+                    }
+
+                    *slot = Some(Writer::new(
+                        byte_stream,
+                        self.res.clone(),
+                        self.io.cancel.clone(),
+                    ));
+                }
+                Err(e) => {
+                    tracing::warn!("failed to open stream: {}", e);
+                    self.res.fail(e.to_string());
+                    self.bus.publish(FileEvent::DownloadError {
+                        error: e.to_string(),
+                    });
+                    return Err(FileDownloadError { msg: e.to_string() });
+                }
+            }
+        }
+        // writer was just set to Some in the if-block above,
+        // or was pre-populated via with_initial_writer().
+        slot.as_mut().ok_or_else(|| FileDownloadError {
+            msg: "writer initialization failed".to_string(),
+        })
     }
 }
 
@@ -220,12 +258,8 @@ impl Downloader for FileDownloader {
         if matches!(self.phase, FilePhase::Sequential) {
             tracing::debug!("demand during sequential — switching to gap-filling");
             self.phase = FilePhase::GapFilling;
-            // Replace writer with an empty stream to drop the HTTP connection.
-            self.writer = Writer::new(
-                futures::stream::empty(),
-                self.res.clone(),
-                CancellationToken::new(),
-            );
+            // Drop the sequential writer to release the HTTP connection.
+            *self.writer.get_mut() = None;
         }
 
         tracing::debug!(
@@ -244,19 +278,23 @@ impl Downloader for FileDownloader {
                 let mut plans = Vec::new();
                 let gap_chunk_size: u64 = 2 * 1024 * 1024;
                 let gap_batch_size: usize = 4;
+                let total = self.total.unwrap_or(0);
 
+                let mut gap_cursor: u64 = 0;
                 for _ in 0..gap_batch_size {
-                    if let Some(gap) = self.coverage.next_gap(gap_chunk_size) {
-                        // Skip gaps that overlap with already-planned ranges.
-                        plans.push(FilePlan { range: gap });
-                    } else {
+                    let Some(gap) = self.res.next_gap(gap_cursor, total) else {
                         break;
-                    }
+                    };
+                    let clamped_end = (gap.start + gap_chunk_size).min(gap.end);
+                    plans.push(FilePlan {
+                        range: gap.start..clamped_end,
+                    });
+                    gap_cursor = clamped_end;
                 }
 
                 if plans.is_empty() {
                     // No more gaps — check if complete.
-                    if self.coverage.is_complete() {
+                    if self.res.next_gap(0, total).is_none() && total > 0 {
                         if let Err(e) = self.res.commit(self.total) {
                             tracing::error!(?e, "failed to commit resource after gap-filling");
                             self.res.fail(format!("commit failed: {e}"));
@@ -292,8 +330,11 @@ impl Downloader for FileDownloader {
             return Ok(StepResult::PhaseChange);
         }
 
+        // Lazily open the HTTP stream on first step.
+        let writer = self.ensure_writer().await?;
+
         // Sequential download continues.
-        let Some(result) = self.writer.next().await else {
+        let Some(result) = writer.next().await else {
             // Writer exhausted (empty stream case).
             self.phase = FilePhase::Complete;
             return Ok(StepResult::PhaseChange);
@@ -330,19 +371,17 @@ impl Downloader for FileDownloader {
         match fetch {
             FileFetch::Chunk { offset, len } => {
                 let download_offset = offset + len;
-                self.coverage.mark(offset..download_offset);
+                // write_at already updates Resource.available — no coverage mark needed.
                 self.progress.set_download_pos(download_offset);
                 self.bus.publish(FileEvent::DownloadProgress {
                     offset: download_offset,
                     total: self.total,
                 });
             }
-            FileFetch::RangeDone { range } => {
-                self.coverage.mark(range);
-                // Flush after each gap-fill batch for crash-safety.
-                self.coverage.flush();
+            FileFetch::RangeDone => {
                 // Check if gap-filling completed everything.
-                if self.coverage.is_complete() {
+                let total = self.total.unwrap_or(0);
+                if total > 0 && self.res.next_gap(0, total).is_none() {
                     if let Err(e) = self.res.commit(self.total) {
                         tracing::error!(?e, "failed to commit resource after range done");
                         self.res.fail(format!("commit failed: {e}"));
@@ -357,9 +396,8 @@ impl Downloader for FileDownloader {
                 }
             }
             FileFetch::StreamEnded { total_bytes } => {
-                // Update coverage total if not set.
-                if self.coverage.total_size().is_none() {
-                    self.coverage.set_total_size(total_bytes);
+                if self.total.is_none() {
+                    self.total = Some(total_bytes);
                 }
 
                 let is_complete = self.total.is_none_or(|expected| total_bytes >= expected);
@@ -379,8 +417,6 @@ impl Downloader for FileDownloader {
                     self.phase = FilePhase::Complete;
                 } else {
                     // Partial download — switch to gap-filling.
-                    // Flush coverage before phase change for crash-safety.
-                    self.coverage.flush();
                     tracing::warn!(
                         total_bytes,
                         expected = ?self.total,
@@ -438,42 +474,34 @@ impl Downloader for FileDownloader {
 mod tests {
     use std::sync::Arc;
 
-    use kithara_assets::AssetStoreBuilder;
-    use kithara_coverage::Coverage;
-    use kithara_events::EventBus;
+    use kithara_assets::{AssetStoreBuilder, ResourceKey};
     use kithara_net::{HttpClient, NetOptions};
+    use kithara_stream::Timeline;
     use kithara_test_utils::kithara;
-    use tempfile::TempDir;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-    use crate::session::{Progress, SharedFileState};
 
     /// After a demand (on-demand range request) is polled during Sequential phase,
     /// the downloader should cancel sequential and switch to gap-filling.
     ///
     /// Currently FAILS: `poll_demand` does not change phase, so `plan()` still returns
     /// Step and the sequential download continues wasting bandwidth.
-    #[kithara::test(native, tokio)]
+    #[kithara::test(tokio)]
     async fn sequential_stops_after_demand() {
         let cancel = CancellationToken::new();
-        let dir = TempDir::new().unwrap();
 
         let store = AssetStoreBuilder::new()
-            .root_dir(dir.path())
+            .ephemeral(true)
             .asset_root(Some("test"))
             .cancel(cancel.clone())
             .build();
 
         let url: url::Url = "http://example.com/test.mp3".parse().unwrap();
-        let key = kithara_assets::ResourceKey::from_url(&url);
+        let key = ResourceKey::from_url(&url);
         let res = store.open_resource(&key).unwrap();
 
         let total: u64 = 10_000;
-
-        // Pending stream simulates a stalled sequential download.
-        let stream = futures::stream::pending::<Result<bytes::Bytes, kithara_net::NetError>>();
-        let writer = Writer::new(stream, res.clone(), cancel.clone());
 
         let io = FileIo {
             net_client: HttpClient::new(NetOptions::default()),
@@ -484,21 +512,23 @@ mod tests {
         };
 
         let shared = Arc::new(SharedFileState::new());
-        let coverage_manager = store.open_coverage_manager().unwrap();
-        let mut coverage = coverage_manager.open_state(url.to_string());
-        coverage.set_total_size(total);
-        coverage.mark(0..1000); // Sequential downloaded first 1KB.
+
+        // Write first 1KB to simulate sequential download progress.
+        res.write_at(0, &[0u8; 1000]).unwrap();
+
+        // Pending stream simulates a stalled sequential download.
+        let stream = futures::stream::pending::<Result<bytes::Bytes, kithara_net::NetError>>();
+        let writer = Writer::new(stream, res.clone(), cancel.clone());
 
         let mut dl = FileDownloader {
             io,
-            writer,
+            writer: WasmSend::new(Some(writer)),
             res,
-            progress: Arc::new(Progress::new(kithara_stream::Timeline::new())),
+            progress: Arc::new(Progress::new(Timeline::new())),
             bus: EventBus::new(16),
             total: Some(total),
             look_ahead_bytes: None,
             shared: shared.clone(),
-            coverage,
             phase: FilePhase::Sequential,
         };
 

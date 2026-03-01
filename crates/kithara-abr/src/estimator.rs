@@ -156,9 +156,7 @@ impl Ewma {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use kithara_platform::time::Instant;
+    use kithara_platform::time::{Duration, Instant};
     use kithara_test_utils::kithara;
 
     use super::*;

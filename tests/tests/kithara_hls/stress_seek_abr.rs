@@ -3,42 +3,25 @@
 //! Uses production HLS stream (requires network).
 //! Expected: FAILS — seek after ABR switch causes deadlock or audio death.
 
-use std::time::Duration;
-
 use kithara::{
     assets::StoreOptions,
     audio::{Audio, AudioConfig},
     hls::{AbrMode, AbrOptions, Hls, HlsConfig},
     stream::Stream,
 };
-use kithara_platform::time::Instant;
-use kithara_test_utils::{TestTempDir, temp_dir};
+use kithara_platform::time::{Duration, Instant};
+use kithara_test_utils::{TestTempDir, serve_assets, temp_dir};
 use tracing::info;
-
-const HLS_URL: &str = "https://stream.silvercomet.top/hls/master.m3u8";
 
 /// Stress test: 20 seconds of rapid seeking after ABR switch.
 ///
 /// Reproduces production bug: after ABR switch (V0 AAC → V3 FLAC),
 /// seek causes deadlock because `detect_format_change` picks wrong
 /// segment offset → decoder created at wrong position → "missing ftyp atom".
-#[kithara::test(
-    tokio,
-    browser,
-    timeout(Duration::from_secs(60)),
-    env(NO_PROXY = "stream.silvercomet.top"),
-    soft_fail("connection", "timeout", "refused", "resolve", "dns", "network")
-)]
+#[kithara::test(tokio, browser, serial, timeout(Duration::from_secs(120)))]
 async fn stress_seek_during_abr_switch_real_decoder(temp_dir: TestTempDir) {
-    let _ = tracing_subscriber::fmt()
-        .with_test_writer()
-        .with_max_level(tracing::Level::DEBUG)
-        .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| {
-            "kithara_audio=debug,kithara_hls=debug,kithara_decode=debug".to_string()
-        }))
-        .try_init();
-
-    let url: url::Url = HLS_URL.parse().expect("valid URL");
+    let server = serve_assets().await;
+    let url = server.url("/hls/master.m3u8");
     info!("Opening HLS stream: {}", url);
 
     // Create audio pipeline with ABR auto (start from cheapest variant)
@@ -149,18 +132,11 @@ async fn stress_seek_during_abr_switch_real_decoder(temp_dir: TestTempDir) {
             dead_seeks,
         );
 
-        // Assert: not too many dead seeks (some failures OK, but not all)
-        let dead_ratio = if seek_count > 0 {
-            dead_seeks as f64 / seek_count as f64
-        } else {
-            1.0
-        };
-        assert!(
-            dead_ratio < 0.9,
-            "Too many dead seeks: {}/{} ({:.0}%). Audio is mostly dead after ABR switch.",
-            dead_seeks,
-            seek_count,
-            dead_ratio * 100.0,
+        // Assert: zero dead seeks — with seek_pending retry, all seeks must produce audio.
+        assert_eq!(
+            dead_seeks, 0,
+            "Dead seeks: {dead_seeks}/{seek_count}. \
+             All seeks must produce audio with seek_pending retry.",
         );
     })
     .await;
@@ -175,23 +151,10 @@ async fn stress_seek_during_abr_switch_real_decoder(temp_dir: TestTempDir) {
 ///
 /// Uses seek positions observed in logs and asserts that each seek
 /// still yields PCM samples (audio must stay alive).
-#[kithara::test(
-    tokio,
-    browser,
-    timeout(Duration::from_secs(60)),
-    env(NO_PROXY = "stream.silvercomet.top"),
-    soft_fail("connection", "timeout", "refused", "resolve", "dns", "network")
-)]
+#[kithara::test(tokio, browser, serial, timeout(Duration::from_secs(120)))]
 async fn seek_sequence_from_log_real_stream(temp_dir: TestTempDir) {
-    let _ = tracing_subscriber::fmt()
-        .with_test_writer()
-        .with_max_level(tracing::Level::DEBUG)
-        .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| {
-            "kithara_audio=debug,kithara_hls=debug,kithara_decode=debug".to_string()
-        }))
-        .try_init();
-
-    let url: url::Url = HLS_URL.parse().expect("valid URL");
+    let server = serve_assets().await;
+    let url = server.url("/hls/master.m3u8");
     let hls_config = HlsConfig::new(url)
         .with_store(StoreOptions::new(temp_dir.path()))
         .with_abr(AbrOptions {

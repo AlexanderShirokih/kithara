@@ -7,13 +7,12 @@
 //! Deterministic xorshift64 PRNG guarantees reproducibility.
 //! No network required.
 
-use std::time::Duration;
-
 use kithara::{
     audio::{Audio, AudioConfig},
     file::{File, FileConfig, FileSrc},
     stream::Stream,
 };
+use kithara_platform::time::Duration;
 use kithara_test_utils::{Xorshift64, wav::create_test_wav};
 use tracing::info;
 
@@ -34,14 +33,14 @@ const SEEK_ITERATIONS: usize = 1000;
 /// 5. Sample 1000 random seek positions in `(0, duration - chunk_duration)`
 /// 6. For each: seek → read → verify data (valid range, L==R channels)
 /// 7. Final: seek to `duration - chunk_duration`, read all → verify EOF
-#[kithara::test(timeout(Duration::from_secs(120)))]
+#[kithara::test(serial, timeout(Duration::from_secs(120)))]
 async fn stress_random_seek_read_synthetic_wav() {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
         .with_max_level(tracing::Level::DEBUG)
-        .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| {
-            "kithara_audio=debug,kithara_decode=debug,kithara_stream=debug".to_string()
-        }))
+        .with_env_filter(kithara_test_utils::rust_log_filter(
+            "kithara_audio=debug,kithara_decode=debug,kithara_stream=debug",
+        ))
         .try_init();
 
     // Step 1: Create synthetic WAV

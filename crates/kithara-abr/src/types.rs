@@ -1,7 +1,5 @@
-use std::time::Duration;
-
 use derivative::Derivative;
-use kithara_platform::time::Instant;
+use kithara_platform::time::{Duration, Instant};
 
 /// ABR mode selection.
 #[derive(Clone, Copy, Debug, Derivative, PartialEq, Eq)]

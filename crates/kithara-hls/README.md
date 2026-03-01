@@ -43,7 +43,7 @@ flowchart LR
         W["Writer<br/><i>byte pump</i>"]
     end
 
-    subgraph "Downloader (rayon)"
+    subgraph "Downloader (worker thread)"
         DL["HlsDownloader<br/><i>plan, commit</i>"]
         ABR["AbrController<br/><i>variant select</i>"]
     end
@@ -53,13 +53,13 @@ flowchart LR
         Proc["ProcessingAssets<br/><i>AES decrypt</i>"]
     end
 
-    subgraph "Sync (rayon thread)"
+    subgraph "Sync (worker thread)"
         HS["HlsSource<br/><i>Source impl</i>"]
         SI["DownloadState<br/><i>virtual stream</i>"]
         StreamH["Stream&lt;Hls&gt;"]
     end
 
-    subgraph "Decode (rayon thread)"
+    subgraph "Decode (worker thread)"
         Dec["Symphonia<br/><i>InnerDecoder</i>"]
         PCM2["PcmChunk"]
     end
@@ -85,7 +85,7 @@ flowchart LR
     StreamH --> HS
     Dec -- "Read + Seek" --> StreamH
     Dec --> PCM2
-    PCM2 -- "kanal channel" --> Audio2
+    PCM2 -- "ringbuf" --> Audio2
 
     style SI fill:#d4a574,color:#000
     style AB fill:#d4a574,color:#000
@@ -132,7 +132,6 @@ flowchart LR
 - Leverages `AssetStore<DecryptContext>` (disk or ephemeral) for persistent segment storage.
 - `populate_cached_segments()` scans disk for committed segments on startup.
 - `#EXT-X-ALLOW-CACHE` is parsed into playlist metadata (`allow_cache`) for compatibility; current cache policy is not switched by this flag.
-- `CoverageIndex` tracks per-segment byte-range coverage for crash recovery.
 
 ## Seek and wait_range contract
 

@@ -24,6 +24,7 @@ use axum::{
     routing::get,
 };
 use bytes::Bytes;
+use futures;
 use kithara::{
     assets::StoreOptions,
     file::{File, FileConfig, FileSrc},
@@ -115,7 +116,11 @@ async fn handle_request(
         }
     }
 
-    // Sequential request — only send partial data (simulates early close)
+    // Sequential request — advertise full Content-Length but only send
+    // partial data (simulates early stream close / connection drop).
+    // A real web server always reports the full file size in Content-Length;
+    // the client detects the mismatch when the stream ends prematurely.
+    // We use a streaming body so hyper doesn't override our Content-Length.
     tracing::warn!(
         "Server: sequential request - sends {}KB of {}KB",
         STREAM_CLOSES_AT / 1024,
@@ -123,16 +128,14 @@ async fn handle_request(
     );
 
     let chunk = Bytes::from(state.file_data[0..STREAM_CLOSES_AT].to_vec());
+    let body_stream = futures::stream::iter(vec![Ok::<_, std::io::Error>(chunk)]);
 
-    (
-        StatusCode::OK,
-        [
-            (header::CONTENT_LENGTH, STREAM_CLOSES_AT.to_string()),
-            (header::CONTENT_TYPE, "audio/mpeg".to_string()),
-        ],
-        Body::from(chunk),
-    )
-        .into_response()
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_LENGTH, TOTAL_SIZE.to_string())
+        .header(header::CONTENT_TYPE, "audio/mpeg")
+        .body(Body::from_stream(body_stream))
+        .expect("valid response")
 }
 
 /// Shared server setup for tests.
@@ -226,7 +229,8 @@ async fn file_stream_closes_early_seek_still_works() {
         }
     });
 
-    let result = match tokio::time::timeout(Duration::from_secs(5), blocking_task).await {
+    let result = match kithara_platform::time::timeout(Duration::from_secs(5), blocking_task).await
+    {
         Ok(Ok(result)) => result,
         Ok(Err(e)) => panic!("Blocking task panicked: {:?}", e),
         Err(_) => panic!(
@@ -271,13 +275,13 @@ async fn partial_cache_resume_works() {
         // stream1 drops here
     });
 
-    tokio::time::timeout(Duration::from_secs(3), phase1)
+    kithara_platform::time::timeout(Duration::from_secs(3), phase1)
         .await
         .expect("Phase 1 timed out")
         .expect("Phase 1 panicked");
 
     cancel1.cancel();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    kithara_platform::time::sleep(Duration::from_millis(200)).await;
     tracing::info!("Phase 1 complete, stream dropped");
 
     // Phase 2: reopen same URL + cache dir, seek beyond partial
@@ -317,7 +321,7 @@ async fn partial_cache_resume_works() {
         tracing::info!("Phase 2: read {} bytes at 700KB, data verified", n);
     });
 
-    let result = match tokio::time::timeout(Duration::from_secs(5), phase2).await {
+    let result = match kithara_platform::time::timeout(Duration::from_secs(5), phase2).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(e)) => Err(format!("Phase 2 panicked: {:?}", e)),
         Err(_) => Err("DEADLOCK: resume seek hung. Partial cache resume not working.".to_string()),

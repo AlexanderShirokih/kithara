@@ -1,8 +1,6 @@
-use std::time::Duration;
-
 use async_trait::async_trait;
 use bytes::Bytes;
-use kithara_platform::time::sleep;
+use kithara_platform::time::{Duration, sleep};
 use tokio_util::sync::CancellationToken;
 #[cfg(test)]
 use unimock::unimock;
@@ -226,7 +224,7 @@ mod tests {
     }
 
     fn empty_stream() -> ByteStream {
-        Box::pin(stream::empty())
+        ByteStream::without_headers(Box::pin(stream::empty()))
     }
 
     fn fast_retry_policy(max_retries: u32) -> RetryPolicy {

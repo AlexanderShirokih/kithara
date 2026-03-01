@@ -12,17 +12,14 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Duration;
 
 #[cfg(not(target_arch = "wasm32"))]
 use kithara::assets::EvictConfig;
-#[cfg(not(target_arch = "wasm32"))]
-use kithara::internal::Assets;
 use kithara::{
     assets::{AssetStoreBuilder, ProcessChunkFn, ResourceKey},
     storage::ResourceExt,
 };
+use kithara_platform::time::Duration;
 use kithara_test_utils::temp_dir;
 
 /// Context for test processing callback.

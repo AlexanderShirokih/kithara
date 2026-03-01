@@ -160,7 +160,7 @@ pub struct Resource<D: DriverIo> {
 
 impl<D: DriverIo + Debug> Debug for Resource<D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let state = self.inner.state.lock();
+        let state = self.inner.state.lock_sync();
         f.debug_struct("Resource")
             .field("driver", &self.inner.driver)
             .field("committed", &state.committed)
@@ -200,7 +200,7 @@ impl<D: DriverIo> Resource<D> {
             return Err(StorageError::Cancelled);
         }
         let failed = {
-            let state = self.inner.state.lock();
+            let state = self.inner.state.lock_sync();
             state.failed.clone()
         };
         if let Some(reason) = failed {
@@ -220,7 +220,7 @@ impl<D: DriverIo> ResourceExt for Resource<D> {
         self.check_health()?;
 
         let effective_len = {
-            let final_len = self.inner.state.lock().final_len;
+            let final_len = self.inner.state.lock_sync().final_len;
             let storage_len = self.inner.driver.storage_len();
             let data_len = final_len.unwrap_or(storage_len);
             data_len.min(storage_len)
@@ -256,7 +256,7 @@ impl<D: DriverIo> ResourceExt for Resource<D> {
             })?;
 
         let committed = {
-            let state = self.inner.state.lock();
+            let state = self.inner.state.lock_sync();
             state.committed
         };
 
@@ -268,7 +268,7 @@ impl<D: DriverIo> ResourceExt for Resource<D> {
 
         // Update common state and wake waiters.
         {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_sync();
             state.available.insert(range);
 
             // Invalidate evicted ranges for ring buffer drivers.
@@ -297,46 +297,60 @@ impl<D: DriverIo> ResourceExt for Resource<D> {
             return Ok(WaitOutcome::Ready);
         }
 
-        loop {
-            // Fast path: let the driver check without holding state lock.
-            if self.inner.driver.try_fast_check(&range) {
-                return Ok(WaitOutcome::Ready);
-            }
-
-            // Slow path: lock state and check coverage, wait if needed.
-            let mut state = self.inner.state.lock();
-
-            if self.inner.cancel.is_cancelled() {
-                return Err(StorageError::Cancelled);
-            }
-
-            if let Some(ref reason) = state.failed {
-                return Err(StorageError::Failed(reason.clone()));
-            }
-
-            if range_covered_by(&state.available, &range) {
-                return Ok(WaitOutcome::Ready);
-            }
-
-            if state.committed {
-                let final_len = state.final_len.unwrap_or(0);
-                if range.start >= final_len {
-                    return Ok(WaitOutcome::Eof);
+        let mut prev_available_len: u64 = 0;
+        kithara_platform::hang_watchdog! {
+            thread: "storage.wait_range";
+            loop {
+                // Fast path: let the driver check without holding state lock.
+                if self.inner.driver.try_fast_check(&range) {
+                    return Ok(WaitOutcome::Ready);
                 }
-                return Ok(WaitOutcome::Ready);
+
+                // Slow path: lock state and check coverage, wait if needed.
+                let state = self.inner.state.lock_sync();
+
+                if self.inner.cancel.is_cancelled() {
+                    return Err(StorageError::Cancelled);
+                }
+
+                if let Some(ref reason) = state.failed {
+                    return Err(StorageError::Failed(reason.clone()));
+                }
+
+                if range_covered_by(&state.available, &range) {
+                    return Ok(WaitOutcome::Ready);
+                }
+
+                if state.committed {
+                    let final_len = state.final_len.unwrap_or(0);
+                    if range.start >= final_len {
+                        return Ok(WaitOutcome::Eof);
+                    }
+                    return Ok(WaitOutcome::Ready);
+                }
+
+                // Reset hang detector when download makes progress.
+                let current_available_len: u64 =
+                    state.available.iter().map(|r| r.end - r.start).sum();
+                if current_available_len > prev_available_len {
+                    prev_available_len = current_available_len;
+                    hang_reset!();
+                }
+
+                debug!(
+                    range_start = range.start,
+                    range_end = range.end,
+                    committed = state.committed,
+                    final_len = ?state.final_len,
+                    "storage::wait_range spinning"
+                );
+
+                hang_tick!();
+                kithara_platform::thread::yield_now();
+                let deadline = kithara_platform::time::Instant::now()
+                    + kithara_platform::time::Duration::from_millis(50);
+                let (_state, _wait_result) = self.inner.condvar.wait_sync_timeout(state, deadline);
             }
-
-            debug!(
-                range_start = range.start,
-                range_end = range.end,
-                committed = state.committed,
-                final_len = ?state.final_len,
-                "storage::wait_range spinning"
-            );
-
-            self.inner
-                .condvar
-                .wait_for(&mut state, std::time::Duration::from_millis(50));
         }
     }
 
@@ -348,7 +362,7 @@ impl<D: DriverIo> ResourceExt for Resource<D> {
 
         // Update common state only on success.
         {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_sync();
             state.committed = true;
             state.final_len = final_len;
             if let Some(len) = final_len
@@ -363,7 +377,7 @@ impl<D: DriverIo> ResourceExt for Resource<D> {
 
     fn fail(&self, reason: String) {
         {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_sync();
             state.failed = Some(reason);
         }
         self.inner.condvar.notify_all();
@@ -374,13 +388,12 @@ impl<D: DriverIo> ResourceExt for Resource<D> {
     }
 
     fn len(&self) -> Option<u64> {
-        let state = self.inner.state.lock();
+        let state = self.inner.state.lock_sync();
         state.final_len
     }
 
     fn status(&self) -> ResourceStatus {
-        let state = self.inner.state.lock();
-        #[expect(clippy::option_if_let_else)] // three-way branch is clearer with if-let-else
+        let state = self.inner.state.lock_sync();
         if let Some(ref reason) = state.failed {
             ResourceStatus::Failed(reason.clone())
         } else if state.committed {
@@ -392,6 +405,28 @@ impl<D: DriverIo> ResourceExt for Resource<D> {
         }
     }
 
+    fn contains_range(&self, range: Range<u64>) -> bool {
+        if range.is_empty() {
+            return true;
+        }
+        let state = self.inner.state.lock_sync();
+        range_covered_by(&state.available, &range)
+    }
+
+    fn next_gap(&self, from: u64, limit: u64) -> Option<Range<u64>> {
+        let state = self.inner.state.lock_sync();
+        let total = state.final_len.unwrap_or(limit);
+        let upper = limit.min(total);
+        if from >= upper {
+            return None;
+        }
+        state
+            .available
+            .gaps(&(from..upper))
+            .next()
+            .map(|gap| gap.start..gap.end.min(upper))
+    }
+
     fn reactivate(&self) -> StorageResult<()> {
         self.check_health()?;
 
@@ -400,7 +435,7 @@ impl<D: DriverIo> ResourceExt for Resource<D> {
 
         // Update common state only on success.
         {
-            let mut state = self.inner.state.lock();
+            let mut state = self.inner.state.lock_sync();
             state.committed = false;
             state.final_len = None;
             // Keep available data as-is — existing bytes remain readable.

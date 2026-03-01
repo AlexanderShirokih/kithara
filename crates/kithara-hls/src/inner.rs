@@ -2,13 +2,12 @@
 //!
 //! Provides `Hls` marker type implementing `StreamType` trait.
 
-use std::sync::Arc;
+use std::{num::NonZeroUsize, sync::Arc};
 
 use kithara_assets::{AssetStore, AssetStoreBuilder, ProcessChunkFn, asset_root_for_url};
 use kithara_drm::{DecryptContext, aes128_cbc_process_chunk};
 use kithara_events::{EventBus, HlsEvent};
 use kithara_net::HttpClient;
-use kithara_platform::ThreadPool;
 use kithara_stream::{StreamContext, StreamType, Timeline};
 
 use crate::{
@@ -29,10 +28,6 @@ impl StreamType for Hls {
     type Source = HlsSource;
     type Error = HlsError;
     type Events = EventBus;
-
-    fn thread_pool(config: &Self::Config) -> ThreadPool {
-        config.thread_pool.clone().unwrap_or_default()
-    }
 
     fn event_bus(config: &Self::Config) -> Option<Self::Events> {
         config.bus.clone()
@@ -123,11 +118,6 @@ impl StreamType for Hls {
             initial_variant,
         });
 
-        let coverage_manager = fetch_manager
-            .backend()
-            .open_coverage_manager()
-            .map_err(HlsError::Assets)?;
-
         // Create HlsDownloader + HlsSource pair
         let playlist_state = fetch_manager
             .playlist_state()
@@ -137,15 +127,13 @@ impl StreamType for Hls {
             Arc::clone(&fetch_manager),
             &master.variants,
             &config,
-            coverage_manager,
             playlist_state,
             bus,
         );
 
-        // Spawn downloader on the thread pool.
+        // Spawn downloader on a dedicated thread.
         // Backend is stored in HlsSource — dropping the source cancels the downloader.
-        let pool = config.thread_pool.clone().unwrap_or_default();
-        let backend = kithara_stream::Backend::new(downloader, &cancel, &pool);
+        let backend = kithara_stream::Backend::new(downloader, &cancel);
         source.set_backend(backend);
 
         Ok(source)

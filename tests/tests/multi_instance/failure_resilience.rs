@@ -1,18 +1,18 @@
 //! Failure resilience tests.
 //!
 //! Verifies that when some instances are cancelled mid-stream (simulating
-//! a network failure), other instances on the same shared `ThreadPool`
-//! continue to read PCM data to EOF without being affected.
+//! a network failure), other instances continue to read PCM data to EOF
+//! without being affected.
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use kithara::{
     assets::StoreOptions,
     audio::{Audio, AudioConfig},
     hls::{AbrMode, AbrOptions, Hls, HlsConfig},
-    platform::ThreadPool,
     stream::{AudioCodec, ContainerFormat, MediaInfo, Stream},
 };
+use kithara_platform::time::Duration;
 use kithara_test_utils::{TestTempDir, wav::create_test_wav};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -74,7 +74,6 @@ async fn create_server(wav_data: &Arc<Vec<u8>>) -> HlsTestServer {
 async fn create_hls_audio(
     server: &HlsTestServer,
     cache_dir: &std::path::Path,
-    pool: &ThreadPool,
     cancel: CancellationToken,
 ) -> Audio<Stream<Hls>> {
     let url = server.url("/master.m3u8").expect("url");
@@ -82,16 +81,13 @@ async fn create_hls_audio(
     let hls_config = HlsConfig::new(url)
         .with_store(StoreOptions::new(cache_dir))
         .with_cancel(cancel)
-        .with_thread_pool(pool.clone())
         .with_abr(AbrOptions {
             mode: AbrMode::Manual(0),
             ..AbrOptions::default()
         });
 
     let wav_info = MediaInfo::new(Some(AudioCodec::Pcm), Some(ContainerFormat::Wav));
-    let config = AudioConfig::<Hls>::new(hls_config)
-        .with_media_info(wav_info)
-        .with_thread_pool(pool.clone());
+    let config = AudioConfig::<Hls>::new(hls_config).with_media_info(wav_info);
 
     Audio::<Stream<Hls>>::new(config)
         .await
@@ -103,14 +99,13 @@ async fn create_hls_audio(
 /// The cancelled instances have their `CancellationToken` fired after a
 /// short delay (simulating a network failure / user abort). The test verifies
 /// that the healthy instances still read to EOF, unaffected by the cancelled ones.
-#[kithara::test(tokio, timeout(Duration::from_secs(60)))]
+#[kithara::test(tokio, serial, timeout(Duration::from_secs(60)))]
 async fn healthy_instances_survive_cancelled_peers() {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
         .with_max_level(tracing::Level::INFO)
         .try_init();
 
-    let pool = ThreadPool::with_num_threads(4).expect("thread pool");
     let wav_data = generate_wav_data();
 
     let mut handles: Vec<kithara_platform::BlockingHandle<Outcome>> = Vec::new();
@@ -120,7 +115,7 @@ async fn healthy_instances_survive_cancelled_peers() {
         let server = create_server(&wav_data).await;
         let temp = TestTempDir::new();
         let cancel = CancellationToken::new();
-        let audio = create_hls_audio(&server, temp.path(), &pool, cancel).await;
+        let audio = create_hls_audio(&server, temp.path(), cancel).await;
 
         handles.push(kithara_platform::spawn_blocking(move || {
             let _server = server;
@@ -144,11 +139,11 @@ async fn healthy_instances_survive_cancelled_peers() {
         let temp = TestTempDir::new();
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
-        let audio = create_hls_audio(&server, temp.path(), &pool, cancel).await;
+        let audio = create_hls_audio(&server, temp.path(), cancel).await;
 
         // Fire the cancel after a short delay.
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(500)).await;
+        kithara_platform::spawn_task(async move {
+            kithara_platform::time::sleep(Duration::from_millis(500)).await;
             cancel_clone.cancel();
         });
 
@@ -209,14 +204,13 @@ async fn healthy_instances_survive_cancelled_peers() {
 }
 
 /// 4 healthy + 4 cancelled HLS instances (8 total). Healthy ones must complete.
-#[kithara::test(tokio, timeout(Duration::from_secs(120)))]
+#[kithara::test(tokio, serial, timeout(Duration::from_secs(120)))]
 async fn eight_instances_half_cancelled() {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
         .with_max_level(tracing::Level::INFO)
         .try_init();
 
-    let pool = ThreadPool::with_num_threads(4).expect("thread pool");
     let wav_data = generate_wav_data();
 
     let mut handles: Vec<kithara_platform::BlockingHandle<Outcome>> = Vec::new();
@@ -226,7 +220,7 @@ async fn eight_instances_half_cancelled() {
         let server = create_server(&wav_data).await;
         let temp = TestTempDir::new();
         let cancel = CancellationToken::new();
-        let audio = create_hls_audio(&server, temp.path(), &pool, cancel).await;
+        let audio = create_hls_audio(&server, temp.path(), cancel).await;
 
         handles.push(kithara_platform::spawn_blocking(move || {
             let _server = server;
@@ -248,12 +242,12 @@ async fn eight_instances_half_cancelled() {
         let temp = TestTempDir::new();
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
-        let audio = create_hls_audio(&server, temp.path(), &pool, cancel).await;
+        let audio = create_hls_audio(&server, temp.path(), cancel).await;
 
         // Stagger cancellation slightly to make it more realistic.
         let delay_ms = 200 + ((i - 4) as u64 * 100);
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        kithara_platform::spawn_task(async move {
+            kithara_platform::time::sleep(Duration::from_millis(delay_ms)).await;
             cancel_clone.cancel();
         });
 

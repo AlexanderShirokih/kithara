@@ -18,7 +18,6 @@ futures = { workspace = true }
 kithara-net = { workspace = true }
 kithara-platform = { workspace = true }
 kithara-storage = { workspace = true }
-rayon = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -31,6 +30,10 @@ unimock = { workspace = true, optional = true }
 perf = ["dep:hotpath", "hotpath/hotpath"]
 test-utils = ["unimock"]
 internal = []
+disable-hang-detector = [
+    "kithara-platform/disable-hang-detector",
+    "kithara-storage/disable-hang-detector",
+]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["full"] }
@@ -38,6 +41,7 @@ tokio-util = { workspace = true, features = ["full"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = { workspace = true }
+wasm_safe_thread = { workspace = true }
 
 [dev-dependencies]
 kithara-stream = { path = ".", default-features = false, features = ["internal"] }

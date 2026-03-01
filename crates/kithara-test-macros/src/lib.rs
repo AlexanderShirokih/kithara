@@ -24,6 +24,7 @@ struct TestArgs {
     is_wasm_only: bool,
     is_native_only: bool,
     is_browser: bool,
+    is_serial: bool,
     timeout: Option<Expr>,
     env_vars: Vec<(String, String)>,
     /// Substring patterns for soft-fail: if a panic message contains any of
@@ -38,6 +39,7 @@ impl Parse for TestArgs {
             is_wasm_only: false,
             is_native_only: false,
             is_browser: false,
+            is_serial: false,
             timeout: None,
             env_vars: Vec::new(),
             soft_fail_patterns: Vec::new(),
@@ -50,6 +52,7 @@ impl Parse for TestArgs {
                 "wasm" => args.is_wasm_only = true,
                 "native" => args.is_native_only = true,
                 "browser" => args.is_browser = true,
+                "serial" => args.is_serial = true,
                 "timeout" => {
                     let content;
                     syn::parenthesized!(content in input);
@@ -250,6 +253,14 @@ fn make_preamble(params: &[ParamInfo], case_values: Option<&[Expr]>) -> TokenStr
     quote! { #(#stmts)* }
 }
 
+fn make_serial_attr(args: &TestArgs) -> TokenStream2 {
+    if args.is_serial {
+        quote! { #[serial_test::serial] }
+    } else {
+        quote! {}
+    }
+}
+
 fn make_test_attrs(args: &TestArgs, is_async: bool) -> TokenStream2 {
     let native = if is_async || args.is_tokio {
         quote! { #[cfg_attr(not(target_arch = "wasm32"), tokio::test)] }
@@ -274,58 +285,313 @@ fn make_dedicated_worker_config() -> TokenStream2 {
     }
 }
 
-fn wrap_with_timeout(body: &TokenStream2, timeout: &Option<Expr>, is_async: bool) -> TokenStream2 {
+fn wrap_with_timeout(
+    body: &TokenStream2,
+    timeout: &Option<Expr>,
+    is_async: bool,
+    fn_name: &Ident,
+) -> TokenStream2 {
     let Some(dur) = timeout else {
         return quote! { { #body } };
     };
 
+    let fn_name_str = fn_name.to_string();
+
     if is_async {
+        // WASM-only cooperative timeout (native async+timeout uses
+        // emit_async_timeout_test for manual runtime control).
         quote! {
             {
+                let __timeout_dur: ::std::time::Duration = #dur;
                 let __body = async { #body };
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    tokio::time::timeout(#dur, __body)
-                        .await
-                        .expect("test timed out")
-                }
-                #[cfg(target_arch = "wasm32")]
-                { __body.await }
+                kithara_platform::time::timeout(__timeout_dur, __body)
+                    .await
+                    .unwrap_or_else(|_| panic!(
+                        "test `{}` timed out after {:?}",
+                        #fn_name_str, __timeout_dur,
+                    ))
             }
         }
     } else {
         quote! {
             {
+                let __timeout_dur: ::std::time::Duration = #dur;
                 let __body = move || { #body };
                 #[cfg(not(target_arch = "wasm32"))]
                 {
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    let handle = std::thread::spawn(move || { tx.send(__body()).ok(); });
-                    rx.recv_timeout(#dur).expect("test timed out");
-                    handle.join().ok();
+                    let (tx, rx) = ::std::sync::mpsc::channel();
+                    let handle = ::std::thread::spawn(move || {
+                        tx.send(__body()).ok();
+                    });
+                    match rx.recv_timeout(__timeout_dur) {
+                        Ok(v) => {
+                            handle.join().ok();
+                            v
+                        }
+                        Err(::std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            panic!(
+                                "test `{}` timed out after {:?}",
+                                #fn_name_str, __timeout_dur,
+                            )
+                        }
+                        Err(::std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            // Test body panicked — propagate the original panic.
+                            match handle.join() {
+                                Err(payload) => ::std::panic::resume_unwind(payload),
+                                Ok(_) => unreachable!(),
+                            }
+                        }
+                    }
                 }
                 #[cfg(target_arch = "wasm32")]
-                { __body() }
+                {
+                    __body()
+                }
             }
         }
     }
 }
 
-/// Generate `unsafe { set_var(...) }` statements for each env var.
+/// Emit a native async test with a timeout using a **manual tokio runtime**.
+///
+/// Why: `#[tokio::test]` creates a runtime whose `Drop` waits indefinitely for
+/// `spawn_blocking` tasks.  If the test body spawns a blocking thread that
+/// outlives the timeout, the runtime shutdown hangs forever — even though
+/// `tokio::time::timeout` already fired and panicked.
+///
+/// This function generates a **sync** `#[test]` fn that:
+/// 1. Spawns a watchdog thread **outside** the tokio runtime.
+/// 2. Creates the runtime manually.
+/// 3. Runs the async body inside `block_on` with `tokio::time::timeout`.
+/// 4. Catches panics via `catch_unwind` so we can call `shutdown_timeout`
+///    before re-raising.
+/// 5. Calls `runtime.shutdown_timeout(100ms)` — never blocks on zombies.
+/// 6. The watchdog Drop guard fires **after** `shutdown_timeout`, so it only
+///    aborts if even the forced shutdown is stuck.
+#[allow(clippy::too_many_arguments)]
+fn emit_async_timeout_test(
+    fn_name: &Ident,
+    vis: &syn::Visibility,
+    ret_type: &syn::ReturnType,
+    remaining_attrs: &[&Attribute],
+    body: &TokenStream2,
+    args: &TestArgs,
+    serial_attr: &TokenStream2,
+) -> TokenStream2 {
+    let dur = args.timeout.as_ref().expect("caller verified timeout");
+    let fn_name_str = fn_name.to_string();
+    let timeout_panic_arm = if args.soft_fail_patterns.is_empty() {
+        quote! {
+            Err(__payload) => ::std::panic::resume_unwind(__payload),
+        }
+    } else {
+        let pattern_strs: Vec<_> = args
+            .soft_fail_patterns
+            .iter()
+            .map(|p| p.to_lowercase())
+            .collect();
+        quote! {
+            Err(__panic) => {
+                let __msg = if let Some(s) = __panic.downcast_ref::<&str>() {
+                    (*s).to_string()
+                } else if let Some(s) = __panic.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                let __lower = __msg.to_lowercase();
+                let __patterns: &[&str] = &[#(#pattern_strs),*];
+                if __patterns.iter().any(|p| {
+                    __lower.contains(p)
+                        || (*p == "timeout" && __lower.contains("timed out"))
+                }) {
+                    eprintln!("[SOFT FAIL] {}: {}", #fn_name_str, __msg);
+                } else {
+                    ::std::panic::resume_unwind(__panic);
+                }
+            }
+        }
+    };
+
+    // Brace the body so it can be used as `async { #braced }` safely.
+    let braced = quote! { { #body } };
+    let inner_body = if !args.soft_fail_patterns.is_empty() {
+        wrap_with_soft_fail(&braced, fn_name, true, &args.soft_fail_patterns)
+    } else {
+        braced
+    };
+
+    let env_setup = make_env_setup(&args.env_vars);
+
+    quote! {
+        #(#remaining_attrs)*
+        #serial_attr
+        #[cfg(not(target_arch = "wasm32"))]
+        #[test]
+        #vis fn #fn_name() #ret_type {
+            #env_setup
+
+            let __timeout_dur: ::std::time::Duration = #dur;
+
+            // Hard-timeout watchdog — runs OUTSIDE the tokio runtime on a
+            // plain OS thread.  A Drop guard cancels it when the function
+            // exits (including after runtime.shutdown_timeout).  If even
+            // shutdown_timeout hangs, the watchdog fires and aborts.
+            let __done = ::std::sync::Arc::new(
+                ::std::sync::atomic::AtomicBool::new(false),
+            );
+            {
+                let __done_w = __done.clone();
+                let __fn = #fn_name_str;
+                ::std::thread::spawn(move || {
+                    ::std::thread::sleep(
+                        __timeout_dur + ::std::time::Duration::from_secs(3),
+                    );
+                    if !__done_w.load(::std::sync::atomic::Ordering::SeqCst) {
+                        eprintln!(
+                            "\n\x1b[1;31mHARD TIMEOUT\x1b[0m: test `{}` exceeded {:?} \
+                             (runtime shutdown blocked). Aborting process.\n",
+                            __fn, __timeout_dur,
+                        );
+                        ::std::process::abort();
+                    }
+                });
+            }
+            struct __WG(::std::sync::Arc<::std::sync::atomic::AtomicBool>);
+            impl Drop for __WG {
+                fn drop(&mut self) {
+                    self.0.store(true, ::std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            let _wg = __WG(__done);
+
+            let __rt = ::tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime");
+
+            let __result = ::std::panic::catch_unwind(
+                ::std::panic::AssertUnwindSafe(|| {
+                    __rt.block_on(async {
+                        ::tokio::time::timeout(__timeout_dur, async {
+                            #inner_body
+                        })
+                        .await
+                        .unwrap_or_else(|_| panic!(
+                            "test `{}` timed out after {:?}",
+                            #fn_name_str, __timeout_dur,
+                        ))
+                    })
+                })
+            );
+
+            // Force-shutdown the runtime: never block on zombie blocking threads.
+            __rt.shutdown_timeout(::std::time::Duration::from_millis(100));
+
+            match __result {
+                Ok(__v) => __v,
+                #timeout_panic_arm
+            }
+        }
+    }
+}
+
+/// Generate guarded env setup for the test body.
+///
+/// Uses a process-wide mutex to serialize env mutation and restores previous
+/// values on drop to avoid cross-test leakage.
 fn make_env_setup(env_vars: &[(String, String)]) -> TokenStream2 {
     if env_vars.is_empty() {
         return quote! {};
     }
-    let stmts: Vec<_> = env_vars
+
+    let mut actions: Vec<(String, Option<String>)> = env_vars
+        .iter()
+        .map(|(key, value)| (key.clone(), Some(value.clone())))
+        .collect();
+
+    // When NO_PROXY is requested, clear inherited proxy vars unless explicitly
+    // overridden in the macro args.
+    if env_vars
+        .iter()
+        .any(|(key, _)| key.eq_ignore_ascii_case("NO_PROXY"))
+    {
+        for key in [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ] {
+            let is_explicit = env_vars.iter().any(|(env_key, _)| env_key == key);
+            if !is_explicit {
+                actions.push((key.to_string(), None));
+            }
+        }
+    }
+
+    let apply_actions: Vec<_> = actions
         .iter()
         .map(|(key, value)| {
-            quote! {
-                // SAFETY: test sets env vars at start before spawning threads.
-                unsafe { std::env::set_var(#key, #value); }
+            if let Some(value) = value {
+                quote! {
+                    __saved.push((#key, std::env::var(#key).ok()));
+                    // SAFETY: guarded by process-wide env lock.
+                    unsafe { std::env::set_var(#key, #value); }
+                }
+            } else {
+                quote! {
+                    __saved.push((#key, std::env::var(#key).ok()));
+                    // SAFETY: guarded by process-wide env lock.
+                    unsafe { std::env::remove_var(#key); }
+                }
             }
         })
         .collect();
-    quote! { #(#stmts)* }
+
+    quote! {
+        #[cfg(not(target_arch = "wasm32"))]
+        let _kithara_env_guard = {
+            struct __KitharaEnvGuard {
+                saved: ::std::vec::Vec<(
+                    &'static str,
+                    ::std::option::Option<::std::string::String>,
+                )>,
+                lock: ::std::option::Option<::std::sync::MutexGuard<'static, ()>>,
+            }
+
+            impl Drop for __KitharaEnvGuard {
+                fn drop(&mut self) {
+                    for (key, value) in self.saved.drain(..).rev() {
+                        match value {
+                            Some(value) => {
+                                // SAFETY: test-scoped restoration under env lock.
+                                unsafe { std::env::set_var(key, value); }
+                            }
+                            None => {
+                                // SAFETY: test-scoped restoration under env lock.
+                                unsafe { std::env::remove_var(key); }
+                            }
+                        }
+                    }
+                    let _ = self.lock.take();
+                }
+            }
+
+            let __lock = kithara_platform::test_env_lock()
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+
+            let mut __saved = ::std::vec::Vec::new();
+            #(#apply_actions)*
+
+            __KitharaEnvGuard {
+                saved: __saved,
+                lock: Some(__lock),
+            }
+        };
+    }
 }
 
 /// Wrap body in `catch_unwind`; re-panic unless the message matches a pattern.
@@ -349,7 +615,10 @@ fn wrap_with_soft_fail(
         };
         let __lower = __msg.to_lowercase();
         let __patterns: &[&str] = &[#(#pattern_strs),*];
-        if __patterns.iter().any(|p| __lower.contains(p)) {
+        if __patterns.iter().any(|p| {
+            __lower.contains(p)
+                || (*p == "timeout" && __lower.contains("timed out"))
+        }) {
             eprintln!("[SOFT FAIL] {}: {}", #name_str, __msg);
         } else {
             std::panic::resume_unwind(__panic);
@@ -413,12 +682,40 @@ fn emit_one_test(
     args: &TestArgs,
 ) -> TokenStream2 {
     let full = quote! { #preamble #(#body_stmts)* };
-    let with_timeout = wrap_with_timeout(&full, &args.timeout, is_async);
+    let serial_attr = make_serial_attr(args);
+
+    // Async + timeout on native: use manual runtime for clean shutdown.
+    // This avoids #[tokio::test]'s Runtime::drop hanging on zombie
+    // spawn_blocking threads after a timeout fires.
+    if is_async && args.timeout.is_some() {
+        let mut output = emit_async_timeout_test(
+            fn_name,
+            vis,
+            ret_type,
+            remaining_attrs,
+            &full,
+            args,
+            &serial_attr,
+        );
+        // WASM side: async function with cooperative timeout
+        let wasm_timeout = wrap_with_timeout(&full, &args.timeout, true, fn_name);
+        let wasm_wrapped = finalize_body(&wasm_timeout, args, fn_name, true);
+        output.extend(quote! {
+            #(#remaining_attrs)*
+            #[cfg(target_arch = "wasm32")]
+            #[wasm_bindgen_test::wasm_bindgen_test]
+            #vis async fn #fn_name() #ret_type #wasm_wrapped
+        });
+        return output;
+    }
+
+    let with_timeout = wrap_with_timeout(&full, &args.timeout, is_async, fn_name);
     let wrapped = finalize_body(&with_timeout, args, fn_name, is_async);
     let asyncness = is_async.then(|| quote! { async });
 
     quote! {
         #(#remaining_attrs)*
+        #serial_attr
         #test_attrs
         #vis #asyncness fn #fn_name() #ret_type #wrapped
     }
@@ -443,6 +740,7 @@ fn emit_browser_test(
     browser_only: bool,
 ) -> TokenStream2 {
     let mut output = TokenStream2::new();
+    let serial_attr = make_serial_attr(args);
 
     output.extend(make_dedicated_worker_config());
 
@@ -452,7 +750,7 @@ fn emit_browser_test(
         #preamble
         #(#body_stmts)*
     };
-    let wasm_with_timeout = wrap_with_timeout(&wasm_body, &args.timeout, true);
+    let wasm_with_timeout = wrap_with_timeout(&wasm_body, &args.timeout, true, fn_name);
     let wasm_wrapped = finalize_body(&wasm_with_timeout, args, fn_name, true);
     output.extend(quote! {
         #(#remaining_attrs)*
@@ -464,21 +762,38 @@ fn emit_browser_test(
     // Native side (only for dual-platform: native+browser or tokio+browser)
     if !browser_only {
         let native_is_async = is_async || args.is_tokio;
-        let native_attr = if native_is_async {
-            quote! { #[tokio::test] }
-        } else {
-            quote! { #[test] }
-        };
-        let native_asyncness = native_is_async.then(|| quote! { async });
         let native_body = quote! { #preamble #(#body_stmts)* };
-        let native_with_timeout = wrap_with_timeout(&native_body, &args.timeout, native_is_async);
-        let native_wrapped = finalize_body(&native_with_timeout, args, fn_name, native_is_async);
-        output.extend(quote! {
-            #(#remaining_attrs)*
-            #[cfg(not(target_arch = "wasm32"))]
-            #native_attr
-            #vis #native_asyncness fn #fn_name() #ret_type #native_wrapped
-        });
+
+        // Async + timeout: use manual runtime (same reason as emit_one_test)
+        if native_is_async && args.timeout.is_some() {
+            output.extend(emit_async_timeout_test(
+                fn_name,
+                vis,
+                ret_type,
+                remaining_attrs,
+                &native_body,
+                args,
+                &serial_attr,
+            ));
+        } else {
+            let native_attr = if native_is_async {
+                quote! { #[tokio::test] }
+            } else {
+                quote! { #[test] }
+            };
+            let native_asyncness = native_is_async.then(|| quote! { async });
+            let native_with_timeout =
+                wrap_with_timeout(&native_body, &args.timeout, native_is_async, fn_name);
+            let native_wrapped =
+                finalize_body(&native_with_timeout, args, fn_name, native_is_async);
+            output.extend(quote! {
+                #(#remaining_attrs)*
+                #serial_attr
+                #[cfg(not(target_arch = "wasm32"))]
+                #native_attr
+                #vis #native_asyncness fn #fn_name() #ret_type #native_wrapped
+            });
+        }
     }
 
     output
@@ -503,6 +818,7 @@ fn emit_browser_test(
 /// #[kithara::test(tokio, timeout(Duration::from_secs(5)))]  // async + timeout
 /// #[kithara::test(env(NO_PROXY = "host.example.com"))] // set env vars
 /// #[kithara::test(soft_fail("connection", "refused"))] // soft-fail on matching panics
+/// #[kithara::test(tokio, serial)]                      // serial execution (no parallel)
 /// ```
 ///
 /// ## `env`
@@ -516,6 +832,14 @@ fn emit_browser_test(
 /// as `[SOFT FAIL]` warnings; non-matching panics propagate normally.
 ///
 /// Requires `futures` crate at the call site for async tests.
+///
+/// ## `serial`
+///
+/// `serial` emits `#[serial_test::serial]` on each generated test function,
+/// preventing parallel execution with other `serial` tests. Use for
+/// resource-intensive tests that are sensitive to CPU/IO contention.
+///
+/// Requires `serial_test` crate at the call site.
 ///
 /// ## `browser`
 ///
@@ -552,7 +876,8 @@ fn generate(args: TestArgs, func: ItemFn) -> syn::Result<TokenStream2> {
         if cases.is_empty() {
             let preamble = make_preamble(&params, None);
             let full = quote! { { #preamble #(#body_stmts)* } };
-            let wrapped = finalize_body(&full, &args, fn_name, true);
+            let with_timeout = wrap_with_timeout(&full, &args.timeout, true, fn_name);
+            let wrapped = finalize_body(&with_timeout, &args, fn_name, true);
             return Ok(quote! {
                 #worker_config
                 #(#remaining_attrs)*
@@ -570,7 +895,8 @@ fn generate(args: TestArgs, func: ItemFn) -> syn::Result<TokenStream2> {
             };
             let preamble = make_preamble(&params, Some(&case.values));
             let full = quote! { { #preamble #(#body_stmts)* } };
-            let wrapped = finalize_body(&full, &args, &case_name, true);
+            let with_timeout = wrap_with_timeout(&full, &args.timeout, true, &case_name);
+            let wrapped = finalize_body(&with_timeout, &args, &case_name, true);
             tests.extend(quote! {
                 #(#remaining_attrs)*
                 #[cfg(target_arch = "wasm32")]
@@ -583,25 +909,43 @@ fn generate(args: TestArgs, func: ItemFn) -> syn::Result<TokenStream2> {
 
     // native-only (without browser): cfg(not(wasm32)) + #[test] or #[tokio::test]
     if args.is_native_only && !args.is_browser {
-        let test_attr = if is_async || args.is_tokio {
-            quote! { #[tokio::test] }
-        } else {
-            quote! { #[test] }
-        };
-        let asyncness = (is_async || args.is_tokio).then(|| quote! { async });
+        let native_is_async = is_async || args.is_tokio;
+        let serial_attr = make_serial_attr(&args);
 
         if cases.is_empty() {
             let preamble = make_preamble(&params, None);
             let full = quote! { #preamble #(#body_stmts)* };
-            let with_timeout = wrap_with_timeout(&full, &args.timeout, is_async || args.is_tokio);
-            let wrapped = finalize_body(&with_timeout, &args, fn_name, is_async || args.is_tokio);
+
+            // Async + timeout: manual runtime
+            if native_is_async && args.timeout.is_some() {
+                return Ok(emit_async_timeout_test(
+                    fn_name,
+                    vis,
+                    ret_type,
+                    &remaining_attrs,
+                    &full,
+                    &args,
+                    &serial_attr,
+                ));
+            }
+
+            let test_attr = if native_is_async {
+                quote! { #[tokio::test] }
+            } else {
+                quote! { #[test] }
+            };
+            let asyncness = native_is_async.then(|| quote! { async });
+            let with_timeout = wrap_with_timeout(&full, &args.timeout, native_is_async, fn_name);
+            let wrapped = finalize_body(&with_timeout, &args, fn_name, native_is_async);
             return Ok(quote! {
                 #(#remaining_attrs)*
+                #serial_attr
                 #[cfg(not(target_arch = "wasm32"))]
                 #test_attr
                 #vis #asyncness fn #fn_name() #ret_type #wrapped
             });
         }
+
         let mut tests = TokenStream2::new();
         for (i, case) in cases.iter().enumerate() {
             let case_name = match &case.name {
@@ -610,11 +954,32 @@ fn generate(args: TestArgs, func: ItemFn) -> syn::Result<TokenStream2> {
             };
             let preamble = make_preamble(&params, Some(&case.values));
             let full = quote! { #preamble #(#body_stmts)* };
-            let with_timeout = wrap_with_timeout(&full, &args.timeout, is_async || args.is_tokio);
-            let wrapped =
-                finalize_body(&with_timeout, &args, &case_name, is_async || args.is_tokio);
+
+            // Async + timeout: manual runtime (per case)
+            if native_is_async && args.timeout.is_some() {
+                tests.extend(emit_async_timeout_test(
+                    &case_name,
+                    vis,
+                    ret_type,
+                    &remaining_attrs,
+                    &full,
+                    &args,
+                    &serial_attr,
+                ));
+                continue;
+            }
+
+            let test_attr = if native_is_async {
+                quote! { #[tokio::test] }
+            } else {
+                quote! { #[test] }
+            };
+            let asyncness = native_is_async.then(|| quote! { async });
+            let with_timeout = wrap_with_timeout(&full, &args.timeout, native_is_async, &case_name);
+            let wrapped = finalize_body(&with_timeout, &args, &case_name, native_is_async);
             tests.extend(quote! {
                 #(#remaining_attrs)*
+                #serial_attr
                 #[cfg(not(target_arch = "wasm32"))]
                 #test_attr
                 #vis #asyncness fn #case_name() #ret_type #wrapped

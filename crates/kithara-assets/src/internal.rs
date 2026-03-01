@@ -3,14 +3,13 @@
 use std::collections::HashSet;
 
 pub use kithara_bufpool::{BytePool, byte_pool};
-pub use kithara_coverage::DiskCoverage;
 use kithara_storage::ResourceExt;
 
 #[cfg(target_arch = "wasm32")]
 pub use crate::base::Assets;
 use crate::error::AssetsResult;
 #[cfg(not(target_arch = "wasm32"))]
-pub use crate::{base::Assets, disk_store::DiskAssetStore, store::DiskStore};
+pub use crate::{base::Assets, disk_store::DiskAssetStore};
 pub use crate::{
     cache::CachedAssets,
     evict::EvictAssets,

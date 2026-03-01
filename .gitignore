@@ -52,3 +52,6 @@ crates/kithara-wasm/dist
 
 # Local docs / plans
 docs/
+.claude/*.md
+.claude-octopus
+.claude/debates

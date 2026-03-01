@@ -10,6 +10,17 @@ use crate::{
     types::{Headers, NetOptions, RangeSpec},
 };
 
+/// Extract response headers into our [`Headers`] type.
+fn extract_headers(resp: &reqwest::Response) -> Headers {
+    let mut headers = Headers::new();
+    for (name, value) in resp.headers() {
+        if let Ok(v) = value.to_str() {
+            headers.insert(name.as_str(), v);
+        }
+    }
+    headers
+}
+
 #[derive(Clone, Debug)]
 pub struct HttpClient {
     inner: Client,
@@ -67,14 +78,15 @@ impl HttpClient {
         <Self as Net>::get_range(self, url, range, headers).await
     }
 
-    /// Convert a reqwest Response to a `ByteStream`.
+    /// Convert a reqwest Response to a [`ByteStream`](crate::ByteStream).
     ///
-    /// Uses `bytes_stream()` on both platforms:
-    /// - Native: streaming via tokio-util
-    /// - wasm32: streaming via wasm-streams (reqwest `stream` feature)
+    /// Extracts response headers and wraps the body in a `ByteStream` so
+    /// that callers can inspect metadata (e.g. `Content-Length`) without a
+    /// separate HEAD request.
     fn response_to_stream(resp: reqwest::Response) -> crate::ByteStream {
+        let headers = extract_headers(&resp);
         let stream = resp.bytes_stream().map_err(NetError::from);
-        Box::pin(stream)
+        crate::ByteStream::new(headers, Box::pin(stream))
     }
 }
 
@@ -157,14 +169,28 @@ impl Net for HttpClient {
 
     #[cfg_attr(feature = "perf", hotpath::measure)]
     async fn head(&self, url: Url, headers: Option<Headers>) -> Result<Headers, NetError> {
-        let req = self.inner.head(url.clone());
-        let req = Self::apply_headers(req, headers);
-        let req = req.timeout(self.options.request_timeout);
+        // On WASM, HEAD is often blocked by CORS (servers typically allow
+        // only GET/OPTIONS). Use a zero-byte range GET instead — the 206
+        // response carries the same metadata headers.
+        #[cfg(target_arch = "wasm32")]
+        let resp = {
+            let mut req = self.inner.get(url.clone()).header("Range", "bytes=0-0");
+            req = Self::apply_headers(req, headers);
+            req = req.timeout(self.options.request_timeout);
+            req.send().await.map_err(NetError::from)?
+        };
 
-        let resp = req.send().await.map_err(NetError::from)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let resp = {
+            let req = self.inner.head(url.clone());
+            let req = Self::apply_headers(req, headers);
+            let req = req.timeout(self.options.request_timeout);
+            req.send().await.map_err(NetError::from)?
+        };
+
         let status = resp.status();
 
-        if !status.is_success() {
+        if !status.is_success() && status.as_u16() != 206 {
             let body = resp.text().await.unwrap_or_default();
             return Err(NetError::HttpError {
                 url,
@@ -177,6 +203,19 @@ impl Net for HttpClient {
         for (name, value) in resp.headers() {
             if let Ok(v) = value.to_str() {
                 out.insert(name.as_str(), v);
+            }
+        }
+
+        // For range GET responses, derive content-length from Content-Range.
+        // Format: "bytes 0-0/12345678" → total = 12345678.
+        if out.get("content-length").is_none() {
+            let total_from_range = out
+                .get("content-range")
+                .and_then(|h| h.split('/').nth(1))
+                .filter(|s| *s != "*")
+                .map(str::to_owned);
+            if let Some(total) = total_from_range {
+                out.insert("content-length", total);
             }
         }
 

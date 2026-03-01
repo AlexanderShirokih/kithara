@@ -1,18 +1,22 @@
 #[cfg(target_arch = "wasm32")]
 use std::cell::RefCell;
 use std::sync::Arc;
+#[cfg(target_arch = "wasm32")]
+use std::sync::LazyLock;
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::OnceLock;
+use std::{sync::OnceLock, time::Duration};
 
 use firewheel::{
     FirewheelConfig, Volume, diff::Memo, node::NodeID, nodes::volume_pan::VolumePanNode,
 };
 use kithara_bufpool::PcmPool;
-#[cfg(target_arch = "wasm32")]
-use kithara_platform::Mutex;
+use kithara_platform::{Mutex, sync::mpsc};
 #[cfg(not(target_arch = "wasm32"))]
-use kithara_platform::Receiver;
-use kithara_platform::{Sender, ThreadPool, bounded};
+use ringbuf::{
+    HeapCons,
+    traits::{Consumer, Producer},
+};
+use ringbuf::{HeapProd, HeapRb, traits::Split};
 use tracing::warn;
 
 use super::{
@@ -26,7 +30,11 @@ use crate::{
 
 pub(crate) type PlayerId = u64;
 
+#[cfg(not(target_arch = "wasm32"))]
 type RuntimeBackend = firewheel::cpal::CpalBackend;
+#[cfg(target_arch = "wasm32")]
+type RuntimeBackend = firewheel_web_audio::WebAudioBackend;
+
 type RuntimeCtx = firewheel::FirewheelCtx<RuntimeBackend>;
 
 #[derive(Debug)]
@@ -140,44 +148,83 @@ enum Cmd {
     Tick,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 struct CmdMsg {
     cmd: Cmd,
-    reply_tx: Sender<Reply>,
+    reply_tx: mpsc::Sender<Reply>,
 }
 
 enum Reply {
     Ok,
     PlayerRegistered(PlayerId),
     SessionDucking(SessionDuckingMode),
-    SlotAllocated(SlotId, Sender<PlayerCmd>, Arc<SharedPlayerState>, SharedEq),
+    SlotAllocated(
+        SlotId,
+        HeapProd<PlayerCmd>,
+        Arc<SharedPlayerState>,
+        SharedEq,
+    ),
     SampleRate(u32),
     Err(String),
 }
 
 pub(crate) struct SessionClient {
     #[cfg(not(target_arch = "wasm32"))]
-    cmd_tx: Sender<CmdMsg>,
+    cmd_tx: Mutex<HeapProd<CmdMsg>>,
+    /// `true` = main thread (direct state access via thread-local).
+    /// `false` = Worker (remote channel proxy).
     #[cfg(target_arch = "wasm32")]
-    state: Mutex<SessionState>,
+    local: bool,
 }
 
 impl SessionClient {
     #[cfg(not(target_arch = "wasm32"))]
+    fn push_cmd(&self, msg: CmdMsg) -> Result<(), PlayError> {
+        let mut pending = msg;
+        loop {
+            match self.cmd_tx.lock_sync().try_push(pending) {
+                Ok(()) => return Ok(()),
+                Err(returned) => {
+                    pending = returned;
+                    kithara_platform::thread::sleep(Duration::from_micros(100));
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn call(&self, cmd: Cmd) -> Result<Reply, PlayError> {
-        let (reply_tx, reply_rx) = bounded(1);
-        self.cmd_tx
-            .send(CmdMsg { cmd, reply_tx })
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.push_cmd(CmdMsg { cmd, reply_tx })
             .map_err(|_| PlayError::Internal("session thread gone".into()))?;
         reply_rx
-            .recv()
+            .recv_sync()
             .map_err(|_| PlayError::Internal("session thread gone (reply)".into()))
     }
 
     #[cfg(target_arch = "wasm32")]
     fn call(&self, cmd: Cmd) -> Result<Reply, PlayError> {
-        let mut state = self.state.lock();
-        Ok(run_cmd(&mut state, cmd))
+        if self.local {
+            WASM_SESSION_STATE.with(|cell| {
+                let mut state = cell.borrow_mut();
+                let state = state
+                    .as_mut()
+                    .ok_or_else(|| PlayError::Internal("local session state missing".into()))?;
+                Ok(run_cmd(state, cmd))
+            })
+        } else {
+            let guard = WORKER_CMD_TX.lock_sync();
+            let Some(ref tx) = *guard else {
+                return Err(PlayError::Internal("worker channel not initialised".into()));
+            };
+            let tx = tx.clone();
+            drop(guard);
+            let (reply_tx, reply_rx) = mpsc::channel();
+            tx.send_sync(CmdMsg { cmd, reply_tx })
+                .map_err(|_| PlayError::Internal("session host gone".into()))?;
+            reply_rx
+                .recv_sync()
+                .map_err(|_| PlayError::Internal("session host gone (reply)".into()))
+        }
     }
 
     fn call_ok(&self, cmd: Cmd) -> Result<Reply, PlayError> {
@@ -191,7 +238,15 @@ impl SessionClient {
     pub(crate) fn allocate_slot(
         &self,
         player_id: PlayerId,
-    ) -> Result<(SlotId, Sender<PlayerCmd>, Arc<SharedPlayerState>, SharedEq), PlayError> {
+    ) -> Result<
+        (
+            SlotId,
+            HeapProd<PlayerCmd>,
+            Arc<SharedPlayerState>,
+            SharedEq,
+        ),
+        PlayError,
+    > {
         match self.call_ok(Cmd::AllocateSlot { player_id })? {
             Reply::SlotAllocated(slot_id, cmd_tx, shared_state, eq) => {
                 Ok((slot_id, cmd_tx, shared_state, eq))
@@ -306,48 +361,169 @@ impl SessionClient {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn engine_thread(cmd_rx: &Receiver<CmdMsg>) {
+fn engine_thread(mut cmd_rx: HeapCons<CmdMsg>) {
     let mut state = SessionState::new();
-    while let Ok(msg) = cmd_rx.recv() {
-        let CmdMsg { cmd, reply_tx } = msg;
-        let reply = run_cmd(&mut state, cmd);
-        let _ = reply_tx.send(reply);
+    loop {
+        if let Some(msg) = cmd_rx.try_pop() {
+            let CmdMsg { cmd, reply_tx } = msg;
+            let reply = run_cmd(&mut state, cmd);
+            let _ = reply_tx.send_sync(reply);
+            continue;
+        }
+        kithara_platform::thread::sleep(Duration::from_micros(100));
     }
 }
 
-pub(crate) fn session_client(thread_pool: Option<ThreadPool>) -> Arc<SessionClient> {
+pub(crate) fn session_client() -> Arc<SessionClient> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         static SESSION_CLIENT: OnceLock<Arc<SessionClient>> = OnceLock::new();
         SESSION_CLIENT
             .get_or_init(|| {
-                let (cmd_tx, cmd_rx) = bounded(64);
-                let pool = thread_pool.unwrap_or_default();
-                pool.spawn(move || engine_thread(&cmd_rx));
-                Arc::new(SessionClient { cmd_tx })
+                let (cmd_tx, cmd_rx) = HeapRb::<CmdMsg>::new(64).split();
+                let _ = kithara_platform::spawn(move || engine_thread(cmd_rx));
+                Arc::new(SessionClient {
+                    cmd_tx: Mutex::new(cmd_tx),
+                })
             })
             .clone()
     }
 
     #[cfg(target_arch = "wasm32")]
     {
-        thread_local! {
-            static SESSION_CLIENT: RefCell<Option<Arc<SessionClient>>> = const { RefCell::new(None) };
-        }
-
-        SESSION_CLIENT.with(|cell| {
+        WASM_SESSION_CLIENT.with(|cell| {
             let mut cell = cell.borrow_mut();
             if let Some(client) = cell.as_ref() {
                 return client.clone();
             }
-            let _ = thread_pool;
-            let client = Arc::new(SessionClient {
-                state: Mutex::new(SessionState::new()),
-            });
+
+            // If the remote channel exists, we are on a Worker thread.
+            let is_local = WORKER_CMD_TX.lock_sync().is_none();
+
+            if is_local {
+                WASM_SESSION_STATE.with(|state| {
+                    let mut state = state.borrow_mut();
+                    if state.is_none() {
+                        *state = Some(SessionState::new());
+                    }
+                });
+            }
+
+            let client = Arc::new(SessionClient { local: is_local });
             *cell = Some(client.clone());
             client
         })
     }
+}
+
+// ── WASM Worker support ─────────────────────────────────────────────
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static WASM_SESSION_CLIENT: RefCell<Option<Arc<SessionClient>>> = const { RefCell::new(None) };
+    /// Session state lives in a thread-local so that `SessionClient` itself
+    /// is `Send` (needed for the Worker architecture).
+    static WASM_SESSION_STATE: RefCell<Option<SessionState>> = const { RefCell::new(None) };
+    /// Shared player state captured during slot allocation (for bridge reads).
+    static BRIDGE_PLAYER_STATE: RefCell<Option<Arc<SharedPlayerState>>> = const { RefCell::new(None) };
+}
+
+/// Sender half of the Worker → main-thread session channel.
+///
+/// Stored in a global so that Workers can clone it from `session_client()`.
+#[cfg(target_arch = "wasm32")]
+static WORKER_CMD_TX: LazyLock<Mutex<Option<mpsc::Sender<CmdMsg>>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+/// Receiver half (polled on main thread in `tick_and_poll_remote`).
+#[cfg(target_arch = "wasm32")]
+static WORKER_CMD_RX: LazyLock<Mutex<Option<mpsc::Receiver<CmdMsg>>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+/// Initialise the Worker ↔ main-thread session channel.
+///
+/// Must be called **once** on the main thread **before** any Worker is spawned.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn init_worker_channel() {
+    let (tx, rx) = mpsc::channel();
+    *WORKER_CMD_TX.lock_sync() = Some(tx);
+    *WORKER_CMD_RX.lock_sync() = Some(rx);
+}
+
+/// Poll pending session commands from Workers and run graph tick.
+///
+/// Called from the main thread's `requestAnimationFrame` loop.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn tick_and_poll_remote() {
+    WASM_SESSION_STATE.with(|state_cell| {
+        let mut state_opt = state_cell.borrow_mut();
+        let Some(ref mut state) = *state_opt else {
+            return;
+        };
+
+        // 1. Drain remote commands from Workers.
+        let rx_guard = WORKER_CMD_RX.lock_sync();
+        if let Some(ref rx) = *rx_guard {
+            while let Ok(msg) = rx.try_recv() {
+                let reply = run_cmd(state, msg.cmd);
+                // Capture shared player state for bridge position reads.
+                if let Reply::SlotAllocated(_, _, ref shared, _) = reply {
+                    BRIDGE_PLAYER_STATE.with(|ps| {
+                        *ps.borrow_mut() = Some(Arc::clone(shared));
+                    });
+                }
+                let _ = msg.reply_tx.send_sync(reply);
+            }
+        }
+        drop(rx_guard);
+
+        // 2. Update firewheel graph (tick).
+        if let Some(ref mut ctx) = state.ctx {
+            if let Err(err) = ctx.update() {
+                warn!("session graph update in tick failed: {err:?}");
+            }
+        }
+    });
+}
+
+/// Read current playback position from the bridge-captured shared state.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn bridge_position_secs() -> f64 {
+    BRIDGE_PLAYER_STATE.with(|cell| {
+        cell.borrow().as_ref().map_or(0.0, |s| {
+            s.position.load(std::sync::atomic::Ordering::Relaxed)
+        })
+    })
+}
+
+/// Read current media duration from the bridge-captured shared state.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn bridge_duration_secs() -> f64 {
+    BRIDGE_PLAYER_STATE.with(|cell| {
+        cell.borrow().as_ref().map_or(0.0, |s| {
+            s.duration.load(std::sync::atomic::Ordering::Relaxed)
+        })
+    })
+}
+
+/// Read playing state from the bridge-captured shared state.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn bridge_is_playing() -> bool {
+    BRIDGE_PLAYER_STATE.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .is_some_and(|s| s.playing.load(std::sync::atomic::Ordering::Relaxed))
+    })
+}
+
+/// Read process count from the bridge-captured shared state.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn bridge_process_count() -> u64 {
+    BRIDGE_PLAYER_STATE.with(|cell| {
+        cell.borrow().as_ref().map_or(0, |s| {
+            s.process_count.load(std::sync::atomic::Ordering::Relaxed)
+        })
+    })
 }
 
 fn ducking_gain(mode: SessionDuckingMode) -> f32 {
@@ -446,6 +622,7 @@ fn run_cmd(state: &mut SessionState, cmd: Cmd) -> Reply {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn start_stream(ctx: &mut RuntimeCtx, sample_rate: u32) -> Result<(), String> {
     let config = firewheel::cpal::CpalConfig {
         output: firewheel::cpal::CpalOutputConfig {
@@ -453,6 +630,15 @@ fn start_stream(ctx: &mut RuntimeCtx, sample_rate: u32) -> Result<(), String> {
             ..Default::default()
         },
         ..Default::default()
+    };
+    ctx.start_stream(config).map_err(|err| err.to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn start_stream(ctx: &mut RuntimeCtx, sample_rate: u32) -> Result<(), String> {
+    let config = firewheel_web_audio::WebAudioConfig {
+        sample_rate: std::num::NonZeroU32::new(sample_rate),
+        request_input: false,
     };
     ctx.start_stream(config).map_err(|err| err.to_string())
 }
@@ -643,7 +829,7 @@ fn allocate_slot(state: &mut SessionState, player_id: PlayerId) -> Result<Reply,
     let slot_id = SlotId(state.players[idx].next_slot_id);
     state.players[idx].next_slot_id += 1;
 
-    let (cmd_tx, cmd_rx) = bounded(32);
+    let (cmd_tx, cmd_rx) = HeapRb::<PlayerCmd>::new(32).split();
     let shared_state = Arc::new(SharedPlayerState::new());
     let shared_eq = state.players[idx].shared_eq.clone();
 

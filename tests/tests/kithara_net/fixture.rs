@@ -1,10 +1,9 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-use std::time::Duration;
-
 use bytes::Bytes;
 use futures::StreamExt;
 use kithara::net::{ByteStream, Headers, Net, NetError, RangeSpec};
+use kithara_platform::time::Duration;
 use url::Url;
 
 pub(crate) struct DelayedNet<N> {
@@ -21,12 +20,12 @@ impl<N: Net> DelayedNet<N> {
 #[async_trait::async_trait]
 impl<N: Net> Net for DelayedNet<N> {
     async fn get_bytes(&self, url: Url, headers: Option<Headers>) -> Result<Bytes, NetError> {
-        tokio::time::sleep(self.delay).await;
+        kithara_platform::time::sleep(self.delay).await;
         self.inner.get_bytes(url, headers).await
     }
 
     async fn stream(&self, url: Url, headers: Option<Headers>) -> Result<ByteStream, NetError> {
-        tokio::time::sleep(self.delay).await;
+        kithara_platform::time::sleep(self.delay).await;
         self.inner.stream(url, headers).await
     }
 
@@ -36,19 +35,19 @@ impl<N: Net> Net for DelayedNet<N> {
         range: RangeSpec,
         headers: Option<Headers>,
     ) -> Result<ByteStream, NetError> {
-        tokio::time::sleep(self.delay).await;
+        kithara_platform::time::sleep(self.delay).await;
         self.inner.get_range(url, range, headers).await
     }
 
     async fn head(&self, url: Url, headers: Option<Headers>) -> Result<Headers, NetError> {
-        tokio::time::sleep(self.delay).await;
+        kithara_platform::time::sleep(self.delay).await;
         self.inner.head(url, headers).await
     }
 }
 
 pub(crate) fn success_stream() -> ByteStream {
     let stream = futures::stream::iter(vec![Ok::<_, NetError>(Bytes::from_static(b"success"))]);
-    Box::pin(stream)
+    ByteStream::without_headers(Box::pin(stream))
 }
 
 pub(crate) fn leaked<F>(f: F) -> &'static F

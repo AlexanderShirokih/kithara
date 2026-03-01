@@ -1,8 +1,7 @@
 #![forbid(unsafe_code)]
 
-use std::time::Duration;
-
 use kithara_abr::{AbrReason, VariantInfo};
+use kithara_platform::time::Duration;
 
 use crate::SeekEpoch;
 
@@ -65,6 +64,15 @@ pub enum HlsEvent {
         seek_epoch: SeekEpoch,
         offset: u64,
         variant: usize,
+    },
+    /// Targeted seek diagnostics for debugging index drift.
+    Seek {
+        stage: &'static str,
+        seek_epoch: SeekEpoch,
+        variant: usize,
+        offset: u64,
+        from_segment_index: usize,
+        to_segment_index: usize,
     },
     /// Error occurred.
     Error { error: String, recoverable: bool },

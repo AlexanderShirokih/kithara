@@ -1,11 +1,10 @@
 #![forbid(unsafe_code)]
 
 use std::sync::Arc;
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Duration;
 
 use fixture::*;
 use kithara::{hls::HlsResult, internal::KeyManager};
+use kithara_platform::time::Duration;
 
 use super::fixture;
 

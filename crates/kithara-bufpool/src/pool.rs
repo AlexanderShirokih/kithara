@@ -108,24 +108,17 @@ where
         reason = "method on Pool for API consistency; may use self in future for per-pool salt"
     )]
     pub(crate) fn shard_index(&self) -> usize {
-        let thread_id = std::thread::current().id();
-        let hash = {
-            use std::hash::{Hash, Hasher};
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            thread_id.hash(&mut hasher);
-            hasher.finish()
-        };
         #[expect(
             clippy::cast_possible_truncation,
             reason = "modulo SHARDS guarantees result fits in usize"
         )]
-        let idx = (hash as usize) % SHARDS;
+        let idx = (kithara_platform::thread::current_thread_id() as usize) % SHARDS;
         idx
     }
 
     /// Return a buffer to the pool.
     pub(crate) fn put(&self, value: T, shard_idx: usize) {
-        let mut shard = self.shards[shard_idx].lock();
+        let mut shard = self.shards[shard_idx].lock_sync();
         if !shard.try_put(value) {
             // Shard full or buffer rejected, drop it
         }
@@ -214,7 +207,7 @@ where
     {
         let shard_idx = self.shard_index();
         let mut value = {
-            let mut shard = self.shards[shard_idx].lock();
+            let mut shard = self.shards[shard_idx].lock_sync();
             shard.try_get()
         };
 
@@ -222,7 +215,7 @@ where
             // Try other shards before allocating
             for i in 1..SHARDS {
                 let idx = (shard_idx + i) % SHARDS;
-                let mut shard = self.shards[idx].lock();
+                let mut shard = self.shards[idx].lock_sync();
                 if let Some(v) = shard.try_get() {
                     value = Some(v);
                     break;
@@ -438,7 +431,7 @@ where
     {
         let shard_idx = self.0.shard_index();
         let mut value = {
-            let mut shard = self.0.shards[shard_idx].lock();
+            let mut shard = self.0.shards[shard_idx].lock_sync();
             shard.try_get()
         };
 
@@ -446,7 +439,7 @@ where
             // Try other shards before allocating
             for i in 1..SHARDS {
                 let idx = (shard_idx + i) % SHARDS;
-                let mut shard = self.0.shards[idx].lock();
+                let mut shard = self.0.shards[idx].lock_sync();
                 if let Some(v) = shard.try_get() {
                     value = Some(v);
                     break;

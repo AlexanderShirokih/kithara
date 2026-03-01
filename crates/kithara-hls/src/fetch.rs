@@ -342,7 +342,7 @@ impl<N: Net> FetchManager<N> {
         variant_id: VariantId,
     ) -> HlsResult<MediaPlaylist> {
         let cell = {
-            let mut guard = self.media.write();
+            let mut guard = self.media.lock_sync_write();
             guard
                 .entry(variant_id)
                 .or_insert_with(|| Arc::new(OnceCell::new()))
@@ -526,13 +526,27 @@ impl<N: Net> FetchManager<N> {
     /// # Errors
     /// Returns an error when playlist loading, URL resolution, fetch, or content-length detection fails.
     pub async fn load_init_segment(&self, variant: usize) -> HlsResult<SegmentMeta> {
-        let cell = {
-            let mut guard = self.init_segments.write();
+        let mut cell = {
+            let mut guard = self.init_segments.lock_sync_write();
             guard
                 .entry(variant)
                 .or_insert_with(|| Arc::new(OnceCell::new()))
                 .clone()
         };
+
+        // Ephemeral: cached init metadata may outlive the actual resource
+        // (evicted from LRU). Verify and re-fetch if needed.
+        if self.backend.is_ephemeral()
+            && let Some(meta) = cell.get()
+            && !self.backend.has_resource(&ResourceKey::from_url(&meta.url))
+        {
+            debug!(variant, url = %meta.url, "init resource evicted, resetting cache");
+            let new_cell = Arc::new(OnceCell::new());
+            self.init_segments
+                .lock_sync_write()
+                .insert(variant, Arc::clone(&new_cell));
+            cell = new_cell;
+        }
 
         let meta = cell
             .get_or_try_init(|| self.fetch_init_segment(variant))
@@ -686,13 +700,13 @@ impl<N: Net> Loader for FetchManager<N> {
     }
 
     fn num_variants(&self) -> usize {
-        if let Some(cached) = *self.num_variants_cache.read() {
+        if let Some(cached) = *self.num_variants_cache.lock_sync_read() {
             return cached;
         }
 
         if let Some(variants) = self.master_variants() {
             let count = variants.len();
-            *self.num_variants_cache.write() = Some(count);
+            *self.num_variants_cache.lock_sync_write() = Some(count);
             return count;
         }
 
@@ -1018,7 +1032,7 @@ mod tests {
             Ok(Bytes::from(vec![0xFF; 1000])),
             Err(NetError::Timeout),
         ]);
-        Ok(Box::pin(stream) as ByteStream)
+        Ok(ByteStream::without_headers(Box::pin(stream)))
     }
 
     #[expect(
@@ -1034,7 +1048,7 @@ mod tests {
             return Err(NetError::Unimplemented);
         }
         let stream = stream::empty::<Result<Bytes, NetError>>();
-        Ok(Box::pin(stream) as ByteStream)
+        Ok(ByteStream::without_headers(Box::pin(stream)))
     }
 
     #[kithara::test(tokio)]

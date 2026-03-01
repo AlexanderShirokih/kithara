@@ -1,10 +1,8 @@
 #![forbid(unsafe_code)]
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Duration;
-
 use fixture::*;
 use kithara::{hls::HlsResult, internal::VariantId};
+use kithara_platform::time::Duration;
 
 use super::fixture;
 

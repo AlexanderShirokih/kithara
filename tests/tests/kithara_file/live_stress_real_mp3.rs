@@ -14,10 +14,8 @@ use kithara::{
     file::{File, FileConfig},
     stream::Stream,
 };
-use kithara_test_utils::{TestTempDir, Xorshift64, temp_dir};
+use kithara_test_utils::{TestTempDir, Xorshift64, serve_assets, temp_dir};
 use tracing::info;
-
-const MP3_URL: &str = "https://stream.silvercomet.top/track.mp3";
 const NEXT_CHUNK_TIMEOUT_MS: u64 = 10_000;
 const WARMUP_TIMEOUT_SECS: u64 = 8;
 const RANDOM_PHASE_BUDGET_SECS: u64 = 20;
@@ -89,7 +87,7 @@ async fn next_chunk_with_timeout(
     timeout: Duration,
     stage: &str,
 ) -> Option<PcmChunk> {
-    let deadline = tokio::time::Instant::now() + timeout;
+    let deadline = kithara_platform::time::Instant::now() + timeout;
     loop {
         if let Some(chunk) = PcmReader::next_chunk(audio) {
             return Some(chunk);
@@ -98,34 +96,28 @@ async fn next_chunk_with_timeout(
             return None;
         }
         assert!(
-            tokio::time::Instant::now() <= deadline,
+            kithara_platform::time::Instant::now() <= deadline,
             "next_chunk timeout at stage='{stage}' (is_eof={})",
             audio.is_eof()
         );
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        kithara_platform::time::sleep(Duration::from_millis(5)).await;
     }
 }
 
-#[kithara::test(
-    tokio,
-    browser,
-    timeout(Duration::from_secs(60)),
-    env(NO_PROXY = "stream.silvercomet.top"),
-    soft_fail("connection", "timeout", "refused", "resolve", "dns", "network")
-)]
+#[kithara::test(tokio, browser, serial, timeout(Duration::from_secs(60)))]
 #[case::mmap(false)]
 #[case::ephemeral(true)]
 async fn live_stress_real_mp3_seek_read_cache(#[case] ephemeral: bool, temp_dir: TestTempDir) {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
         .with_max_level(tracing::Level::INFO)
-        .with_env_filter(
-            std::env::var("RUST_LOG")
-                .unwrap_or_else(|_| "kithara_audio=info,kithara_file=info".to_string()),
-        )
+        .with_env_filter(kithara_test_utils::rust_log_filter(
+            "kithara_audio=info,kithara_file=info",
+        ))
         .try_init();
 
-    let url: url::Url = MP3_URL.parse().expect("valid URL");
+    let server = serve_assets().await;
+    let url = server.url("/track.mp3");
     let mut store = StoreOptions::new(temp_dir.path());
     if ephemeral {
         store.ephemeral = true;
@@ -170,8 +162,9 @@ async fn live_stress_real_mp3_seek_read_cache(#[case] ephemeral: bool, temp_dir:
     audio.preload();
 
     info!(ephemeral, "Phase 1: warmup");
-    let warmup_deadline = tokio::time::Instant::now() + Duration::from_secs(WARMUP_TIMEOUT_SECS);
-    while tokio::time::Instant::now() < warmup_deadline {
+    let warmup_deadline =
+        kithara_platform::time::Instant::now() + Duration::from_secs(WARMUP_TIMEOUT_SECS);
+    while kithara_platform::time::Instant::now() < warmup_deadline {
         let _ = next_chunk_with_timeout(
             &mut audio,
             Duration::from_millis(NEXT_CHUNK_TIMEOUT_MS),
@@ -195,11 +188,11 @@ async fn live_stress_real_mp3_seek_read_cache(#[case] ephemeral: bool, temp_dir:
         "Phase 2: random seek/read stress"
     );
     let random_deadline =
-        tokio::time::Instant::now() + Duration::from_secs(RANDOM_PHASE_BUDGET_SECS);
+        kithara_platform::time::Instant::now() + Duration::from_secs(RANDOM_PHASE_BUDGET_SECS);
     let mut random_ops_done = 0usize;
     let mut chunks_read = 0usize;
     for (idx, pos_secs) in seek_positions.iter().copied().enumerate() {
-        if tokio::time::Instant::now() > random_deadline {
+        if kithara_platform::time::Instant::now() > random_deadline {
             break;
         }
         audio

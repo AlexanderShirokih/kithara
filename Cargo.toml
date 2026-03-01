@@ -11,12 +11,12 @@ members = [
     "crates/kithara-audio",
     "crates/kithara-decode",
     "crates/kithara-stream",
-    "crates/kithara-coverage",
     "crates/kithara-storage",
     "crates/kithara-assets",
     "crates/kithara-bufpool",
     "crates/kithara-wasm",
     "crates/kithara-platform",
+    "crates/kithara-hang-detector",
     "crates/kithara-play",
     "crates/kithara-test-utils",
     "crates/kithara-test-macros",
@@ -72,6 +72,7 @@ cast_precision_loss = "warn"
 derive_partial_eq_without_eq = "warn"
 significant_drop_tightening = "warn"
 cognitive_complexity = "warn"
+approx_constant = "warn"
 
 [workspace.metadata.kithara]
 # Single place to document workspace-wide tool expectations.
@@ -103,7 +104,6 @@ kithara-abr = { path = "crates/kithara-abr", version = "0.1.0" }
 kithara-assets = { path = "crates/kithara-assets", version = "0.1.0" }
 kithara-bufpool = { path = "crates/kithara-bufpool", version = "0.1.0" }
 kithara-audio = { path = "crates/kithara-audio", version = "0.1.0" }
-kithara-coverage = { path = "crates/kithara-coverage", version = "0.1.0" }
 kithara-decode = { path = "crates/kithara-decode", version = "0.1.0" }
 kithara-drm = { path = "crates/kithara-drm", version = "0.1.0" }
 kithara-events = { path = "crates/kithara-events", version = "0.1.0" }
@@ -111,6 +111,7 @@ kithara-file = { path = "crates/kithara-file", version = "0.1.0" }
 kithara-hls = { path = "crates/kithara-hls", version = "0.1.0" }
 kithara-net = { path = "crates/kithara-net", version = "0.1.0" }
 kithara-platform = { path = "crates/kithara-platform", version = "0.1.0" }
+kithara-hang-detector = { path = "crates/kithara-hang-detector", version = "0.1.0" }
 kithara-play = { path = "crates/kithara-play", version = "0.1.0", default-features = false }
 kithara-storage = { path = "crates/kithara-storage", version = "0.1.0" }
 kithara-stream = { path = "crates/kithara-stream", version = "0.1.0" }
@@ -127,16 +128,15 @@ tokio-util = { version = "0.7.18", default-features = false }
 tokio-stream = "0.1.18"
 futures = "0.3.31"
 
-# thread pool
-rayon = { version = "1.10", features = ["web_spin_lock"] }
+# cross-platform threading (native + wasm32)
+wasm_safe_thread = "0.1.1"
+parking_lot = "0.12"
 
 # channels/buffers
-kanal = "0.1.1"
 bytes = "1.11.1"
 ringbuf = "0.4.8"
 slice_ring_buf = "0.3"
 async-stream = "0.3.6"
-parking_lot = { version = "0.12", features = ["nightly"] }
 crossbeam-queue = "0.3"
 
 # http/url
@@ -161,6 +161,7 @@ smallvec = "1"
 
 # audio engine
 firewheel = { version = "0.10.0", default-features = false, features = ["std", "pool", "all_nodes", "musical_transport", "scheduled_events", "tracing"] }
+firewheel-web-audio = { version = "0.4.0", default-features = false }
 bevy_platform = { version = "0.18", default-features = false, features = ["alloc", "std", "web"] }
 biquad = "0.5.0"
 thunderdome = { version = "0.6.1", default-features = false }
@@ -179,7 +180,6 @@ console_error_panic_hook = "0.1"
 # wasm bindings
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-wasm-bindgen-rayon = { version = "1.2", features = ["no-bundler"] }
 wasm-bindgen-test = "0.3"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = ["Blob", "console", "Document", "Element", "Event", "EventTarget", "File", "FileList", "FileReader", "HtmlElement", "HtmlInputElement", "Window"] }
@@ -198,11 +198,15 @@ cbc = "0.1.2"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10.9"
 tower = "0.5.3"
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
 tempfile = "3.25.0"
 
 # async traits
 async-trait = "0.1.89"
+
+# delegation
+delegate = "0.13"
+bitflags = "2.9"
 
 # storage (range maps + mmap)
 rangemap = { version = "1.7.1", features = ["serde1"] }
