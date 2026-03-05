@@ -2,7 +2,10 @@
 
 use std::{
     num::{NonZeroU32, NonZeroUsize},
-    sync::{Arc, atomic::AtomicU32},
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
 };
 
 use derive_setters::Setters;
@@ -18,6 +21,12 @@ use crate::{
 
 /// Default number of preload chunks.
 const DEFAULT_PRELOAD_CHUNKS: NonZeroUsize = NonZeroUsize::new(3).unwrap();
+
+/// Default PCM queue depth in decoded chunks.
+#[cfg(target_arch = "wasm32")]
+const DEFAULT_PCM_BUFFER_CHUNKS: usize = 32;
+#[cfg(not(target_arch = "wasm32"))]
+const DEFAULT_PCM_BUFFER_CHUNKS: usize = 10;
 
 /// Configuration for audio pipeline with stream config.
 ///
@@ -69,7 +78,7 @@ impl<T: StreamType> AudioConfig<T> {
             hint: None,
             host_sample_rate: None,
             media_info: None,
-            pcm_buffer_chunks: 10,
+            pcm_buffer_chunks: DEFAULT_PCM_BUFFER_CHUNKS,
             pcm_pool: None,
             prefer_hardware: false,
             preload_chunks: DEFAULT_PRELOAD_CHUNKS,
@@ -98,7 +107,7 @@ pub(super) fn expected_output_spec(
     initial_spec: PcmSpec,
     host_sample_rate: &Arc<AtomicU32>,
 ) -> PcmSpec {
-    let host_sr = host_sample_rate.load(std::sync::atomic::Ordering::Relaxed);
+    let host_sr = host_sample_rate.load(Ordering::Relaxed);
     if host_sr == 0 || host_sr == initial_spec.sample_rate {
         initial_spec
     } else {

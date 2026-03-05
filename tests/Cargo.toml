@@ -19,7 +19,6 @@ kithara-net = { workspace = true, features = ["test-utils"] }
 kithara-platform = { workspace = true }
 
 # Async runtime
-tokio = { workspace = true }
 tokio-util = { workspace = true }
 tokio-stream = { workspace = true }
 
@@ -86,6 +85,9 @@ unimock = { workspace = true }
 
 # Storage
 mmap-io = { workspace = true }
+
+# WebDriver automation
+thirtyfour = { workspace = true }
 
 # Performance monitoring (optional)
 hotpath = { workspace = true, optional = true }

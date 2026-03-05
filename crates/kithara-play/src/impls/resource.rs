@@ -5,11 +5,9 @@ use std::{num::NonZeroU32, sync::Arc, time::Duration};
 use kithara_audio::{Audio, AudioConfig, PcmReader};
 use kithara_decode::{DecodeResult, PcmSpec, TrackMetadata};
 use kithara_events::{Event, EventBus};
-use tokio::sync::broadcast;
+use kithara_platform::{tokio, tokio::sync::broadcast};
 
 use crate::impls::{config::ResourceConfig, source_type::SourceType};
-
-// -- Resource ---------------------------------------------------------------------
 
 /// Type-erased audio resource wrapping any `PcmReader`.
 ///
@@ -76,7 +74,7 @@ impl Resource {
         // Forward AudioEvents from the generic PcmReader into the unified EventBus.
         let forward_bus = bus.clone();
         let mut decode_rx = reader.decode_events();
-        kithara_platform::spawn_task(async move {
+        tokio::task::spawn(async move {
             loop {
                 match decode_rx.recv().await {
                     Ok(event) => forward_bus.publish(event),
@@ -253,13 +251,10 @@ mod tests {
     use kithara_audio::mock::TestPcmReader;
     use kithara_decode::PcmSpec;
     use kithara_events::{AudioEvent, Event};
-    use kithara_platform::time::Duration;
+    use kithara_platform::{time::Duration, tokio::sync::broadcast};
     use kithara_test_utils::kithara;
-    use tokio::sync::broadcast;
 
     use super::Resource;
-
-    // -- Helpers ------------------------------------------------------------------
 
     fn mock_spec() -> PcmSpec {
         PcmSpec {
@@ -284,8 +279,6 @@ mod tests {
         Interleaved,
         Planar,
     }
-
-    // -- Tests --------------------------------------------------------------------
 
     #[kithara::test(tokio)]
     #[case(ReadMode::Interleaved)]

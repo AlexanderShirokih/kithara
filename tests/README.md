@@ -1,3 +1,15 @@
+<div align="center">
+  <img src="../logo.svg" alt="kithara" width="300">
+</div>
+
+<div align="center">
+
+[![CI](https://github.com/zvuk/kithara/actions/workflows/ci.yml/badge.svg)](https://github.com/zvuk/kithara/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/zvuk/kithara/branch/main/graph/badge.svg)](https://codecov.io/gh/zvuk/kithara)
+[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](../LICENSE-MIT)
+
+</div>
+
 # Tests
 
 `tests/` is a dedicated workspace crate (`kithara-integration-tests`) that hosts:
@@ -103,6 +115,46 @@ The fixture server is configured via `.cargo/config.toml`:
 [target.wasm32-unknown-unknown]
 runner = ["cargo", "run", "--bin", "wasm_test_runner", "-p", "kithara-integration-tests", "--"]
 ```
+
+### Selenium E2E (`thirtyfour`)
+
+WASM player Selenium scenarios are implemented as ignored integration tests in:
+
+- `tests/tests/kithara_wasm/selenium.rs`
+
+Run them explicitly:
+
+```bash
+cargo test -p kithara-integration-tests --test integration selenium_hls_log_scenario -- --ignored --nocapture
+
+cargo test -p kithara-integration-tests --test integration selenium_player_scenarios -- --ignored --nocapture
+
+cargo test -p kithara-integration-tests --test integration selenium_diagnostic_suite -- --ignored --nocapture
+```
+
+Environment knobs:
+
+- `KITHARA_SELENIUM_BROWSER=chrome|firefox` (default: `chrome`)
+- `KITHARA_SELENIUM_HEADLESS=true|false` (default: `true`)
+- `KITHARA_SELENIUM_TOOLCHAIN=nightly` (default: `nightly`)
+- `KITHARA_SELENIUM_PAGE_URL=http://...` (use external trunk page instead of auto-start)
+- `KITHARA_SELENIUM_WEBDRIVER_URL=http://...` (use external webdriver instead of auto-start)
+
+WebDriver capabilities/profile defaults are versioned in:
+
+- `tests/webdriver.json`
+
+### agent-browser status
+
+`vercel-labs/agent-browser` can be used for local exploratory browser debugging, but it is not part of the canonical test path in this project.
+
+Reasons:
+
+- current regression suite is Rust-native (`cargo test` + `thirtyfour`);
+- CI and hooks are Rust-first and deterministic around WebDriver runs;
+- adopting agent-browser as the main runner would add an extra Node.js daemon + Playwright stack in CI.
+
+Decision: keep `thirtyfour` Selenium integration tests as the required path, use `agent-browser` only as optional local tooling.
 
 ## Performance Tests (`tests/perf`)
 

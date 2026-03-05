@@ -3,6 +3,8 @@ use std::cell::RefCell;
 use std::sync::Arc;
 #[cfg(target_arch = "wasm32")]
 use std::sync::LazyLock;
+#[cfg(target_arch = "wasm32")]
+use std::{num::NonZeroU32, sync::atomic::Ordering};
 #[cfg(not(target_arch = "wasm32"))]
 use std::{sync::OnceLock, time::Duration};
 
@@ -407,6 +409,12 @@ pub(crate) fn session_client() -> Arc<SessionClient> {
                         *state = Some(SessionState::new());
                     }
                 });
+                // Pre-warm BRIDGE_PLAYER_STATE: access the thread-local so
+                // that TLS destructor registration (which allocates via
+                // dlmalloc) happens now — before any Worker is spawned.
+                // Without this, the first access during tick_and_poll_remote()
+                // can deadlock with a Worker holding the dlmalloc spin lock.
+                BRIDGE_PLAYER_STATE.with(|_| {});
             }
 
             let client = Arc::new(SessionClient { local: is_local });
@@ -415,8 +423,6 @@ pub(crate) fn session_client() -> Arc<SessionClient> {
         })
     }
 }
-
-// ── WASM Worker support ─────────────────────────────────────────────
 
 #[cfg(target_arch = "wasm32")]
 thread_local! {
@@ -490,9 +496,9 @@ pub(crate) fn tick_and_poll_remote() {
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn bridge_position_secs() -> f64 {
     BRIDGE_PLAYER_STATE.with(|cell| {
-        cell.borrow().as_ref().map_or(0.0, |s| {
-            s.position.load(std::sync::atomic::Ordering::Relaxed)
-        })
+        cell.borrow()
+            .as_ref()
+            .map_or(0.0, |s| s.position.load(Ordering::Relaxed))
     })
 }
 
@@ -500,9 +506,9 @@ pub(crate) fn bridge_position_secs() -> f64 {
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn bridge_duration_secs() -> f64 {
     BRIDGE_PLAYER_STATE.with(|cell| {
-        cell.borrow().as_ref().map_or(0.0, |s| {
-            s.duration.load(std::sync::atomic::Ordering::Relaxed)
-        })
+        cell.borrow()
+            .as_ref()
+            .map_or(0.0, |s| s.duration.load(Ordering::Relaxed))
     })
 }
 
@@ -512,7 +518,7 @@ pub(crate) fn bridge_is_playing() -> bool {
     BRIDGE_PLAYER_STATE.with(|cell| {
         cell.borrow()
             .as_ref()
-            .is_some_and(|s| s.playing.load(std::sync::atomic::Ordering::Relaxed))
+            .is_some_and(|s| s.playing.load(Ordering::Relaxed))
     })
 }
 
@@ -520,10 +526,34 @@ pub(crate) fn bridge_is_playing() -> bool {
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn bridge_process_count() -> u64 {
     BRIDGE_PLAYER_STATE.with(|cell| {
-        cell.borrow().as_ref().map_or(0, |s| {
-            s.process_count.load(std::sync::atomic::Ordering::Relaxed)
-        })
+        cell.borrow()
+            .as_ref()
+            .map_or(0, |s| s.process_count.load(Ordering::Relaxed))
     })
+}
+
+/// Pre-initialise the audio context and AudioWorklet eagerly.
+///
+/// Must be called on the main thread **after** [`session_client()`] has
+/// initialised the session state. Creates the AudioContext (which starts
+/// suspended) and kicks off the async AudioWorklet module load. Once the
+/// module is ready, `firewheel-web-audio` registers auto-resume listeners
+/// for user-gesture events (click, keydown, …). This way the very first
+/// user click resumes the context — no second click required.
+///
+/// Passing `sample_rate = 0` makes `NonZeroU32::new(0)` return `None`,
+/// letting the browser pick the default sample rate.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn warm_up_audio() {
+    WASM_SESSION_STATE.with(|state_cell| {
+        let mut state_opt = state_cell.borrow_mut();
+        let Some(ref mut state) = *state_opt else {
+            return;
+        };
+        if let Err(err) = ensure_ctx(state, 0) {
+            warn!("audio warm-up failed: {err}");
+        }
+    });
 }
 
 fn ducking_gain(mode: SessionDuckingMode) -> f32 {
@@ -637,7 +667,7 @@ fn start_stream(ctx: &mut RuntimeCtx, sample_rate: u32) -> Result<(), String> {
 #[cfg(target_arch = "wasm32")]
 fn start_stream(ctx: &mut RuntimeCtx, sample_rate: u32) -> Result<(), String> {
     let config = firewheel_web_audio::WebAudioConfig {
-        sample_rate: std::num::NonZeroU32::new(sample_rate),
+        sample_rate: NonZeroU32::new(sample_rate),
         request_input: false,
     };
     ctx.start_stream(config).map_err(|err| err.to_string())

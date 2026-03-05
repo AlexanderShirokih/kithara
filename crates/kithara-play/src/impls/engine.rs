@@ -13,10 +13,9 @@ use std::sync::{
 use derivative::Derivative;
 use derive_setters::Setters;
 use kithara_bufpool::{PcmPool, pcm_pool};
-use kithara_platform::Mutex;
+use kithara_platform::{Mutex, tokio::sync::broadcast};
 use portable_atomic::AtomicF32;
 use ringbuf::{HeapProd, traits::Producer};
-use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
 use super::{
@@ -384,6 +383,7 @@ impl Engine for EngineImpl {
 
 #[cfg(test)]
 pub(crate) fn ducking_test_lock() -> &'static Mutex<()> {
-    static LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
+    use std::sync::OnceLock;
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }

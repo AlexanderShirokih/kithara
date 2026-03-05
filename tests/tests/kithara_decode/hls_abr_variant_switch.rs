@@ -10,7 +10,12 @@
 //! This test verifies that Stream<Hls> reads continuous bytes without skips during ABR
 //! variant switches.
 
-use std::{error::Error, io::Read as _, time::Duration};
+use std::{
+    error::Error,
+    io::{Read as _, Seek as _, SeekFrom},
+    sync::{Arc, Mutex as StdMutex},
+    time::Duration,
+};
 
 use kithara::{
     assets::StoreOptions,
@@ -18,6 +23,7 @@ use kithara::{
     hls::{AbrMode, AbrOptions, Hls, HlsConfig},
     stream::Stream,
 };
+use kithara_platform::{time::sleep, tokio::task::spawn_blocking};
 use kithara_test_utils::{TestTempDir, temp_dir};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -97,7 +103,7 @@ async fn test_abr_variant_switch_no_byte_glitches(
     let mut stream = Stream::<Hls>::new(config).await?;
 
     // Track variant switches
-    let variant_switches = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let variant_switches = Arc::new(StdMutex::new(Vec::new()));
     let variant_switches_clone = variant_switches.clone();
 
     tokio::spawn(async move {
@@ -126,43 +132,41 @@ async fn test_abr_variant_switch_no_byte_glitches(
     info!("Reading bytes from Stream<Hls>");
 
     // Give ABR some time to trigger and load segments
-    kithara_platform::time::sleep(Duration::from_millis(100)).await;
+    sleep(Duration::from_millis(100)).await;
 
     // Read bytes in blocking thread
-    let result = kithara_platform::spawn_blocking(
-        move || -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
-            let mut all_bytes = Vec::new();
-            let mut buffer = vec![0u8; 4096];
-            let mut total_reads = 0;
+    let result = spawn_blocking(move || -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
+        let mut all_bytes = Vec::new();
+        let mut buffer = vec![0u8; 4096];
+        let mut total_reads = 0;
 
-            // Read all available bytes
-            loop {
-                match stream.read(&mut buffer) {
-                    Ok(n) if n > 0 => {
-                        total_reads += 1;
-                        tracing::debug!(
-                            "Read {} bytes (read #{}, total so far: {})",
-                            n,
-                            total_reads,
-                            all_bytes.len() + n
-                        );
-                        all_bytes.extend_from_slice(&buffer[..n]);
-                    }
-                    Ok(_) => {
-                        tracing::debug!(
-                            "EOF reached after {} reads, total bytes: {}",
-                            total_reads,
-                            all_bytes.len()
-                        );
-                        break;
-                    }
-                    Err(e) => return Err(format!("Read error: {}", e).into()),
+        // Read all available bytes
+        loop {
+            match stream.read(&mut buffer) {
+                Ok(n) if n > 0 => {
+                    total_reads += 1;
+                    tracing::debug!(
+                        "Read {} bytes (read #{}, total so far: {})",
+                        n,
+                        total_reads,
+                        all_bytes.len() + n
+                    );
+                    all_bytes.extend_from_slice(&buffer[..n]);
                 }
+                Ok(_) => {
+                    tracing::debug!(
+                        "EOF reached after {} reads, total bytes: {}",
+                        total_reads,
+                        all_bytes.len()
+                    );
+                    break;
+                }
+                Err(e) => return Err(format!("Read error: {}", e).into()),
             }
+        }
 
-            Ok(all_bytes)
-        },
-    )
+        Ok(all_bytes)
+    })
     .await??;
 
     info!("Read {} bytes total", result.len());
@@ -224,24 +228,22 @@ async fn test_basic_multi_segment_reading(
 
     let mut stream = Stream::<Hls>::new(config).await?;
 
-    let result = kithara_platform::spawn_blocking(
-        move || -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
-            let mut all_bytes = Vec::new();
-            let mut buffer = vec![0u8; 4096];
+    let result = spawn_blocking(move || -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
+        let mut all_bytes = Vec::new();
+        let mut buffer = vec![0u8; 4096];
 
-            loop {
-                match stream.read(&mut buffer) {
-                    Ok(n) if n > 0 => {
-                        all_bytes.extend_from_slice(&buffer[..n]);
-                    }
-                    Ok(_) => break,
-                    Err(e) => return Err(format!("Read error: {}", e).into()),
+        loop {
+            match stream.read(&mut buffer) {
+                Ok(n) if n > 0 => {
+                    all_bytes.extend_from_slice(&buffer[..n]);
                 }
+                Ok(_) => break,
+                Err(e) => return Err(format!("Read error: {}", e).into()),
             }
+        }
 
-            Ok(all_bytes)
-        },
-    )
+        Ok(all_bytes)
+    })
     .await??;
 
     // Should have read all 3 segments from variant 0 (~600KB total)
@@ -270,8 +272,6 @@ async fn test_basic_multi_segment_reading(
 async fn test_abr_variant_switch_with_seek_backward(
     temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    use std::io::Seek as _;
-
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
         .with_max_level(tracing::Level::DEBUG)
@@ -307,7 +307,7 @@ async fn test_abr_variant_switch_with_seek_backward(
     let mut stream = Stream::<Hls>::new(config).await?;
 
     // Track variant switches
-    let variant_switches = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let variant_switches = Arc::new(StdMutex::new(Vec::new()));
     let variant_switches_clone = variant_switches.clone();
 
     tokio::spawn(async move {
@@ -328,11 +328,9 @@ async fn test_abr_variant_switch_with_seek_backward(
     });
 
     // Give ABR time to trigger and load some segments
-    kithara_platform::time::sleep(Duration::from_millis(100)).await;
+    sleep(Duration::from_millis(100)).await;
 
-    kithara_platform::spawn_blocking(move || -> Result<(), Box<dyn Error + Send + Sync>> {
-        use std::io::SeekFrom;
-
+    spawn_blocking(move || -> Result<(), Box<dyn Error + Send + Sync>> {
         // Read some bytes to trigger ABR switch
         let mut buffer = vec![0u8; 50000];
         let n1 = stream.read(&mut buffer)?;

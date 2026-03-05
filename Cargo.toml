@@ -20,7 +20,36 @@ members = [
     "crates/kithara-play",
     "crates/kithara-test-utils",
     "crates/kithara-test-macros",
+    "crates/kithara-tui",
+    "crates/kithara-ui",
+    "crates/kithara-app",
+    "crates/kithara-wasm-macros",
     "tests",
+    "examples",
+]
+default-members = [
+    "crates/kithara",
+    "crates/kithara-abr",
+    "crates/kithara-drm",
+    "crates/kithara-events",
+    "crates/kithara-net",
+    "crates/kithara-file",
+    "crates/kithara-hls",
+    "crates/kithara-audio",
+    "crates/kithara-decode",
+    "crates/kithara-stream",
+    "crates/kithara-storage",
+    "crates/kithara-assets",
+    "crates/kithara-bufpool",
+    "crates/kithara-wasm",
+    "crates/kithara-platform",
+    "crates/kithara-hang-detector",
+    "crates/kithara-play",
+    "crates/kithara-test-utils",
+    "crates/kithara-test-macros",
+    "crates/kithara-tui",
+    "tests",
+    "examples",
 ]
 
 [workspace.lints.rust]
@@ -118,12 +147,17 @@ kithara-stream = { path = "crates/kithara-stream", version = "0.1.0" }
 kithara-test-macros = { path = "crates/kithara-test-macros" }
 kithara-test-utils = { path = "crates/kithara-test-utils" }
 kithara-wasm = { path = "crates/kithara-wasm" }
+kithara-wasm-macros = { path = "crates/kithara-wasm-macros" }
+kithara-tui = { path = "crates/kithara-tui" }
+kithara-ui = { path = "crates/kithara-ui" }
+kithara-app = { path = "crates/kithara-app" }
 rstest = { version = "0.26.1", features = ["async-timeout", "crate-name"] }
 serial_test = "3.3.1"
 unimock = { version = "0.6", features = ["std"] }
 
 # async/runtime
 tokio = { version = "1.49.0", default-features = false, features = ["sync", "macros", "rt", "time"] }
+tokio_with_wasm = { version = "0.9", features = ["full"] }
 tokio-util = { version = "0.7.18", default-features = false }
 tokio-stream = "0.1.18"
 futures = "0.3.31"
@@ -182,7 +216,7 @@ wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 wasm-bindgen-test = "0.3"
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Blob", "console", "Document", "Element", "Event", "EventTarget", "File", "FileList", "FileReader", "HtmlElement", "HtmlInputElement", "Window"] }
+web-sys = { version = "0.3", features = ["Blob", "BroadcastChannel", "console", "DedicatedWorkerGlobalScope", "Document", "Element", "Event", "EventTarget", "File", "FileList", "FileReader", "HtmlElement", "HtmlInputElement", "MessageEvent", "Window"] }
 
 # serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -203,10 +237,16 @@ tempfile = "3.25.0"
 
 # async traits
 async-trait = "0.1.89"
+thirtyfour = "0.36.1"
 
 # delegation
 delegate = "0.13"
 bitflags = "2.9"
+
+# proc macros
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
 
 # storage (range maps + mmap)
 rangemap = { version = "1.7.1", features = ["serde1"] }
@@ -232,6 +272,17 @@ core-foundation = "0.10"
 core-foundation-sys = "0.8"
 
 # Optional: unify lint settings later via workspace.metadata or deny.toml.
+
+# UI frameworks
+iced = { version = "0.14", features = ["tokio", "svg"] }
+iced_aw = { version = "0.13.1", default-features = false, features = ["tabs", "tab_bar", "selection_list"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+crossterm = "0.28"
+
+[patch.crates-io]
+firewheel-web-audio = { git = "https://github.com/gerasim13/firewheel-web-audio", rev = "1a5e383af4d5d318f93d6d25e617cc95d7b20aef" }
 
 [profile.wasm-release]
 inherits = "release"

@@ -1,20 +1,17 @@
 //! Worker-based WASM player.
 //!
-//! [`WasmPlayer`] is a `#[wasm_bindgen]` wrapper that forwards player commands
-//! to the engine Worker and reads status from shared atomics. It owns the
-//! firewheel session host (via [`kithara_play::wasm_support`]) and drives graph
-//! updates in `tick()`.
-//!
-//! Getter values (volume, crossfade, EQ, ducking) are cached on the main thread
-//! so that reads never require a Worker round-trip.
+//! `Player` is a normal Rust struct with methods. The `#[wasm_export]` proc
+//! macro on the impl block generates `#[wasm_bindgen]` free functions
+//! (`player_play`, `player_seek`, etc.) for every method marked `#[export]`.
 
-use std::{
-    cell::{Cell, RefCell},
-    sync::Arc,
+use std::sync::{
+    LazyLock,
+    atomic::{AtomicU32, Ordering},
 };
 
-use kithara_platform::Mutex;
-use kithara_play::{ResourceConfig, wasm_support};
+use kithara_platform::sync::{Mutex, MutexGuard, mpsc};
+use kithara_play::wasm_support;
+use kithara_wasm_macros::wasm_export;
 use tracing::info;
 use wasm_bindgen::prelude::*;
 
@@ -26,281 +23,242 @@ macro_rules! clog {
     };
 }
 
-/// Diagnostic: return current WASM linear memory size in bytes.
-#[wasm_bindgen]
-pub fn wasm_memory_bytes() -> f64 {
-    let mem: js_sys::WebAssembly::Memory = wasm_bindgen::memory().unchecked_into();
-    let buf: js_sys::ArrayBuffer = mem.buffer().unchecked_into();
-    buf.byte_length() as f64
-}
-
 const CROSSFADE_SECONDS: f32 = 5.0;
 const EQ_BANDS: usize = 10;
-const FILE_URL_DEFAULT: &str = "https://stream.silvercomet.top/track.mp3";
-const HLS_URL_DEFAULT: &str = "https://stream.silvercomet.top/hls/master.m3u8";
 
-fn js_error(message: impl Into<String>) -> JsValue {
-    JsValue::from_str(&message.into())
+fn load_f32(a: &AtomicU32) -> f32 {
+    f32::from_bits(a.load(Ordering::Relaxed))
 }
 
-/// Cached player settings — main-thread mirror of Worker state.
-/// Written by setters, read by getters. No Worker round-trip.
-struct CachedState {
-    volume: Cell<f32>,
-    crossfade_secs: Cell<f32>,
-    eq_gains: RefCell<Vec<f32>>,
-    ducking: Cell<u32>,
-    eq_bands: u32,
+fn store_f32(a: &AtomicU32, val: f32) {
+    a.store(val.to_bits(), Ordering::Relaxed);
 }
 
-impl CachedState {
-    fn new() -> Self {
-        Self {
-            volume: Cell::new(1.0),
-            crossfade_secs: Cell::new(CROSSFADE_SECONDS),
-            eq_gains: RefCell::new(vec![0.0; EQ_BANDS]),
-            ducking: Cell::new(0),
-            eq_bands: EQ_BANDS as u32,
-        }
-    }
+struct Player;
+
+static PLAYER: Player = Player;
+
+// Cached settings used by getters on the JS side.
+static VOLUME: AtomicU32 = AtomicU32::new(0);
+static CROSSFADE_SECS: AtomicU32 = AtomicU32::new(0);
+static EQ_GAINS: [AtomicU32; EQ_BANDS] = [const { AtomicU32::new(0) }; EQ_BANDS];
+static DUCKING: AtomicU32 = AtomicU32::new(0);
+
+static CMD_TX: LazyLock<Mutex<Option<mpsc::Sender<WorkerCmd>>>> =
+    LazyLock::new(|| Mutex::new(None));
+static START_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+static START_COUNT: AtomicU32 = AtomicU32::new(0);
+
+fn player() -> &'static Player {
+    &PLAYER
 }
 
-#[wasm_bindgen]
-pub struct WasmPlayer {
-    cmd_tx: kithara_platform::sync::mpsc::Sender<WorkerCmd>,
-    current_index: Mutex<Option<usize>>,
-    event_log: Arc<Mutex<Vec<String>>>,
-    playlist: Vec<String>,
-    _worker: kithara_platform::JoinHandle<()>,
-    cache: CachedState,
+fn lock_cmd_tx() -> MutexGuard<'static, Option<mpsc::Sender<WorkerCmd>>> {
+    CMD_TX.lock_sync()
 }
 
-#[wasm_bindgen]
-impl WasmPlayer {
-    #[wasm_bindgen(constructor)]
-    pub fn new() -> Self {
-        info!("WasmPlayer: initialising worker session channel");
-
-        // 1. Initialise the session channel BEFORE spawning the Worker.
-        wasm_support::ensure_main_session();
-        wasm_support::init_worker_session();
-
-        // 2. Create command channel.
-        let (cmd_tx, cmd_rx) = kithara_platform::sync::mpsc::channel();
-        let event_log = Arc::new(Mutex::new(Vec::new()));
-
-        // 3. Spawn the engine Worker.
-        let log = Arc::clone(&event_log);
-        let worker = kithara_platform::spawn(move || {
-            crate::worker_entry::worker_main(cmd_rx, log);
-        });
-
-        info!("WasmPlayer: engine worker spawned");
-
-        Self {
-            cmd_tx,
-            current_index: Mutex::new(None),
-            event_log,
-            playlist: vec![FILE_URL_DEFAULT.to_string(), HLS_URL_DEFAULT.to_string()],
-            _worker: worker,
-            cache: CachedState::new(),
-        }
+fn ensure_worker_started() -> Result<(), JsValue> {
+    if lock_cmd_tx().is_some() {
+        return Ok(());
     }
 
-    // -- Playlist management (main thread only, no Worker needed) ----------
+    let _start_guard = START_LOCK.lock_sync();
 
-    pub fn default_file_url() -> String {
-        FILE_URL_DEFAULT.to_string()
+    if lock_cmd_tx().is_some() {
+        return Ok(());
     }
 
-    pub fn default_hls_url() -> String {
-        HLS_URL_DEFAULT.to_string()
+    let start_no = START_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    info!("player_new: initialising worker start={start_no}");
+
+    wasm_support::ensure_main_session();
+    wasm_support::init_worker_session();
+    crate::js_channel::init_event_reader();
+    reset_cached_state();
+
+    let (cmd_tx, cmd_rx) = mpsc::channel();
+    *lock_cmd_tx() = Some(cmd_tx);
+
+    let worker = kithara_platform::spawn(move || {
+        crate::worker_entry::worker_main(cmd_rx);
+    });
+    std::mem::forget(worker);
+
+    Ok(())
+}
+
+fn clear_cmd_tx() {
+    *lock_cmd_tx() = None;
+}
+
+fn send_cmd(cmd: WorkerCmd) -> Result<(), JsValue> {
+    ensure_worker_started()?;
+
+    let tx = lock_cmd_tx()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| JsValue::from_str("command channel not ready"))?;
+
+    if tx.send_sync(cmd.clone()).is_ok() {
+        return Ok(());
     }
 
-    pub fn playlist_len(&self) -> u32 {
-        self.playlist.len() as u32
+    // If worker channel closed, clear sender, restart worker, and retry once.
+    clear_cmd_tx();
+    ensure_worker_started()?;
+    let tx = lock_cmd_tx()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| JsValue::from_str("command channel not ready"))?;
+    tx.send_sync(cmd)
+        .map_err(|_| JsValue::from_str("worker channel closed"))
+}
+
+fn reset_cached_state() {
+    store_f32(&VOLUME, 0.5);
+    store_f32(&CROSSFADE_SECS, CROSSFADE_SECONDS);
+    for gain in &EQ_GAINS {
+        store_f32(gain, 0.0);
+    }
+    DUCKING.store(0, Ordering::Relaxed);
+}
+
+#[wasm_export]
+impl Player {
+    fn send_cmd(&self, cmd: WorkerCmd) -> Result<(), JsValue> {
+        send_cmd(cmd)
     }
 
-    pub fn playlist_item(&self, index: u32) -> Result<String, JsValue> {
-        let idx = usize::try_from(index)
-            .map_err(|_| js_error(format!("playlist index too large: {index}")))?;
-        self.playlist
-            .get(idx)
-            .cloned()
-            .ok_or_else(|| js_error(format!("playlist index out of range: {idx}")))
-    }
-
-    pub fn current_index(&self) -> i32 {
-        self.current_index.lock_sync().map_or(-1, |idx| idx as i32)
-    }
-
-    pub fn add_track(&mut self, url: String) -> Result<u32, JsValue> {
-        let trimmed = url.trim();
-        if trimmed.is_empty() {
-            return Err(js_error("track URL is empty"));
-        }
-        ResourceConfig::new(trimmed)
-            .map_err(|err| js_error(format!("invalid track URL: {err}")))?;
-        self.playlist.push(trimmed.to_string());
-        Ok((self.playlist.len() - 1) as u32)
-    }
-
-    // -- Commands forwarded to Worker ------------------------------------
-
-    pub async fn select_track(&self, index: u32) -> Result<(), JsValue> {
-        let idx = usize::try_from(index)
-            .map_err(|_| js_error(format!("playlist index too large: {index}")))?;
-        let Some(url) = self.playlist.get(idx).cloned() else {
-            return Err(js_error(format!("playlist index out of range: {idx}")));
-        };
-
+    #[export]
+    fn select_track(&self, url: String) -> Result<js_sys::Promise, JsValue> {
         clog!("[PLAYER] select_track: sending to Worker url={url}");
-
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.cmd_tx
-            .send_sync(WorkerCmd::SelectTrack { url, reply_tx })
-            .map_err(|_| js_error("worker channel closed"))?;
-
-        let result = reply_rx
-            .await
-            .map_err(|_| js_error("worker reply dropped"))?;
-
-        result.map_err(|e| js_error(format!("select_track failed: {e}")))?;
-
-        *self.current_index.lock_sync() = Some(idx);
-        clog!("[PLAYER] select_track: complete");
-        Ok(())
+        let request_id = crate::js_channel::next_request_id();
+        let cmd = WorkerCmd::SelectTrack { url, request_id };
+        self.send_cmd(cmd)?;
+        crate::js_channel::reply_promise(request_id)
     }
 
-    pub fn play(&self) {
-        let _ = self.cmd_tx.send_sync(WorkerCmd::Play);
+    #[export]
+    fn warm_up_audio(&self) {
+        wasm_support::warm_up_audio();
     }
 
-    pub fn pause(&self) {
-        let _ = self.cmd_tx.send_sync(WorkerCmd::Pause);
+    #[export]
+    fn play(&self) {
+        let _ = self.send_cmd(WorkerCmd::Play);
     }
 
-    pub fn stop(&self) {
-        let _ = self.cmd_tx.send_sync(WorkerCmd::Stop);
+    #[export]
+    fn pause(&self) {
+        let _ = self.send_cmd(WorkerCmd::Pause);
     }
 
-    pub fn seek(&self, position_ms: f64) -> Result<(), JsValue> {
-        self.cmd_tx
-            .send_sync(WorkerCmd::Seek(position_ms))
-            .map_err(|_| js_error("worker channel closed"))
+    #[export]
+    fn stop(&self) {
+        let _ = self.send_cmd(WorkerCmd::Stop);
     }
 
-    pub fn set_volume(&self, volume: f32) {
-        self.cache.volume.set(volume);
-        let _ = self.cmd_tx.send_sync(WorkerCmd::SetVolume(volume));
+    #[export]
+    fn seek(&self, position_ms: f64) -> Result<(), JsValue> {
+        self.send_cmd(WorkerCmd::Seek(position_ms))
     }
 
-    pub fn set_crossfade_seconds(&self, seconds: f32) {
-        self.cache.crossfade_secs.set(seconds);
-        let _ = self.cmd_tx.send_sync(WorkerCmd::SetCrossfade(seconds));
+    #[export]
+    fn set_volume(&self, volume: f32) {
+        store_f32(&VOLUME, volume);
+        let _ = self.send_cmd(WorkerCmd::SetVolume(volume));
     }
 
-    pub fn set_eq_gain(&self, band: u32, gain_db: f32) -> Result<(), JsValue> {
-        {
-            let mut gains = self.cache.eq_gains.borrow_mut();
-            if let Some(slot) = gains.get_mut(band as usize) {
-                *slot = gain_db;
-            }
+    #[export]
+    fn set_crossfade_seconds(&self, seconds: f32) {
+        store_f32(&CROSSFADE_SECS, seconds);
+        let _ = self.send_cmd(WorkerCmd::SetCrossfade(seconds));
+    }
+
+    #[export]
+    fn set_eq_gain(&self, band: u32, gain_db: f32) -> Result<(), JsValue> {
+        if let Some(slot) = EQ_GAINS.get(band as usize) {
+            store_f32(slot, gain_db);
         }
-        self.cmd_tx
-            .send_sync(WorkerCmd::SetEqGain { band, gain_db })
-            .map_err(|_| js_error("worker channel closed"))
+        self.send_cmd(WorkerCmd::SetEqGain { band, gain_db })
     }
 
-    pub fn reset_eq(&self) -> Result<(), JsValue> {
-        {
-            let mut gains = self.cache.eq_gains.borrow_mut();
-            for g in gains.iter_mut() {
-                *g = 0.0;
-            }
+    #[export]
+    fn reset_eq(&self) -> Result<(), JsValue> {
+        for g in &EQ_GAINS {
+            store_f32(g, 0.0);
         }
-        self.cmd_tx
-            .send_sync(WorkerCmd::ResetEq)
-            .map_err(|_| js_error("worker channel closed"))
+        self.send_cmd(WorkerCmd::ResetEq)
     }
 
-    pub fn set_session_ducking(&self, mode: u32) -> Result<(), JsValue> {
-        self.cache.ducking.set(mode);
-        self.cmd_tx
-            .send_sync(WorkerCmd::SetDucking(mode))
-            .map_err(|_| js_error("worker channel closed"))
+    #[export]
+    fn set_session_ducking(&self, mode: u32) -> Result<(), JsValue> {
+        DUCKING.store(mode, Ordering::Relaxed);
+        self.send_cmd(WorkerCmd::SetDucking(mode))
     }
 
-    // -- Status reads from shared atomics (no Worker round-trip) ----------
-
-    pub fn get_position_ms(&self) -> f64 {
+    #[export]
+    fn get_position_ms(&self) -> f64 {
         wasm_support::bridge_position_secs() * 1000.0
     }
 
-    pub fn get_duration_ms(&self) -> f64 {
+    #[export]
+    fn get_duration_ms(&self) -> f64 {
         wasm_support::bridge_duration_secs() * 1000.0
     }
 
-    pub fn is_playing(&self) -> bool {
+    #[export]
+    fn is_playing(&self) -> bool {
         wasm_support::bridge_is_playing()
     }
 
-    pub fn process_count(&self) -> f64 {
+    #[export]
+    fn process_count(&self) -> f64 {
         wasm_support::bridge_process_count() as f64
     }
 
-    // -- Cached getters (no Worker round-trip) ----------------------------
-
-    pub fn get_volume(&self) -> f32 {
-        self.cache.volume.get()
+    #[export]
+    fn get_volume(&self) -> f32 {
+        load_f32(&VOLUME)
     }
 
-    pub fn get_crossfade_seconds(&self) -> f32 {
-        self.cache.crossfade_secs.get()
+    #[export]
+    fn get_crossfade_seconds(&self) -> f32 {
+        load_f32(&CROSSFADE_SECS)
     }
 
-    pub fn eq_band_count(&self) -> u32 {
-        self.cache.eq_bands
+    #[export]
+    fn eq_band_count(&self) -> u32 {
+        EQ_BANDS as u32
     }
 
-    pub fn eq_gain(&self, band: u32) -> f32 {
-        let gains = self.cache.eq_gains.borrow();
-        gains.get(band as usize).copied().unwrap_or(0.0)
+    #[export]
+    fn eq_gain(&self, band: u32) -> f32 {
+        EQ_GAINS.get(band as usize).map(load_f32).unwrap_or(0.0)
     }
 
-    pub fn get_session_ducking(&self) -> u32 {
-        self.cache.ducking.get()
+    #[export]
+    fn get_session_ducking(&self) -> u32 {
+        DUCKING.load(Ordering::Relaxed)
     }
 
-    // -- Tick (main thread graph update) ----------------------------------
-
-    /// Poll session commands from Workers and update the audio graph.
-    ///
-    /// Must be called unconditionally — even before a track is selected —
-    /// because `select_track` sends session-engine commands from the Worker
-    /// that the main thread must process for the call to complete.
-    pub fn tick(&self) -> Result<(), JsValue> {
+    #[export]
+    fn tick(&self) {
         wasm_support::tick_and_poll();
-        Ok(())
     }
 
-    // -- Events -----------------------------------------------------------
-
-    pub fn take_events(&self) -> String {
-        let mut events = self.event_log.lock_sync();
-        if events.is_empty() {
-            return String::new();
-        }
-        let out = events.join("\n");
-        events.clear();
-        out
+    #[export]
+    fn take_events(&self) -> String {
+        crate::js_channel::take_events()
     }
+}
 
-    // -- Diagnostics ------------------------------------------------------
-
-    /// Diagnostic: read HLS stream bytes without audio decoding.
-    /// Runs read loop in the Worker thread.
-    pub fn test_hls_read(&self) {
-        let _ = self.cmd_tx.send_sync(WorkerCmd::TestHlsRead);
+/// Returns a `Promise` that resolves after worker spawn.
+#[allow(unreachable_pub)]
+#[wasm_bindgen]
+pub fn player_new() -> js_sys::Promise {
+    if let Err(err) = ensure_worker_started() {
+        return js_sys::Promise::reject(&err);
     }
+    js_sys::Promise::resolve(&JsValue::UNDEFINED)
 }

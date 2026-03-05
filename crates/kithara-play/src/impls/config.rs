@@ -1,6 +1,7 @@
 //! Configuration for [`Item`](crate::impls::item::Item).
 
 use std::{
+    fmt,
     num::{NonZeroU32, NonZeroUsize},
     path::PathBuf,
 };
@@ -38,8 +39,8 @@ impl From<PathBuf> for ResourceSrc {
     }
 }
 
-impl std::fmt::Display for ResourceSrc {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ResourceSrc {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Url(url) => write!(f, "{url}"),
             Self::Path(path) => write!(f, "{}", path.display()),
@@ -120,6 +121,17 @@ pub struct ResourceConfig {
     pub net: NetOptions,
     /// Shared PCM pool for temporary buffers.
     pub pcm_pool: Option<PcmPool>,
+    /// Maximum peak bitrate in bits per second for ABR variant selection.
+    ///
+    /// When greater than zero, variants with bandwidth exceeding this value
+    /// are excluded from ABR decisions. Maps to `AVPlayer`'s
+    /// `preferredPeakBitRate`. Default: `0.0` (no limit).
+    pub preferred_peak_bitrate: f64,
+    /// Maximum peak bitrate for expensive networks (e.g., cellular).
+    ///
+    /// Stored for use by the FFI layer which determines network type.
+    /// Not consumed by `into_hls_config()` directly. Default: `0.0` (no limit).
+    pub preferred_peak_bitrate_for_expensive_networks: f64,
     /// Number of chunks to buffer before signaling preload readiness.
     ///
     /// Higher values reduce the chance of the audio thread blocking on `recv()`
@@ -192,6 +204,8 @@ impl ResourceConfig {
             #[cfg(any(feature = "file", feature = "hls"))]
             net: NetOptions::default(),
             pcm_pool: None,
+            preferred_peak_bitrate: 0.0,
+            preferred_peak_bitrate_for_expensive_networks: 0.0,
             preload_chunks: DEFAULT_PRELOAD_CHUNKS,
             resampler_quality: ResamplerQuality::default(),
             src,
@@ -213,8 +227,6 @@ impl ResourceConfig {
         self.hint = Some(hint.into());
         self
     }
-
-    // -- Internal conversions -------------------------------------------------
 
     /// Convert into an `AudioConfig<File>`.
     #[cfg(feature = "file")]
@@ -292,10 +304,21 @@ impl ResourceConfig {
             }
         };
 
+        let mut abr = self.abr;
+        // Map preferred_peak_bitrate → AbrOptions::max_bandwidth_bps.
+        // Only apply if the value is a finite number >= 1.0 bps.
+        if self.preferred_peak_bitrate.is_finite() && self.preferred_peak_bitrate >= 1.0 {
+            #[expect(clippy::cast_sign_loss)] // guarded by >= 1.0 check above
+            #[expect(clippy::cast_possible_truncation)]
+            // f64 → u64 is fine for bitrate values in practical range
+            let cap = self.preferred_peak_bitrate as u64;
+            abr.max_bandwidth_bps = Some(cap);
+        }
+
         let mut hls_config = kithara_hls::HlsConfig::new(url)
             .with_store(self.store)
             .with_net(self.net)
-            .with_abr(self.abr)
+            .with_abr(abr)
             .with_keys(self.keys);
 
         if let Some(bytes) = self.look_ahead_bytes {
@@ -344,6 +367,8 @@ impl ResourceConfig {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use kithara_test_utils::kithara;
 
     use super::*;
@@ -361,7 +386,7 @@ mod tests {
         let config = ResourceConfig::new(input).unwrap();
         assert!(matches!(
             &config.src,
-            ResourceSrc::Path(path) if path == std::path::Path::new(expected)
+            ResourceSrc::Path(path) if path == Path::new(expected)
         ));
     }
 
@@ -433,5 +458,22 @@ mod tests {
         assert_eq!(config.hint.as_deref(), Some("mp3"));
         assert_eq!(config.name.as_deref(), Some("test"));
         assert_eq!(config.preload_chunks.get(), 5);
+    }
+
+    #[kithara::test]
+    fn config_bitrate_fields_default_zero() {
+        let config = ResourceConfig::new("https://example.com/live.m3u8").unwrap();
+        assert!((config.preferred_peak_bitrate - 0.0).abs() < f64::EPSILON);
+        assert!((config.preferred_peak_bitrate_for_expensive_networks - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[cfg(feature = "hls")]
+    #[kithara::test]
+    fn config_bitrate_propagates_to_hls_abr() {
+        let config = ResourceConfig::new("https://example.com/live.m3u8")
+            .unwrap()
+            .with_preferred_peak_bitrate(512_000.0);
+        let audio_config = config.into_hls_config().unwrap();
+        assert_eq!(audio_config.stream.abr.max_bandwidth_bps, Some(512_000));
     }
 }
