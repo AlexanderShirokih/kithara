@@ -5,6 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 publish = false
+autotests = false
 
 [lints]
 workspace = true
@@ -13,14 +14,20 @@ workspace = true
 [dependencies]
 kithara = { workspace = true, features = ["full", "test-utils", "internal"] }
 kithara-audio = { workspace = true, features = ["internal"] }
+kithara-assets = { workspace = true }
+kithara-bufpool = { workspace = true, features = ["internal"] }
+kithara-drm = { workspace = true }
+kithara-events = { workspace = true }
+kithara-hls = { workspace = true, features = ["internal"] }
 kithara-test-utils = { workspace = true }
-kithara-wasm = { workspace = true }
 kithara-net = { workspace = true, features = ["test-utils"] }
 kithara-platform = { workspace = true }
+kithara-storage = { workspace = true }
+kithara-stream = { workspace = true }
+kithara-wasm = { workspace = true, features = ["internal"] }
 
 # Async runtime
 tokio-util = { workspace = true }
-tokio-stream = { workspace = true }
 
 # Channels/buffers
 bytes = { workspace = true }
@@ -28,11 +35,6 @@ bytes = { workspace = true }
 # HTTP/URL
 url = { workspace = true }
 
-# HLS parsing
-hls_m3u8 = { workspace = true }
-
-# Decoding
-symphonia = { workspace = true }
 rodio = { workspace = true }
 
 # Testing framework
@@ -54,10 +56,8 @@ aes = { workspace = true }
 cbc = { workspace = true }
 
 # Misc
-thiserror = { workspace = true }
 futures = { workspace = true }
 uuid = { workspace = true }
-sha2 = { workspace = true }
 
 # Async traits
 async-trait = { workspace = true }
@@ -66,6 +66,9 @@ async-trait = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Additional kithara features (rodio not available on WASM)
 kithara = { workspace = true, features = ["rodio"] }
+kithara-decode = { workspace = true, features = ["test-utils"] }
+kithara-file = { workspace = true }
+kithara-play = { workspace = true, features = ["backend-cpal", "internal"] }
 
 # Additional tokio features (full runtime on native)
 tokio = { workspace = true, features = ["full"] }
@@ -92,27 +95,32 @@ thirtyfour = { workspace = true }
 # Performance monitoring (optional)
 hotpath = { workspace = true, optional = true }
 
+# RSS memory profiling
+memory-stats = { workspace = true }
+assert_no_alloc = { workspace = true }
+ringbuf = { workspace = true }
+tokio-stream = { workspace = true }
+
 # --- WASM-only dependencies ---
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-kithara-assets = { workspace = true }
-kithara-events = { workspace = true }
-kithara-hls = { workspace = true }
-kithara-stream = { workspace = true }
 kithara-test-macros = { workspace = true }
 
 # uuid needs js feature on WASM
 uuid = { workspace = true, features = ["js"] }
 
 # WASM-specific
+js-sys = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 wasm-bindgen-test = { workspace = true }
+web-sys = { workspace = true }
 gloo-timers = { workspace = true }
 tracing-wasm = { workspace = true }
 console_error_panic_hook = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = { workspace = true }
+kithara-abr = { workspace = true, features = ["internal"] }
 
 [features]
 perf = [
@@ -137,32 +145,31 @@ name = "wasm_test_runner"
 path = "bin/wasm_test_runner.rs"
 test = false
 
-# Performance test binaries
 [[test]]
-name = "resampler"
-path = "perf/resampler.rs"
+name = "suite_light"
+path = "tests/suite_light.rs"
+
+[[test]]
+name = "suite_heavy"
+path = "tests/suite_heavy.rs"
+
+[[test]]
+name = "suite_perf"
+path = "perf/suite_perf.rs"
 required-features = ["perf"]
 
 [[test]]
-name = "decoder"
-path = "perf/decoder.rs"
-required-features = ["perf"]
-
-[[test]]
-name = "pool"
-path = "perf/pool.rs"
-required-features = ["perf"]
-
-[[test]]
-name = "abr"
-path = "perf/abr.rs"
-required-features = ["perf"]
-
-[[test]]
-name = "storage"
-path = "perf/storage.rs"
-required-features = ["perf"]
+name = "memory_rss"
+path = "perf/memory_rss.rs"
 
 [[bench]]
 name = "refactor_hotpaths"
+harness = false
+
+[[bench]]
+name = "bufpool"
+harness = false
+
+[[bench]]
+name = "abr_estimator"
 harness = false

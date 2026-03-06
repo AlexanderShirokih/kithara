@@ -23,12 +23,10 @@ rubato = { workspace = true }
 audioadapter-buffers = { workspace = true }
 smallvec = { workspace = true }
 fallible-iterator = { workspace = true }
-thiserror = { workspace = true }
 tokio-util = { workspace = true }
 ringbuf = { workspace = true }
 rodio = { workspace = true, optional = true }
 tracing = { workspace = true }
-bytes = { workspace = true }
 kithara-platform = { workspace = true }
 fast-interleave = { workspace = true }
 hotpath = { workspace = true, optional = true }
@@ -65,6 +63,7 @@ web-sys = { workspace = true, features = [
 
 [dev-dependencies]
 kithara-audio = { path = ".", default-features = false, features = ["internal"] }
+assert_no_alloc = { workspace = true }
 tokio-util = { workspace = true }
 bytes = { workspace = true }
 tracing = { workspace = true }

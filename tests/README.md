@@ -79,8 +79,8 @@ cargo test --doc --workspace
 cargo nextest run -p kithara-integration-tests
 
 # Specific integration test target / filter
-cargo test -p kithara-integration-tests --test events
-cargo test -p kithara-integration-tests --test integration kithara_hls::basic_playback
+cargo test -p kithara-integration-tests --test suite_light events::
+cargo test -p kithara-integration-tests --test suite_heavy live_stress_real_stream::
 ```
 
 `just` shortcuts (from repo root):
@@ -103,11 +103,15 @@ bash scripts/ci/wasm-test.sh
 cargo +nightly test --target wasm32-unknown-unknown -p kithara-integration-tests
 ```
 
-Test categories on WASM:
+Test categories on `cargo +nightly test --target wasm32-unknown-unknown`:
 
-- **`kithara_wasm/`** — WASM player unit tests (AudioWorklet, threading)
 - **`kithara_hls/`** — HLS integration tests with `browser` flag (fixture server)
-- **`kithara_file/live_stress_real_mp3`** — live stream tests with `browser` flag
+
+`tests/tests/kithara_wasm/stress.rs` currently contains ignored regression specs:
+`Audio::new` stalls in the `wasm-bindgen-test` headless runner during bootstrap.
+`tests/tests/kithara_file/live_stress_real_mp3.rs` is also ignored on `wasm32`
+for the same reason.
+Active browser/player coverage lives in the Selenium suite below.
 
 The fixture server is configured via `.cargo/config.toml`:
 
@@ -118,18 +122,19 @@ runner = ["cargo", "run", "--bin", "wasm_test_runner", "-p", "kithara-integratio
 
 ### Selenium E2E (`thirtyfour`)
 
-WASM player Selenium scenarios are implemented as ignored integration tests in:
+Exported `kithara-wasm` player scenarios run through the real `kithara-wasm.js`
+page and are implemented as ignored integration tests in:
 
 - `tests/tests/kithara_wasm/selenium.rs`
 
 Run them explicitly:
 
 ```bash
-cargo test -p kithara-integration-tests --test integration selenium_hls_log_scenario -- --ignored --nocapture
+cargo test -p kithara-integration-tests --test suite_heavy selenium_hls_log_scenario -- --ignored --nocapture
 
-cargo test -p kithara-integration-tests --test integration selenium_player_scenarios -- --ignored --nocapture
+cargo test -p kithara-integration-tests --test suite_heavy selenium_player_scenarios -- --ignored --nocapture
 
-cargo test -p kithara-integration-tests --test integration selenium_diagnostic_suite -- --ignored --nocapture
+cargo test -p kithara-integration-tests --test suite_heavy selenium_diagnostic_suite -- --ignored --nocapture
 ```
 
 Environment knobs:
@@ -165,19 +170,15 @@ Performance tests use [hotpath-rs](https://github.com/pawurb/hotpath-rs), run on
 cargo test -p kithara-integration-tests --features perf --release -- --ignored --test-threads=1
 
 # Run one suite
-cargo test -p kithara-integration-tests --features perf --release --test resampler -- --ignored --nocapture
-cargo test -p kithara-integration-tests --features perf --release --test decoder -- --ignored --nocapture
-cargo test -p kithara-integration-tests --features perf --release --test pool -- --ignored --nocapture
-cargo test -p kithara-integration-tests --features perf --release --test abr -- --ignored --nocapture
-cargo test -p kithara-integration-tests --features perf --release --test storage -- --ignored --nocapture
+cargo test -p kithara-integration-tests --features perf --release --test suite_perf -- --ignored --nocapture
 ```
 
-Suites in this crate:
+Perf modules in this crate:
 
-- `resampler.rs` — `perf_resampler_scenarios`
+- `abr.rs` — `perf_abr_scenarios`
 - `decoder.rs` — `perf_decoder_scenarios`
 - `pool.rs` — `perf_pool_scenarios`
-- `abr.rs` — `perf_abr_scenarios`
+- `resampler.rs` — `perf_resampler_scenarios`
 - `storage.rs` — `perf_storage_scenarios`
 
 Local compare flow:
@@ -211,11 +212,13 @@ RUN_BENCHMARKS=1 BENCH_CANDIDATE_NAME=local just bench-ci
 Integration tests:
 
 1. Add module/file under `tests/tests/` (group by crate/domain).
-2. Register module in `tests/tests/integration.rs` when needed.
-3. Prefer deterministic fixtures and local servers over external network.
-4. Use `#[kithara::test(tokio, browser, ...)]` for tests that need a server — they'll run on both native and WASM.
-5. Use `#[kithara::test(wasm, ...)]` for pure logic tests that can run on WASM.
-6. Use `#[kithara::test(native, ...)]` for tests that require filesystem or OS-specific features.
+2. Register light tests in `tests/tests/suite_light.rs`.
+3. Register heavy or browser-integration tests in `tests/tests/suite_heavy.rs`.
+4. Register perf-only tests in `tests/perf/suite_perf.rs`.
+5. Prefer deterministic fixtures and local servers over external network.
+6. Use `#[kithara::test(tokio, browser, ...)]` for tests that need a server — they'll run on both native and WASM.
+7. Use `#[kithara::test(wasm, ...)]` for pure logic tests that can run on WASM.
+8. Use `#[kithara::test(native, ...)]` for tests that require filesystem or OS-specific features.
 
 Performance tests:
 
