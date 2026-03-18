@@ -52,11 +52,13 @@ hotpath-*.json
 log*.txt
 crates/kithara-wasm/dist
 
-# Local docs / plans
-docs/
+# Local Claude artifacts
 .claude/*.md
 .claude-octopus
 .claude/debates
+.claude/worktrees/
+.claude/settings.local.json
+
 crates/kithara-wasm/pkg
 
 # Swift / Xcode
