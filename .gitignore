@@ -12,8 +12,8 @@
 .LSOverride
 Icon?
 ._*
-!crates/kithara-ui/assets/icons/
-!crates/kithara-ui/assets/icons/*.svg
+!crates/kithara-app/assets/icons/
+!crates/kithara-app/assets/icons/*.svg
 
 # JetBrains
 .idea/
@@ -23,7 +23,8 @@ Icon?
 .vscode/
 
 # Zed
-.zed/
+/.zed/*
+!/.zed/debug.json
 
 # Editor swap/backup files
 *~
@@ -52,7 +53,8 @@ hotpath-*.json
 log*.txt
 crates/kithara-wasm/dist
 
-# Local Claude artifacts
+# Local docs / plans
+.docs/
 .claude/*.md
 .claude-octopus
 .claude/debates
@@ -70,12 +72,14 @@ apple/Examples/KitharaDemo/KitharaDemo.xcodeproj/
 apple/Examples/KitharaDemo/build/
 crates/kithara-ffi/KitharaFFI/
 crates/kithara-ffi/generated/
+tests/fuzz/corpus
+tests/fuzz/artifacts
+tests/fuzz/coverage
 
 # Android / Gradle
 android/.gradle/
 android/**/build/
 android/local.properties
-tests/fuzz/corpus
 
 # Node.js
 package-lock.json
