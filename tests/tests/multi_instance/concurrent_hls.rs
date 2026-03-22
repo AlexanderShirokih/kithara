@@ -16,7 +16,7 @@ use kithara_integration_tests::hls_fixture::{HlsTestServer, HlsTestServerConfig}
 #[cfg(target_arch = "wasm32")]
 use kithara_platform::thread;
 use kithara_platform::{time::Duration, tokio::task::spawn_blocking};
-use kithara_test_utils::{TestTempDir, tracing_setup, wav::create_test_wav};
+use kithara_test_utils::{TestTempDir, wav::create_test_wav};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -181,7 +181,7 @@ fn generate_wav_data() -> Arc<Vec<u8>> {
     timeout(Duration::from_secs(10)),
     env(KITHARA_HANG_TIMEOUT_SECS = "2")
 )]
-async fn two_hls_instances(_tracing_setup: ()) {
+async fn two_hls_instances() {
     let wav_data = generate_wav_data();
 
     // Each instance needs its own server (binds a random port) and cache dir.
@@ -220,7 +220,7 @@ async fn two_hls_instances(_tracing_setup: ()) {
     timeout(Duration::from_secs(10)),
     env(KITHARA_HANG_TIMEOUT_SECS = "2")
 )]
-async fn four_hls_instances(_tracing_setup: ()) {
+async fn four_hls_instances() {
     let wav_data = generate_wav_data();
 
     let mut handles = Vec::new();
@@ -257,7 +257,7 @@ async fn four_hls_instances(_tracing_setup: ()) {
     timeout(Duration::from_secs(10)),
     env(KITHARA_HANG_TIMEOUT_SECS = "2")
 )]
-async fn eight_hls_instances(_tracing_setup: ()) {
+async fn eight_hls_instances() {
     let wav_data = generate_wav_data();
 
     let mut handles = Vec::new();
@@ -294,7 +294,7 @@ async fn eight_hls_instances(_tracing_setup: ()) {
     timeout(Duration::from_secs(10)),
     env(KITHARA_HANG_TIMEOUT_SECS = "2")
 )]
-async fn four_hls_instances_with_abr(_tracing_setup: ()) {
+async fn four_hls_instances_with_abr() {
     let wav_data = generate_wav_data();
 
     let mut handles = Vec::new();

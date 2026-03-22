@@ -17,33 +17,7 @@ use kithara_test_utils::{TestTempDir, cancel_token, temp_dir};
 use rodio::Decoder;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
-use tracing_subscriber::EnvFilter;
 use url::Url;
-
-// Fixtures
-
-#[kithara::fixture]
-fn warn_filter() -> EnvFilter {
-    EnvFilter::default().add_directive("warn".parse().unwrap())
-}
-
-#[kithara::fixture]
-fn hls_info_filter() -> EnvFilter {
-    EnvFilter::default()
-        .add_directive("kithara_hls=info".parse().unwrap())
-        .add_directive("kithara_stream=info".parse().unwrap())
-        .add_directive("warn".parse().unwrap())
-}
-
-#[kithara::fixture]
-fn tracing_setup(hls_info_filter: EnvFilter) {
-    kithara_test_utils::init_tracing(hls_info_filter);
-}
-
-#[kithara::fixture]
-fn warn_tracing_setup(warn_filter: EnvFilter) {
-    kithara_test_utils::init_tracing(warn_filter);
-}
 
 // Test Cases
 
@@ -58,10 +32,10 @@ fn warn_tracing_setup(warn_filter: EnvFilter) {
     tokio,
     browser,
     timeout(Duration::from_secs(5)),
-    env(KITHARA_HANG_TIMEOUT_SECS = "1")
+    env(KITHARA_HANG_TIMEOUT_SECS = "1"),
+    tracing("kithara_hls=info,kithara_stream=info,warn")
 )]
 async fn test_basic_hls_playback(
-    _tracing_setup: (),
     temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -131,7 +105,6 @@ async fn test_basic_hls_playback(
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
 async fn test_hls_session_creation(
-    _warn_tracing_setup: (),
     temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -169,7 +142,6 @@ async fn test_hls_session_creation(
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
 async fn test_hls_with_init_segments(
-    _warn_tracing_setup: (),
     temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -193,7 +165,6 @@ async fn test_hls_with_init_segments(
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
 async fn test_hls_with_different_options(
-    _warn_tracing_setup: (),
     temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let server = TestServer::new().await;
@@ -219,7 +190,6 @@ async fn test_hls_with_different_options(
 #[case("not-a-valid-url")]
 #[case("")]
 async fn test_hls_invalid_url_handling(
-    _warn_tracing_setup: (),
     #[case] invalid_url: &str,
     temp_dir: TestTempDir,
     cancel_token: CancellationToken,
@@ -254,7 +224,6 @@ async fn test_hls_invalid_url_handling(
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
 async fn test_init_segment_at_stream_start(
-    _warn_tracing_setup: (),
     temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -306,10 +275,7 @@ async fn test_init_segment_at_stream_start(
     timeout(Duration::from_secs(5)),
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
-async fn test_hls_without_cache(
-    _warn_tracing_setup: (),
-    temp_dir: TestTempDir,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+async fn test_hls_without_cache(temp_dir: TestTempDir) -> Result<(), Box<dyn Error + Send + Sync>> {
     let server = TestServer::new().await;
 
     info!("Testing HLS with limited cache");

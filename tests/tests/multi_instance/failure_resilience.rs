@@ -19,7 +19,7 @@ use kithara_platform::{
     time::{Duration, sleep},
     tokio::task::{JoinHandle, spawn, spawn_blocking},
 };
-use kithara_test_utils::{TestTempDir, tracing_setup, wav::create_test_wav};
+use kithara_test_utils::{TestTempDir, wav::create_test_wav};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -140,7 +140,7 @@ async fn create_hls_audio(
     timeout(Duration::from_secs(10)),
     env(KITHARA_HANG_TIMEOUT_SECS = "2")
 )]
-async fn healthy_instances_survive_cancelled_peers(_tracing_setup: ()) {
+async fn healthy_instances_survive_cancelled_peers() {
     let wav_data = generate_wav_data();
 
     let mut handles: Vec<JoinHandle<Outcome>> = Vec::new();
@@ -246,7 +246,7 @@ async fn healthy_instances_survive_cancelled_peers(_tracing_setup: ()) {
     timeout(Duration::from_secs(10)),
     env(KITHARA_HANG_TIMEOUT_SECS = "2")
 )]
-async fn eight_instances_half_cancelled(_tracing_setup: ()) {
+async fn eight_instances_half_cancelled() {
     let wav_data = generate_wav_data();
 
     let mut handles: Vec<JoinHandle<Outcome>> = Vec::new();

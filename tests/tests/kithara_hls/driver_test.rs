@@ -24,7 +24,7 @@ use kithara_platform::{
     time::sleep,
     tokio::task::{spawn, spawn_blocking},
 };
-use kithara_test_utils::{TestTempDir, cancel_token, temp_dir, tracing_setup};
+use kithara_test_utils::{TestTempDir, cancel_token, temp_dir};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -44,7 +44,6 @@ use tracing::info;
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
 async fn test_driver_seek_after_playlist_finished(
-    _tracing_setup: (),
     temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) {
@@ -113,11 +112,7 @@ async fn test_driver_seek_after_playlist_finished(
     timeout(Duration::from_secs(30)),
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
-async fn test_driver_abr_seek_backward(
-    _tracing_setup: (),
-    temp_dir: TestTempDir,
-    cancel_token: CancellationToken,
-) {
+async fn test_driver_abr_seek_backward(temp_dir: TestTempDir, cancel_token: CancellationToken) {
     let server = AbrTestServer::new(
         master_playlist(256_000, 512_000, 1_024_000),
         false,

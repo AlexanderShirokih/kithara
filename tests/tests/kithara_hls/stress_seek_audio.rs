@@ -21,7 +21,7 @@ use kithara::{
 };
 use kithara_integration_tests::hls_fixture::{HlsTestServer, HlsTestServerConfig};
 use kithara_platform::tokio::task::spawn_blocking;
-use kithara_test_utils::{TestTempDir, Xorshift64, tracing_setup, wav::create_saw_wav};
+use kithara_test_utils::{TestTempDir, Xorshift64, wav::create_saw_wav};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -79,7 +79,7 @@ fn phase_distance(a: usize, b: usize) -> usize {
 #[case::ephemeral(true)]
 #[cfg(not(target_arch = "wasm32"))]
 #[case::mmap(false)]
-async fn stress_seek_audio_hls_wav(_tracing_setup: (), #[case] ephemeral: bool) {
+async fn stress_seek_audio_hls_wav(#[case] ephemeral: bool) {
     // Step 1: Generate WAV
     let wav_data = create_saw_wav(TOTAL_BYTES);
     let expected_dur = expected_duration_secs();

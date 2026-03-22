@@ -13,7 +13,7 @@ use std::io::{Read, Seek, SeekFrom};
 
 use kithara_integration_tests::hls_fixture::{HlsStreamBuilder, TestServer};
 use kithara_platform::{time::Duration, tokio::task::spawn_blocking};
-use kithara_test_utils::{TestTempDir, cancel_token, temp_dir, tracing_setup};
+use kithara_test_utils::{TestTempDir, cancel_token, temp_dir};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -35,7 +35,6 @@ const SEGMENT_SIZE: u64 = 200_000;
 #[case(200_000, b"V0-SEG-1:")] // Start of segment 1
 #[case(400_000, b"V0-SEG-2:")] // Start of segment 2
 async fn hls_stream_seek_to_segment_start(
-    _tracing_setup: (),
     temp_dir: TestTempDir,
     cancel_token: CancellationToken,
     #[case] seek_pos: u64,
@@ -70,11 +69,7 @@ async fn hls_stream_seek_to_segment_start(
     timeout(Duration::from_secs(10)),
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
-async fn hls_stream_seek_current(
-    _tracing_setup: (),
-    temp_dir: TestTempDir,
-    cancel_token: CancellationToken,
-) {
+async fn hls_stream_seek_current(temp_dir: TestTempDir, cancel_token: CancellationToken) {
     let server = TestServer::new().await;
     let mut stream = HlsStreamBuilder::new()
         .build(&server, temp_dir.path(), cancel_token)
@@ -109,11 +104,7 @@ async fn hls_stream_seek_current(
     timeout(Duration::from_secs(10)),
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
-async fn hls_stream_multiple_seeks(
-    _tracing_setup: (),
-    temp_dir: TestTempDir,
-    cancel_token: CancellationToken,
-) {
+async fn hls_stream_multiple_seeks(temp_dir: TestTempDir, cancel_token: CancellationToken) {
     let server = TestServer::new().await;
     let mut stream = HlsStreamBuilder::new()
         .build(&server, temp_dir.path(), cancel_token)
@@ -152,7 +143,6 @@ async fn hls_stream_multiple_seeks(
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
 async fn hls_stream_read_all_then_seek_back(
-    _tracing_setup: (),
     temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) {
@@ -209,7 +199,6 @@ async fn hls_stream_read_all_then_seek_back(
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
 async fn hls_with_manual_abr_uses_fixed_variant(
-    _tracing_setup: (),
     temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) {
@@ -240,7 +229,6 @@ async fn hls_with_manual_abr_uses_fixed_variant(
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
 async fn hls_seek_across_all_segments_with_fixed_abr(
-    _tracing_setup: (),
     temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) {
@@ -294,7 +282,6 @@ async fn hls_seek_across_all_segments_with_fixed_abr(
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
 async fn hls_seek_different_variants_return_different_data(
-    _tracing_setup: (),
     temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) {

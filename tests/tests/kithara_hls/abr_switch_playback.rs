@@ -13,7 +13,7 @@ use kithara::{
     stream::Stream,
 };
 use kithara_platform::time::{Duration, Instant, sleep};
-use kithara_test_utils::{TestTempDir, serve_assets, temp_dir, tracing_setup};
+use kithara_test_utils::{TestTempDir, serve_assets, temp_dir};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -29,7 +29,7 @@ use tracing::info;
     timeout(Duration::from_secs(30)),
     env(KITHARA_HANG_TIMEOUT_SECS = "3")
 )]
-async fn abr_switch_real_assets_does_not_hang(_tracing_setup: (), temp_dir: TestTempDir) {
+async fn abr_switch_real_assets_does_not_hang(temp_dir: TestTempDir) {
     let server = serve_assets().await;
     let url = server.url("/hls/master.m3u8");
 
@@ -90,7 +90,6 @@ async fn abr_switch_real_assets_does_not_hang(_tracing_setup: (), temp_dir: Test
 #[case::drm_manual_v0("/drm/master.m3u8", false)]
 #[case::hls_manual_v0("/hls/master.m3u8", false)]
 async fn stream_continues_after_seek(
-    _tracing_setup: (),
     temp_dir: TestTempDir,
     #[case] path: &str,
     #[case] abr_auto: bool,
@@ -181,7 +180,7 @@ async fn stream_continues_after_seek(
     timeout(Duration::from_secs(20)),
     env(KITHARA_HANG_TIMEOUT_SECS = "3")
 )]
-async fn fixed_variant_real_assets_plays_without_hang(_tracing_setup: (), temp_dir: TestTempDir) {
+async fn fixed_variant_real_assets_plays_without_hang(temp_dir: TestTempDir) {
     let server = serve_assets().await;
     let url = server.url("/hls/master.m3u8");
 
@@ -232,7 +231,7 @@ async fn fixed_variant_real_assets_plays_without_hang(_tracing_setup: (), temp_d
     timeout(Duration::from_secs(30)),
     env(KITHARA_HANG_TIMEOUT_SECS = "5")
 )]
-async fn mp3_stream_continues_after_seek(_tracing_setup: (), temp_dir: TestTempDir) {
+async fn mp3_stream_continues_after_seek(temp_dir: TestTempDir) {
     let server = serve_assets().await;
     let url = server.url("/track.mp3");
 

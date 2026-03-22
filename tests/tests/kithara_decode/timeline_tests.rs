@@ -4,7 +4,6 @@ use std::{io::Cursor, time::Duration};
 
 use kithara::decode::{DecoderConfig, DecoderFactory};
 use kithara_integration_tests::audio_fixture::EmbeddedAudio;
-use kithara_platform::tokio;
 
 #[kithara::test]
 fn test_progressive_file_timeline_monotonic() {
@@ -102,7 +101,6 @@ mod hls_timeline {
     use kithara_integration_tests::hls_fixture::{HlsTestServer, HlsTestServerConfig};
     use kithara_test_utils::{TestTempDir, wav::create_saw_wav};
     use tokio_util::sync::CancellationToken;
-    use tracing::Level;
 
     use crate::common::test_defaults::SawWav;
 
@@ -114,17 +112,10 @@ mod hls_timeline {
     #[kithara::test(
         tokio,
         timeout(Duration::from_secs(10)),
-        env(KITHARA_HANG_TIMEOUT_SECS = "1")
+        env(KITHARA_HANG_TIMEOUT_SECS = "1"),
+        tracing("kithara_decode=debug,kithara_hls=debug,kithara_stream=debug")
     )]
     async fn test_hls_timeline_segment_tracking() {
-        let _ = tracing_subscriber::fmt()
-            .with_test_writer()
-            .with_max_level(Level::DEBUG)
-            .with_env_filter(kithara_test_utils::rust_log_filter(
-                "kithara_decode=debug,kithara_hls=debug,kithara_stream=debug",
-            ))
-            .try_init();
-
         // Generate WAV data served as HLS segments
         let wav_data = create_saw_wav(TOTAL_BYTES);
         let segment_duration =

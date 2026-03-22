@@ -39,7 +39,6 @@ use kithara_platform::{
 };
 use kithara_test_utils::{TestHttpServer, TestTempDir};
 use tokio_util::sync::CancellationToken;
-use tracing_subscriber::EnvFilter;
 
 const TOTAL_SIZE: usize = 1_024_000;
 const STREAM_CLOSES_AT: usize = 512_000;
@@ -165,27 +164,17 @@ async fn setup_server(file_data: Vec<u8>) -> (url::Url, Arc<AtomicUsize>, TestHt
     (url, call_count, server)
 }
 
-fn init_tracing() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::default()
-                .add_directive("kithara_file=debug".parse().unwrap())
-                .add_directive("kithara_stream::writer=debug".parse().unwrap())
-                .add_directive("kithara_storage=debug".parse().unwrap()),
-        )
-        .with_test_writer()
-        .try_init();
-}
-
 /// Test: early stream close + seek beyond downloaded data.
 ///
 /// After sequential stream closes at 512KB, seek to 700KB
 /// should trigger on-demand Range request and succeed.
-#[kithara::test(tokio)]
+#[kithara::test(
+    tokio,
+    tracing("kithara_file=debug,kithara_stream::writer=debug,kithara_storage=debug")
+)]
 async fn file_stream_closes_early_seek_still_works() {
     let clean_temp_dir = clean_temp_dir();
     let cancel_token = CancellationToken::new();
-    init_tracing();
 
     let file_data: Vec<u8> = (0..TOTAL_SIZE).map(|i| (i % 256) as u8).collect();
     let (url, _call_count, _server) = setup_server(file_data).await;
@@ -253,10 +242,12 @@ async fn file_stream_closes_early_seek_still_works() {
 ///
 /// Phase 1: download 512KB of 1MB, drop stream.
 /// Phase 2: reopen same URL with same cache dir, seek to 700KB → on-demand Range.
-#[kithara::test(tokio)]
+#[kithara::test(
+    tokio,
+    tracing("kithara_file=debug,kithara_stream::writer=debug,kithara_storage=debug")
+)]
 async fn partial_cache_resume_works() {
     let cache_dir = clean_temp_dir();
-    init_tracing();
 
     let file_data: Vec<u8> = (0..TOTAL_SIZE).map(|i| (i % 256) as u8).collect();
     let (url, _call_count, _server) = setup_server(file_data).await;

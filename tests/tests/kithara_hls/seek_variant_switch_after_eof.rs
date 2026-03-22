@@ -27,7 +27,7 @@ use kithara::{
 };
 use kithara_integration_tests::hls_fixture::{HlsTestServer, HlsTestServerConfig};
 use kithara_platform::{time::Duration, tokio::task::spawn_blocking};
-use kithara_test_utils::{TestTempDir, cancel_token, debug_tracing_setup, temp_dir};
+use kithara_test_utils::{TestTempDir, cancel_token, temp_dir};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -39,10 +39,10 @@ use tracing::info;
     tokio,
     native,
     timeout(Duration::from_secs(10)),
-    env(KITHARA_HANG_TIMEOUT_SECS = "1")
+    env(KITHARA_HANG_TIMEOUT_SECS = "1"),
+    tracing("kithara_hls=debug,kithara_stream=debug,kithara_decode=debug")
 )]
 async fn seek_after_variant_switch_at_eof_must_not_deadlock(
-    _debug_tracing_setup: (),
     temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) {

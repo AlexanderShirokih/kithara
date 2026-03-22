@@ -22,7 +22,7 @@ use kithara_platform::{
     time::Duration,
     tokio::task::{JoinHandle, spawn_blocking},
 };
-use kithara_test_utils::{TestTempDir, tracing_setup, wav::create_test_wav};
+use kithara_test_utils::{TestTempDir, wav::create_test_wav};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -170,7 +170,7 @@ fn generate_wav_data() -> Arc<Vec<u8>> {
     timeout(Duration::from_secs(10)),
     env(KITHARA_HANG_TIMEOUT_SECS = "2")
 )]
-async fn mixed_two_file_two_hls(_tracing_setup: ()) {
+async fn mixed_two_file_two_hls() {
     let wav_data = generate_wav_data();
     let file_server = AudioTestServer::new().await;
 
@@ -273,7 +273,7 @@ async fn mixed_two_file_two_hls(_tracing_setup: ()) {
     timeout(Duration::from_secs(10)),
     env(KITHARA_HANG_TIMEOUT_SECS = "2")
 )]
-async fn mixed_four_file_four_hls(_tracing_setup: ()) {
+async fn mixed_four_file_four_hls() {
     let wav_data = generate_wav_data();
     let file_server = AudioTestServer::new().await;
 
