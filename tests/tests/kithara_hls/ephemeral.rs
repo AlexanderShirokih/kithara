@@ -35,7 +35,7 @@ use kithara_test_utils::wav::create_saw_wav;
 #[cfg(not(target_arch = "wasm32"))]
 use tokio_util::sync::CancellationToken;
 #[cfg(not(target_arch = "wasm32"))]
-use tracing::{Level, info};
+use tracing::info;
 
 #[kithara::test(timeout(Duration::from_secs(5)), env(KITHARA_HANG_TIMEOUT_SECS = "1"))]
 fn ephemeral_backend_creates_mem_resource() {
@@ -111,17 +111,10 @@ fn count_files(dir: &Path) -> usize {
     tokio,
     serial,
     timeout(Duration::from_secs(10)),
-    env(KITHARA_HANG_TIMEOUT_SECS = "1")
+    env(KITHARA_HANG_TIMEOUT_SECS = "1"),
+    tracing("kithara_audio=debug,kithara_decode=debug,kithara_hls=debug,kithara_stream=debug")
 )]
 async fn ephemeral_pipeline_no_disk_writes() {
-    let _ = tracing_subscriber::fmt()
-        .with_test_writer()
-        .with_max_level(Level::DEBUG)
-        .with_env_filter(kithara_test_utils::rust_log_filter(
-            "kithara_audio=debug,kithara_decode=debug,kithara_hls=debug,kithara_stream=debug",
-        ))
-        .try_init();
-
     // Generate saw-tooth WAV
     let wav_data = create_saw_wav(TOTAL_BYTES);
     info!(total_bytes = TOTAL_BYTES, "Generated saw-tooth WAV");

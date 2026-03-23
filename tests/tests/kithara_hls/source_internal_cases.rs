@@ -28,7 +28,7 @@ use kithara_stream::{
     AudioCodec, ReadOutcome, Source, SourcePhase, StreamError, Timeline, Topology,
     TransferCoordination,
 };
-use kithara_test_utils::{kithara, tracing_setup};
+use kithara_test_utils::kithara;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -1859,7 +1859,7 @@ async fn test_wait_range_missing_metadata_fails_fast_with_diagnostic() {
     timeout(Duration::from_secs(5)),
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
-async fn test_wait_range_stalled_on_demand_request_is_interrupted_by_flush(_tracing_setup: ()) {
+async fn test_wait_range_stalled_on_demand_request_is_interrupted_by_flush() {
     let cancel = CancellationToken::new();
     let ps = playlist_state_with_size_maps();
     let shared = Arc::new(SharedSegments::new(cancel.clone(), ps, Timeline::new()));

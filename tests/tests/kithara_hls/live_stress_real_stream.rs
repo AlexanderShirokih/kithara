@@ -23,7 +23,6 @@ use kithara_platform::{time::Instant, tokio};
 use kithara_test_utils::{TestTempDir, Xorshift64, serve_assets, temp_dir};
 use tokio::{sync::broadcast::error::RecvError, task::spawn, time::timeout};
 use tracing::info;
-use tracing_subscriber::EnvFilter;
 
 const NEXT_CHUNK_TIMEOUT_MS: u64 = 90_000;
 const WASM_NEXT_CHUNK_TIMEOUT_MS: u64 = 45_000;
@@ -97,42 +96,6 @@ async fn wait_for_next_chunk() {
 #[cfg(not(target_arch = "wasm32"))]
 async fn wait_for_next_chunk() {
     sleep(Duration::from_millis(5)).await;
-}
-
-#[kithara::fixture]
-fn live_hls_filter() -> EnvFilter {
-    EnvFilter::new(kithara_test_utils::rust_log_filter(
-        "kithara_audio=info,kithara_hls=info",
-    ))
-}
-
-#[kithara::fixture]
-fn live_hls_stream_filter() -> EnvFilter {
-    EnvFilter::new(kithara_test_utils::rust_log_filter(
-        "kithara_audio=info,kithara_hls=info,kithara_stream=info",
-    ))
-}
-
-#[kithara::fixture]
-fn live_hls_tracing_setup(live_hls_filter: EnvFilter) {
-    kithara_test_utils::init_tracing(live_hls_filter);
-}
-
-#[kithara::fixture]
-fn live_hls_stream_tracing_setup(live_hls_stream_filter: EnvFilter) {
-    kithara_test_utils::init_tracing(live_hls_stream_filter);
-}
-
-#[kithara::fixture]
-fn live_hls_seek_debug_filter() -> EnvFilter {
-    EnvFilter::new(kithara_test_utils::rust_log_filter(
-        "kithara_audio=info,kithara_audio::pipeline::source=debug,kithara_hls=debug,kithara_stream=debug",
-    ))
-}
-
-#[kithara::fixture]
-fn live_hls_seek_debug_setup(live_hls_seek_debug_filter: EnvFilter) {
-    kithara_test_utils::init_tracing(live_hls_seek_debug_filter);
 }
 
 #[derive(Default)]
@@ -250,9 +213,10 @@ async fn next_chunk_with_timeout(
     browser,
     serial,
     timeout(browser_timeout(60, 75)),
-    env(KITHARA_HANG_TIMEOUT_SECS = "3")
+    env(KITHARA_HANG_TIMEOUT_SECS = "3"),
+    tracing("kithara_audio=info,kithara_hls=info,kithara_stream=info")
 )]
-async fn live_real_drm_playback_smoke(_live_hls_stream_tracing_setup: (), temp_dir: TestTempDir) {
+async fn live_real_drm_playback_smoke(temp_dir: TestTempDir) {
     let server = serve_assets().await;
     let url = server.url("/drm/master.m3u8");
     info!(%url, "starting real DRM playback smoke");
@@ -303,12 +267,14 @@ async fn live_real_drm_playback_smoke(_live_hls_stream_tracing_setup: (), temp_d
     browser,
     serial,
     timeout(browser_timeout(90, 120)),
-    env(KITHARA_HANG_TIMEOUT_SECS = "3")
+    env(KITHARA_HANG_TIMEOUT_SECS = "3"),
+    tracing(
+        "kithara_audio=info,kithara_audio::pipeline::source=debug,kithara_hls=debug,kithara_stream=debug"
+    )
 )]
 #[case::hls("/hls/master.m3u8", "HLS")]
 #[case::drm("/drm/master.m3u8", "DRM")]
 async fn live_ephemeral_revisit_sequence_regression(
-    _live_hls_seek_debug_setup: (),
     #[case] path: &str,
     #[case] label: &str,
     temp_dir: TestTempDir,
@@ -452,12 +418,12 @@ async fn live_ephemeral_revisit_sequence_regression(
     native,
     serial,
     timeout(Duration::from_secs(90)),
-    env(KITHARA_HANG_TIMEOUT_SECS = "3")
+    env(KITHARA_HANG_TIMEOUT_SECS = "3"),
+    tracing("kithara_audio=info,kithara_hls=info,kithara_stream=info")
 )]
 #[case::hls("/hls/master.m3u8", "HLS")]
 #[case::drm("/drm/master.m3u8", "DRM")]
 async fn live_real_stream_fixed_seek_window_regression(
-    _live_hls_stream_tracing_setup: (),
     #[case] path: &str,
     #[case] label: &str,
     temp_dir: TestTempDir,
@@ -572,12 +538,12 @@ async fn live_real_stream_fixed_seek_window_regression(
     native,
     serial,
     timeout(Duration::from_secs(120)),
-    env(KITHARA_HANG_TIMEOUT_SECS = "3")
+    env(KITHARA_HANG_TIMEOUT_SECS = "3"),
+    tracing("kithara_audio=info,kithara_hls=info,kithara_stream=info")
 )]
 #[case::hls("/hls/master.m3u8", "HLS")]
 #[case::drm("/drm/master.m3u8", "DRM")]
 async fn live_real_stream_random_seek_prefix_regression(
-    _live_hls_stream_tracing_setup: (),
     #[case] path: &str,
     #[case] label: &str,
     temp_dir: TestTempDir,
@@ -687,12 +653,14 @@ async fn live_real_stream_random_seek_prefix_regression(
     native,
     serial,
     timeout(Duration::from_secs(90)),
-    env(KITHARA_HANG_TIMEOUT_SECS = "3")
+    env(KITHARA_HANG_TIMEOUT_SECS = "3"),
+    tracing(
+        "kithara_audio=info,kithara_audio::pipeline::source=debug,kithara_hls=debug,kithara_stream=debug"
+    )
 )]
 #[case::hls("/hls/master.m3u8", "HLS")]
 #[case::drm("/drm/master.m3u8", "DRM")]
 async fn live_real_stream_seek_resume_native(
-    _live_hls_seek_debug_setup: (),
     #[case] path: &str,
     #[case] label: &str,
     temp_dir: TestTempDir,
@@ -760,7 +728,8 @@ async fn live_real_stream_seek_resume_native(
     browser,
     serial,
     timeout(browser_timeout(300, 360)),
-    env(KITHARA_HANG_TIMEOUT_SECS = "3")
+    env(KITHARA_HANG_TIMEOUT_SECS = "3"),
+    tracing("kithara_audio=info,kithara_hls=info")
 )]
 #[case::hls_ephemeral("/hls/master.m3u8", "HLS", true)]
 #[case::drm_ephemeral("/drm/master.m3u8", "DRM", true)]
@@ -773,7 +742,6 @@ async fn live_real_stream_seek_resume_native(
     case::drm_mmap("/drm/master.m3u8", "DRM", false)
 )]
 async fn live_stress_real_stream_seek_read_cache(
-    _live_hls_tracing_setup: (),
     #[case] path: &str,
     #[case] label: &str,
     #[case] ephemeral: bool,
@@ -1073,12 +1041,12 @@ async fn live_stress_real_stream_seek_read_cache(
     browser,
     serial,
     timeout(browser_timeout(90, 120)),
-    env(KITHARA_HANG_TIMEOUT_SECS = "3")
+    env(KITHARA_HANG_TIMEOUT_SECS = "3"),
+    tracing("kithara_audio=info,kithara_hls=info,kithara_stream=info")
 )]
 #[case::hls("/hls/master.m3u8", "HLS")]
 #[case::drm("/drm/master.m3u8", "DRM")]
 async fn live_ephemeral_small_cache_playback(
-    _live_hls_stream_tracing_setup: (),
     #[case] path: &str,
     #[case] label: &str,
     temp_dir: TestTempDir,
@@ -1133,12 +1101,12 @@ async fn live_ephemeral_small_cache_playback(
     browser,
     serial,
     timeout(browser_timeout(90, 120)),
-    env(KITHARA_HANG_TIMEOUT_SECS = "3")
+    env(KITHARA_HANG_TIMEOUT_SECS = "3"),
+    tracing("kithara_audio=info,kithara_hls=info,kithara_stream=info")
 )]
 #[case::hls("/hls/master.m3u8", "HLS")]
 #[case::drm("/drm/master.m3u8", "DRM")]
 async fn live_ephemeral_small_cache_seek_stress(
-    _live_hls_stream_tracing_setup: (),
     #[case] path: &str,
     #[case] label: &str,
     temp_dir: TestTempDir,

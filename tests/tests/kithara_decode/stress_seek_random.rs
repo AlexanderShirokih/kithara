@@ -7,10 +7,7 @@
 //! Deterministic xorshift64 PRNG guarantees reproducibility.
 //! No network required.
 
-use std::{
-    fs::{self, File as FsFile},
-    io::{self, Write},
-};
+use std::{fs::File as FsFile, io::Write};
 
 use kithara::{
     audio::{Audio, AudioConfig},
@@ -21,7 +18,6 @@ use kithara_platform::{time::Duration, tokio::task::spawn_blocking};
 use kithara_test_utils::{Xorshift64, wav::create_test_wav};
 use tempfile::NamedTempFile;
 use tracing::info;
-use tracing_subscriber::EnvFilter;
 
 use crate::common::test_defaults::SawWav;
 
@@ -31,18 +27,6 @@ const SAMPLE_COUNT: usize = (D.sample_rate as f64 * DURATION_SECS) as usize;
 const SEEK_ITERATIONS: usize = 1000;
 
 // Stress Test
-
-#[kithara::fixture]
-fn debug_filter() -> EnvFilter {
-    EnvFilter::new(kithara_test_utils::rust_log_filter(
-        "kithara_audio=debug,kithara_decode=debug,kithara_stream=debug",
-    ))
-}
-
-#[kithara::fixture]
-fn tracing_setup(debug_filter: EnvFilter) {
-    kithara_test_utils::init_tracing(debug_filter);
-}
 
 /// 1000 random seek+read cycles with data verification.
 ///
@@ -58,11 +42,10 @@ fn tracing_setup(debug_filter: EnvFilter) {
     native,
     serial,
     timeout(Duration::from_secs(10)),
-    env(KITHARA_HANG_TIMEOUT_SECS = "1")
+    env(KITHARA_HANG_TIMEOUT_SECS = "1"),
+    tracing("kithara_audio=debug,kithara_decode=debug,kithara_stream=debug")
 )]
-async fn stress_random_seek_read_synthetic_wav(tracing_setup: ()) {
-    let _ = tracing_setup;
-
+async fn stress_random_seek_read_synthetic_wav() {
     // Step 1: Create synthetic WAV
     let wav_data = create_test_wav(SAMPLE_COUNT, 44100, 2);
     let wav_size_mb = wav_data.len() as f64 / 1_000_000.0;

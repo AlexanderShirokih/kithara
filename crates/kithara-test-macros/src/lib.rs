@@ -19,6 +19,7 @@ use syn::{
     punctuated::Punctuated,
 };
 
+#[derive(Default)]
 struct TestArgs {
     is_tokio: bool,
     is_wasm_only: bool,
@@ -32,22 +33,66 @@ struct TestArgs {
     /// Substring patterns for soft-fail: if a panic message contains any of
     /// these (case-insensitive), the test prints a warning instead of failing.
     soft_fail_patterns: Vec<String>,
+    tracing_filter: Option<String>,
+}
+
+impl TestArgs {
+    fn validate(&mut self) -> syn::Result<()> {
+        Self::check_exclusive(self.is_tokio, "tokio", self.is_wasm_only, "wasm")?;
+        Self::check_exclusive(self.is_wasm_only, "wasm", self.is_native_only, "native")?;
+        Self::check_exclusive(self.is_browser, "browser", self.is_wasm_only, "wasm")?;
+        Self::check_exclusive(self.is_selenium, "selenium", self.is_wasm_only, "wasm")?;
+        Self::check_exclusive(self.is_selenium, "selenium", self.is_browser, "browser")?;
+
+        // selenium implies native + tokio + serial + multi_thread
+        if self.is_selenium {
+            self.is_native_only = true;
+            self.is_tokio = true;
+            self.is_serial = true;
+            self.is_multi_thread = true;
+        }
+
+        if self.is_multi_thread && !self.is_tokio {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "`multi_thread` requires `tokio` (or `selenium` which implies it)",
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn check_exclusive(a: bool, a_name: &str, b: bool, b_name: &str) -> syn::Result<()> {
+        if a && b {
+            Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!("`{a_name}` and `{b_name}` are mutually exclusive"),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn parse_comma_separated<T>(
+    input: ParseStream<'_>,
+    mut parse_item: impl FnMut(ParseStream<'_>) -> syn::Result<T>,
+) -> syn::Result<Vec<T>> {
+    let content;
+    syn::parenthesized!(content in input);
+    let mut items = Vec::new();
+    while !content.is_empty() {
+        items.push(parse_item(&content)?);
+        if !content.is_empty() {
+            content.parse::<Token![,]>()?;
+        }
+    }
+    Ok(items)
 }
 
 impl Parse for TestArgs {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let mut args = Self {
-            is_tokio: false,
-            is_wasm_only: false,
-            is_native_only: false,
-            is_browser: false,
-            is_serial: false,
-            is_selenium: false,
-            is_multi_thread: false,
-            timeout: None,
-            env_vars: Vec::new(),
-            soft_fail_patterns: Vec::new(),
-        };
+        let mut args = Self::default();
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
@@ -65,34 +110,30 @@ impl Parse for TestArgs {
                     args.timeout = Some(content.parse()?);
                 }
                 "env" => {
-                    let content;
-                    syn::parenthesized!(content in input);
-                    while !content.is_empty() {
+                    args.env_vars = parse_comma_separated(input, |content| {
                         let key: Ident = content.parse()?;
                         content.parse::<Token![=]>()?;
                         let value: syn::LitStr = content.parse()?;
-                        args.env_vars.push((key.to_string(), value.value()));
-                        if !content.is_empty() {
-                            content.parse::<Token![,]>()?;
-                        }
-                    }
+                        Ok((key.to_string(), value.value()))
+                    })?;
                 }
                 "soft_fail" => {
-                    let content;
-                    syn::parenthesized!(content in input);
-                    while !content.is_empty() {
+                    args.soft_fail_patterns = parse_comma_separated(input, |content| {
                         let pattern: syn::LitStr = content.parse()?;
-                        args.soft_fail_patterns.push(pattern.value());
-                        if !content.is_empty() {
-                            content.parse::<Token![,]>()?;
-                        }
-                    }
+                        Ok(pattern.value())
+                    })?;
                     if args.soft_fail_patterns.is_empty() {
                         return Err(syn::Error::new(
                             ident.span(),
                             "soft_fail requires at least one pattern string",
                         ));
                     }
+                }
+                "tracing" => {
+                    let content;
+                    syn::parenthesized!(content in input);
+                    let value: syn::LitStr = content.parse()?;
+                    args.tracing_filter = Some(value.value());
                 }
                 other => {
                     return Err(syn::Error::new(
@@ -106,56 +147,7 @@ impl Parse for TestArgs {
             }
         }
 
-        if args.is_tokio && args.is_wasm_only {
-            return Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "`tokio` and `wasm` are mutually exclusive",
-            ));
-        }
-
-        if args.is_wasm_only && args.is_native_only {
-            return Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "`wasm` and `native` are mutually exclusive",
-            ));
-        }
-
-        if args.is_browser && args.is_wasm_only {
-            return Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "`browser` and `wasm` are mutually exclusive (`browser` already implies wasm)",
-            ));
-        }
-
-        if args.is_selenium && args.is_wasm_only {
-            return Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "`selenium` and `wasm` are mutually exclusive (selenium runs on native only)",
-            ));
-        }
-
-        if args.is_selenium && args.is_browser {
-            return Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "`selenium` and `browser` are mutually exclusive",
-            ));
-        }
-
-        // selenium implies native + tokio + serial + multi_thread
-        if args.is_selenium {
-            args.is_native_only = true;
-            args.is_tokio = true;
-            args.is_serial = true;
-            args.is_multi_thread = true;
-        }
-
-        if args.is_multi_thread && !args.is_tokio {
-            return Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "`multi_thread` requires `tokio` (or `selenium` which implies it)",
-            ));
-        }
-
+        args.validate()?;
         Ok(args)
     }
 }
@@ -247,7 +239,7 @@ fn make_preamble(params: &[ParamInfo], case_values: Option<&[Expr]>) -> TokenStr
         let name = &p.name;
         let ty = &p.ty;
         // Strip leading `_` from fixture name to find the actual function.
-        // e.g. `_tracing_setup: ()` calls `tracing_setup()`.
+        // e.g. `_temp_dir: TestTempDir` calls `temp_dir()`.
         let fn_name = {
             let s = name.to_string();
             let trimmed = s.trim_start_matches('_');
@@ -318,6 +310,17 @@ fn make_runtime_builder(args: &TestArgs) -> TokenStream2 {
                 .build()
                 .expect("kithara test runtime")
         }
+    }
+}
+
+fn make_tracing_init(args: &TestArgs) -> TokenStream2 {
+    match &args.tracing_filter {
+        Some(filter) => quote! {
+            ::kithara_test_utils::setup_tracing_with_filter(#filter);
+        },
+        None => quote! {
+            ::kithara_test_utils::setup_tracing();
+        },
     }
 }
 
@@ -783,7 +786,8 @@ fn emit_one_test(
     body_stmts: &[syn::Stmt],
     args: &TestArgs,
 ) -> TokenStream2 {
-    let full = quote! { #preamble #(#body_stmts)* };
+    let tracing_init = make_tracing_init(args);
+    let full = quote! { #tracing_init #preamble #(#body_stmts)* };
     let serial_attr = make_serial_attr(args);
 
     // Async + timeout on native: use manual runtime for clean shutdown.
@@ -862,11 +866,13 @@ fn emit_browser_test(
 ) -> TokenStream2 {
     let mut output = TokenStream2::new();
     let serial_attr = make_serial_attr(args);
+    let tracing_init = make_tracing_init(args);
 
     output.extend(make_dedicated_worker_config());
 
     // WASM side: always async, with tokio::ensure_thread_pool init
     let wasm_body = quote! {
+        #tracing_init
         kithara_platform::tokio::ensure_thread_pool().await;
         #preamble
         #(#body_stmts)*
@@ -883,7 +889,7 @@ fn emit_browser_test(
     // Native side (only for dual-platform: native+browser or tokio+browser)
     if !browser_only {
         let native_is_async = is_async || args.is_tokio;
-        let native_body = quote! { #preamble #(#body_stmts)* };
+        let native_body = quote! { #tracing_init #preamble #(#body_stmts)* };
 
         // Async + timeout: use manual runtime (same reason as emit_one_test)
         if native_is_async && args.timeout.is_some() {
@@ -939,6 +945,7 @@ fn emit_browser_test(
 /// #[kithara::test(timeout(Duration::from_secs(5)))]    // sync + timeout
 /// #[kithara::test(tokio, timeout(Duration::from_secs(5)))]  // async + timeout
 /// #[kithara::test(env(NO_PROXY = "host.example.com"))] // set env vars
+/// #[kithara::test(tracing("kithara_hls=debug,kithara_stream=debug"))] // custom tracing filter
 /// #[kithara::test(soft_fail("connection", "refused"))] // soft-fail on matching panics
 /// #[kithara::test(tokio, serial)]                      // serial execution (no parallel)
 /// #[kithara::test(tokio, multi_thread)]                 // multi-thread tokio runtime
@@ -949,6 +956,11 @@ fn emit_browser_test(
 /// ## `env`
 ///
 /// `env(KEY = "value")` sets environment variables before the test body runs.
+///
+/// ## `tracing`
+///
+/// `tracing("directives")` initializes tracing with a custom `EnvFilter`
+/// directive string. When omitted, tests default to `warn`.
 ///
 /// ## `soft_fail`
 ///
@@ -1012,7 +1024,8 @@ fn generate(args: TestArgs, func: ItemFn) -> syn::Result<TokenStream2> {
         let worker_config = make_dedicated_worker_config();
         if cases.is_empty() {
             let preamble = make_preamble(&params, None);
-            let full = quote! { { #preamble #(#body_stmts)* } };
+            let tracing_init = make_tracing_init(&args);
+            let full = quote! { { #tracing_init #preamble #(#body_stmts)* } };
             let with_timeout = wrap_with_timeout(&full, &args.timeout, true, fn_name);
             let wrapped = finalize_body(&with_timeout, &args, fn_name, true);
             return Ok(quote! {
@@ -1031,7 +1044,8 @@ fn generate(args: TestArgs, func: ItemFn) -> syn::Result<TokenStream2> {
                 None => format_ident!("{}_case_{}", fn_name, i + 1),
             };
             let preamble = make_preamble(&params, Some(&case.values));
-            let full = quote! { { #preamble #(#body_stmts)* } };
+            let tracing_init = make_tracing_init(&args);
+            let full = quote! { { #tracing_init #preamble #(#body_stmts)* } };
             let with_timeout = wrap_with_timeout(&full, &args.timeout, true, &case_name);
             let wrapped = finalize_body(&with_timeout, &args, &case_name, true);
             tests.extend(quote! {
@@ -1051,7 +1065,8 @@ fn generate(args: TestArgs, func: ItemFn) -> syn::Result<TokenStream2> {
 
         if cases.is_empty() {
             let preamble = make_preamble(&params, None);
-            let full = quote! { #preamble #(#body_stmts)* };
+            let tracing_init = make_tracing_init(&args);
+            let full = quote! { #tracing_init #preamble #(#body_stmts)* };
 
             // Async + timeout: manual runtime
             if native_is_async && args.timeout.is_some() {
@@ -1097,7 +1112,8 @@ fn generate(args: TestArgs, func: ItemFn) -> syn::Result<TokenStream2> {
                 None => format_ident!("{}_case_{}", fn_name, i + 1),
             };
             let preamble = make_preamble(&params, Some(&case.values));
-            let full = quote! { #preamble #(#body_stmts)* };
+            let tracing_init = make_tracing_init(&args);
+            let full = quote! { #tracing_init #preamble #(#body_stmts)* };
 
             // Async + timeout: manual runtime (per case)
             if native_is_async && args.timeout.is_some() {

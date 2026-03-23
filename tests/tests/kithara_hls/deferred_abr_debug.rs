@@ -12,7 +12,7 @@ use kithara::{
 };
 use kithara_integration_tests::hls_fixture::TestServer;
 use kithara_platform::{time::Duration, tokio::task::spawn_blocking};
-use kithara_test_utils::{TestTempDir, cancel_token, debug_tracing_setup, temp_dir};
+use kithara_test_utils::{TestTempDir, cancel_token, temp_dir};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -21,13 +21,10 @@ use tracing::info;
     tokio,
     native,
     timeout(Duration::from_secs(15)),
-    env(KITHARA_HANG_TIMEOUT_SECS = "1")
+    env(KITHARA_HANG_TIMEOUT_SECS = "1"),
+    tracing("kithara_hls=debug,kithara_stream=debug,kithara_decode=debug")
 )]
-async fn debug_sequential_read(
-    _debug_tracing_setup: (),
-    temp_dir: TestTempDir,
-    cancel_token: CancellationToken,
-) {
+async fn debug_sequential_read(temp_dir: TestTempDir, cancel_token: CancellationToken) {
     info!("=== Starting debug_sequential_read test ===");
 
     let server = TestServer::new().await;

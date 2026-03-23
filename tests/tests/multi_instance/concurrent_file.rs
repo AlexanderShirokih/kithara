@@ -15,7 +15,7 @@ use kithara_integration_tests::audio_fixture::AudioTestServer;
 #[cfg(target_arch = "wasm32")]
 use kithara_platform::thread;
 use kithara_platform::{time::Duration, tokio::task::spawn_blocking};
-use kithara_test_utils::{TestTempDir, tracing_setup};
+use kithara_test_utils::TestTempDir;
 use tracing::info;
 
 #[cfg(target_arch = "wasm32")]
@@ -119,7 +119,7 @@ fn assert_consistent_counts(results: &[(usize, u64)]) {
     timeout(Duration::from_secs(20)),
     env(KITHARA_HANG_TIMEOUT_SECS = "2")
 )]
-async fn two_file_instances(_tracing_setup: ()) {
+async fn two_file_instances() {
     let server = AudioTestServer::new().await;
 
     let mut handles = Vec::new();
@@ -158,7 +158,7 @@ async fn two_file_instances(_tracing_setup: ()) {
     timeout(Duration::from_secs(20)),
     env(KITHARA_HANG_TIMEOUT_SECS = "2")
 )]
-async fn four_file_instances(_tracing_setup: ()) {
+async fn four_file_instances() {
     let server = AudioTestServer::new().await;
 
     let mut handles = Vec::new();
@@ -197,7 +197,7 @@ async fn four_file_instances(_tracing_setup: ()) {
     timeout(Duration::from_secs(20)),
     env(KITHARA_HANG_TIMEOUT_SECS = "2")
 )]
-async fn eight_file_instances(_tracing_setup: ()) {
+async fn eight_file_instances() {
     let server = AudioTestServer::new().await;
 
     let mut handles = Vec::new();

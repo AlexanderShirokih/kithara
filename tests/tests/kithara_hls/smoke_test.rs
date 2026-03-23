@@ -13,7 +13,7 @@ use kithara_platform::{
     time::{Duration, sleep, timeout},
     tokio::{sync::oneshot, task::spawn},
 };
-use kithara_test_utils::{TestTempDir, temp_dir, tracing_setup};
+use kithara_test_utils::{TestTempDir, temp_dir};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use url::Url;
@@ -27,7 +27,6 @@ use url::Url;
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
 async fn test_hls_session_creation(
-    _tracing_setup: (),
     temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn StdError + Send + Sync>> {
     let server = TestServer::new().await;
@@ -79,7 +78,6 @@ async fn test_hls_session_creation(
 #[case::plain(false)]
 #[case::with_init(true)]
 async fn test_hls_stream_creation(
-    _tracing_setup: (),
     temp_dir: TestTempDir,
     #[case] with_init: bool,
 ) -> Result<(), Box<dyn StdError + Send + Sync>> {
@@ -107,7 +105,6 @@ async fn test_hls_stream_creation(
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
 async fn test_hls_session_events_consumption(
-    _tracing_setup: (),
     temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn StdError + Send + Sync>> {
     let server = TestServer::new().await;
@@ -151,7 +148,6 @@ async fn test_hls_session_events_consumption(
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
 async fn test_hls_invalid_url_handling(
-    _tracing_setup: (),
     temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn StdError + Send + Sync>> {
     // Test with invalid URL
@@ -181,7 +177,6 @@ async fn test_hls_invalid_url_handling(
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
 async fn test_hls_session_drop_cleanup(
-    _tracing_setup: (),
     temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn StdError + Send + Sync>> {
     let server = TestServer::new().await;

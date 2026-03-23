@@ -18,7 +18,6 @@ use kithara_platform::{
 };
 use kithara_test_utils::{TestTempDir, Xorshift64, serve_assets, temp_dir};
 use tracing::info;
-use tracing_subscriber::EnvFilter;
 
 const NEXT_CHUNK_TIMEOUT_MS: u64 = 10_000;
 const WARMUP_TIMEOUT_SECS: u64 = 2;
@@ -29,18 +28,6 @@ const CHUNKS_PER_RANDOM_SEEK: usize = 2;
 const FAST_SEEK_BURST: usize = 64;
 const SEQUENTIAL_CHUNKS_AFTER_BURST: usize = 48;
 const REVISIT_SEEKS: usize = 64;
-
-#[kithara::fixture]
-fn live_tracing_filter() -> EnvFilter {
-    EnvFilter::new(kithara_test_utils::rust_log_filter(
-        "kithara_audio=info,kithara_file=info",
-    ))
-}
-
-#[kithara::fixture]
-fn live_tracing_setup(live_tracing_filter: EnvFilter) {
-    kithara_test_utils::init_tracing(live_tracing_filter);
-}
 
 #[derive(Default)]
 struct LiveStats {
@@ -102,7 +89,8 @@ async fn next_chunk_with_timeout(
     browser,
     serial,
     timeout(Duration::from_secs(10)),
-    env(KITHARA_HANG_TIMEOUT_SECS = "1")
+    env(KITHARA_HANG_TIMEOUT_SECS = "1"),
+    tracing("kithara_audio=info,kithara_file=info")
 )]
 #[cfg_attr(
     target_arch = "wasm32",
@@ -110,11 +98,7 @@ async fn next_chunk_with_timeout(
 )]
 #[cfg_attr(not(target_arch = "wasm32"), case::mmap(false))]
 #[case::ephemeral(true)]
-async fn live_stress_real_mp3_seek_read_cache(
-    _live_tracing_setup: (),
-    #[case] ephemeral: bool,
-    temp_dir: TestTempDir,
-) {
+async fn live_stress_real_mp3_seek_read_cache(#[case] ephemeral: bool, temp_dir: TestTempDir) {
     let server = serve_assets().await;
     let url = server.url("/track.mp3");
     let mut store = StoreOptions::new(temp_dir.path());

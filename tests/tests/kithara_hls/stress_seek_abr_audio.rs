@@ -20,7 +20,7 @@ use kithara::{
 };
 use kithara_integration_tests::hls_fixture::{HlsTestServer, HlsTestServerConfig};
 use kithara_platform::{time::Instant, tokio::task::spawn_blocking};
-use kithara_test_utils::{TestTempDir, Xorshift64, fixture_protocol::DelayRule, tracing_setup};
+use kithara_test_utils::{TestTempDir, Xorshift64, fixture_protocol::DelayRule};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -165,7 +165,7 @@ fn detect_direction(buf: &[f32], channels: usize) -> Direction {
     timeout(Duration::from_secs(30)),
     env(KITHARA_HANG_TIMEOUT_SECS = "3")
 )]
-async fn stress_seek_abr_audio(_tracing_setup: ()) {
+async fn stress_seek_abr_audio() {
     // Generate WAV data for two variants
     let init_segment = Arc::new(create_wav_init_segment());
     let v0_pcm = Arc::new(create_pcm_segments(ascending_sample));

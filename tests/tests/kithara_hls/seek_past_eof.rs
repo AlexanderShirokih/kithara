@@ -21,7 +21,7 @@ use kithara::{
 };
 use kithara_integration_tests::hls_fixture::{HlsTestServer, HlsTestServerConfig};
 use kithara_platform::{time::Duration, tokio::task::spawn_blocking};
-use kithara_test_utils::{TestTempDir, cancel_token, debug_tracing_setup, temp_dir};
+use kithara_test_utils::{TestTempDir, cancel_token, temp_dir};
 use tokio_util::sync::CancellationToken;
 
 // Constants
@@ -53,10 +53,10 @@ const ACTUAL_TOTAL: u64 = (ACTUAL_SEGMENT_SIZE * NUM_SEGMENTS) as u64; // 600_00
     tokio,
     browser,
     timeout(Duration::from_secs(15)),
-    env(KITHARA_HANG_TIMEOUT_SECS = "1")
+    env(KITHARA_HANG_TIMEOUT_SECS = "1"),
+    tracing("kithara_hls=debug,kithara_stream=debug,kithara_decode=debug")
 )]
 async fn seek_beyond_head_total_within_actual_total(
-    _debug_tracing_setup: (),
     temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) {

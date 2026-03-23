@@ -27,7 +27,7 @@ use kithara_platform::{
 };
 use kithara_test_utils::{TestTempDir, Xorshift64};
 use tokio_util::sync::CancellationToken;
-use tracing::{Level, info};
+use tracing::info;
 
 /// Random seek+read cycles with exact byte verification on HLS stream.
 ///
@@ -48,7 +48,8 @@ use tracing::{Level, info};
     } else {
         Duration::from_secs(120)
     }),
-    env(KITHARA_HANG_TIMEOUT_SECS = "1")
+    env(KITHARA_HANG_TIMEOUT_SECS = "1"),
+    tracing("kithara_hls=debug,kithara_stream=debug")
 )]
 #[case::small(50_000, 20, 200, false, false)]
 #[case::medium(100_000, 50, 500, false, false)]
@@ -79,14 +80,6 @@ async fn stress_random_seek_read_hls(
     } else {
         seek_iterations
     };
-
-    let _ = tracing_subscriber::fmt()
-        .with_test_writer()
-        .with_max_level(Level::DEBUG)
-        .with_env_filter(kithara_test_utils::rust_log_filter(
-            "kithara_hls=debug,kithara_stream=debug",
-        ))
-        .try_init();
 
     // Init data
     let init_data_per_variant = if with_init {

@@ -27,7 +27,7 @@ use kithara_integration_tests::hls_fixture::abr::{AbrTestServer, master_playlist
 use kithara_platform::{time::sleep, tokio::task::spawn_blocking};
 use kithara_test_utils::{TestTempDir, temp_dir};
 use tokio_util::sync::CancellationToken;
-use tracing::{Level, info};
+use tracing::info;
 
 /// Test that ABR variant switch does not cause byte reading glitches.
 ///
@@ -46,20 +46,12 @@ use tracing::{Level, info};
     native,
     tokio,
     timeout(Duration::from_secs(10)),
-    env(KITHARA_HANG_TIMEOUT_SECS = "1")
+    env(KITHARA_HANG_TIMEOUT_SECS = "1"),
+    tracing("kithara_decode=debug,kithara_hls=debug")
 )]
 async fn test_abr_variant_switch_no_byte_glitches(
     temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    // Initialize tracing for debug output
-    let _ = tracing_subscriber::fmt()
-        .with_test_writer()
-        .with_max_level(Level::DEBUG)
-        .with_env_filter(kithara_test_utils::rust_log_filter(
-            "kithara_decode=debug,kithara_hls=debug",
-        ))
-        .try_init();
-
     // Create test server with ABR-triggering configuration:
     // - variant 0: 256 kbps
     // - variant 1: 512 kbps
@@ -201,16 +193,12 @@ async fn test_abr_variant_switch_no_byte_glitches(
     native,
     tokio,
     timeout(Duration::from_secs(10)),
-    env(KITHARA_HANG_TIMEOUT_SECS = "1")
+    env(KITHARA_HANG_TIMEOUT_SECS = "1"),
+    tracing("info")
 )]
 async fn test_basic_multi_segment_reading(
     temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let _ = tracing_subscriber::fmt()
-        .with_test_writer()
-        .with_max_level(Level::INFO)
-        .try_init();
-
     let server = AbrTestServer::new(
         master_playlist(256_000, 512_000, 1_024_000),
         false,                    // binary mode
@@ -275,16 +263,12 @@ async fn test_basic_multi_segment_reading(
     native,
     tokio,
     timeout(Duration::from_secs(10)),
-    env(KITHARA_HANG_TIMEOUT_SECS = "1")
+    env(KITHARA_HANG_TIMEOUT_SECS = "1"),
+    tracing("debug")
 )]
 async fn test_abr_variant_switch_with_seek_backward(
     temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let _ = tracing_subscriber::fmt()
-        .with_test_writer()
-        .with_max_level(Level::DEBUG)
-        .try_init();
-
     let server = AbrTestServer::new(
         master_playlist(256_000, 512_000, 1_024_000),
         true,                   // text mode for parsing

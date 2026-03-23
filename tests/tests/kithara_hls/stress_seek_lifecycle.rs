@@ -26,7 +26,7 @@ use kithara_integration_tests::hls_fixture::{HlsTestServer, HlsTestServerConfig}
 use kithara_platform::{thread, time::Instant, tokio::task::spawn_blocking};
 use kithara_test_utils::{TestTempDir, Xorshift64, fixture_protocol::DelayRule};
 use tokio_util::sync::CancellationToken;
-use tracing::{Level, info, warn};
+use tracing::{info, warn};
 
 use crate::common::test_defaults::SawWav;
 
@@ -159,20 +159,13 @@ fn read_with_retry(audio: &mut Audio<Stream<Hls>>, buf: &mut [f32]) -> (usize, u
     native,
     serial,
     timeout(Duration::from_secs(60)),
-    env(KITHARA_HANG_TIMEOUT_SECS = "5")
+    env(KITHARA_HANG_TIMEOUT_SECS = "5"),
+    tracing("kithara_audio=debug,kithara_decode=debug,kithara_hls=debug,kithara_stream=debug")
 )]
 #[case::ephemeral(true)]
 #[cfg(not(target_arch = "wasm32"))]
 #[case::mmap(false)]
 async fn stress_seek_lifecycle_with_zero_reset(#[case] ephemeral: bool) {
-    let _ = tracing_subscriber::fmt()
-        .with_test_writer()
-        .with_max_level(Level::DEBUG)
-        .with_env_filter(kithara_test_utils::rust_log_filter(
-            "kithara_audio=debug,kithara_decode=debug,kithara_hls=debug,kithara_stream=debug",
-        ))
-        .try_init();
-
     let init_segment = Arc::new(create_wav_init_segment());
     let v0_pcm = Arc::new(create_pcm_segments(ascending_sample));
     let v1_pcm = Arc::new(create_pcm_segments(descending_sample));

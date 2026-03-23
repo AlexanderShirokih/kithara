@@ -87,20 +87,12 @@ pub fn cancel_token_cancelled() -> CancellationToken {
     token
 }
 
-#[kithara::fixture]
-pub fn tracing_setup() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
-    init_tracing(filter);
+pub fn setup_tracing() {
+    setup_tracing_with_filter("warn");
 }
 
-#[kithara::fixture]
-pub fn debug_tracing_setup() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new("warn")
-            .add_directive("kithara_hls=debug".parse().expect("valid directive"))
-            .add_directive("kithara_stream=debug".parse().expect("valid directive"))
-            .add_directive("kithara_decode=debug".parse().expect("valid directive"))
-    });
+pub fn setup_tracing_with_filter(directives: &str) {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(directives));
     init_tracing(filter);
 }
 

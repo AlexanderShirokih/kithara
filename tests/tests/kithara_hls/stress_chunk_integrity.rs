@@ -24,7 +24,7 @@ use kithara_integration_tests::hls_fixture::{HlsTestServer, HlsTestServerConfig}
 use kithara_platform::time::{Duration, Instant, sleep};
 use kithara_test_utils::{TestTempDir, Xorshift64, fixture_protocol::DelayRule};
 use tokio_util::sync::CancellationToken;
-use tracing::{Level, info, warn};
+use tracing::{info, warn};
 
 use crate::common::test_defaults::SawWav;
 
@@ -194,19 +194,12 @@ async fn next_chunk_with_timeout(
     tokio,
     native,
     timeout(Duration::from_secs(TEST_TIMEOUT_SECS)),
-    env(KITHARA_HANG_TIMEOUT_SECS = "1")
+    env(KITHARA_HANG_TIMEOUT_SECS = "1"),
+    tracing("kithara_audio=debug,kithara_decode=debug,kithara_hls=debug,kithara_stream=debug")
 )]
 #[case::mmap(false)]
 #[case::ephemeral(true)]
 async fn stress_chunk_integrity(#[case] ephemeral: bool) {
-    let _ = tracing_subscriber::fmt()
-        .with_test_writer()
-        .with_max_level(Level::DEBUG)
-        .with_env_filter(kithara_test_utils::rust_log_filter(
-            "kithara_audio=debug,kithara_decode=debug,kithara_hls=debug,kithara_stream=debug",
-        ))
-        .try_init();
-
     // Generate WAV data for two variants
     let init_segment = Arc::new(create_wav_init_segment());
     let v0_pcm = Arc::new(create_pcm_segments(ascending_sample));

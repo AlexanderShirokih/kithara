@@ -25,7 +25,7 @@ use kithara_platform::{
     time::{Duration, Instant},
     tokio::task::{spawn, spawn_blocking},
 };
-use kithara_test_utils::{TestTempDir, fixture_protocol::DelayRule, tracing_setup};
+use kithara_test_utils::{TestTempDir, fixture_protocol::DelayRule};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -89,7 +89,7 @@ fn create_pcm_segments() -> Vec<u8> {
     timeout(Duration::from_secs(30)),
     env(KITHARA_HANG_TIMEOUT_SECS = "3")
 )]
-async fn abr_auto_switch_during_playback(_tracing_setup: ()) {
+async fn abr_auto_switch_during_playback() {
     let init_segment = Arc::new(create_wav_init_segment());
     let pcm_data = Arc::new(create_pcm_segments());
 

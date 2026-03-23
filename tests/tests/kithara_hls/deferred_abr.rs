@@ -13,7 +13,7 @@ use std::io::{Read, Seek, SeekFrom};
 
 use kithara_integration_tests::hls_fixture::{HlsStreamBuilder, TestServer};
 use kithara_platform::{time::Duration, tokio::task::spawn_blocking};
-use kithara_test_utils::{TestTempDir, cancel_token, temp_dir, tracing_setup};
+use kithara_test_utils::{TestTempDir, cancel_token, temp_dir};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -55,7 +55,6 @@ fn variant_from_data(data: &[u8]) -> Option<usize> {
 #[case(1)]
 #[case(2)]
 async fn manual_variant_returns_correct_data(
-    _tracing_setup: (),
     temp_dir: TestTempDir,
     cancel_token: CancellationToken,
     #[case] variant: usize,
@@ -98,7 +97,6 @@ async fn manual_variant_returns_correct_data(
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
 async fn sequential_read_across_segments_maintains_variant(
-    _tracing_setup: (),
     temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) {
@@ -170,7 +168,6 @@ async fn sequential_read_across_segments_maintains_variant(
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
 async fn after_seek_sequential_reads_maintain_variant(
-    _tracing_setup: (),
     temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) {
@@ -225,7 +222,6 @@ async fn after_seek_sequential_reads_maintain_variant(
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
 async fn multiple_seeks_maintain_correct_variant(
-    _tracing_setup: (),
     temp_dir: TestTempDir,
     cancel_token: CancellationToken,
 ) {
@@ -319,7 +315,6 @@ async fn multiple_seeks_maintain_correct_variant(
 #[case(200_000)] // Start of segment 1
 #[cfg_attr(not(target_arch = "wasm32"), case(400_000))] // Start of segment 2
 async fn seek_to_segment_boundary_reads_correct_segment(
-    _tracing_setup: (),
     temp_dir: TestTempDir,
     cancel_token: CancellationToken,
     #[case] position: u64,
