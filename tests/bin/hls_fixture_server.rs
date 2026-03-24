@@ -54,42 +54,7 @@ mod server {
     }
 
     fn create_saw_wav(total_bytes: usize) -> Vec<u8> {
-        const SAW_PERIOD: usize = 65536;
-        let bytes_per_sample: u16 = 2;
-        let bytes_per_frame = CHANNELS as usize * bytes_per_sample as usize;
-        let header_size = 44usize;
-        let data_size = total_bytes - header_size;
-        let frame_count = data_size / bytes_per_frame;
-        let data_size = (frame_count * bytes_per_frame) as u32;
-        let file_size = 36 + data_size;
-
-        let mut wav = Vec::with_capacity(total_bytes);
-
-        wav.extend_from_slice(b"RIFF");
-        wav.extend_from_slice(&file_size.to_le_bytes());
-        wav.extend_from_slice(b"WAVE");
-        wav.extend_from_slice(b"fmt ");
-        wav.extend_from_slice(&16u32.to_le_bytes());
-        wav.extend_from_slice(&1u16.to_le_bytes());
-        wav.extend_from_slice(&CHANNELS.to_le_bytes());
-        wav.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
-        let byte_rate = SAMPLE_RATE * CHANNELS as u32 * bytes_per_sample as u32;
-        wav.extend_from_slice(&byte_rate.to_le_bytes());
-        let block_align = CHANNELS * bytes_per_sample;
-        wav.extend_from_slice(&block_align.to_le_bytes());
-        wav.extend_from_slice(&(bytes_per_sample * 8).to_le_bytes());
-        wav.extend_from_slice(b"data");
-        wav.extend_from_slice(&data_size.to_le_bytes());
-
-        for i in 0..frame_count {
-            let sample = ((i % SAW_PERIOD) as i32 - 32768) as i16;
-            for _ in 0..CHANNELS {
-                wav.extend_from_slice(&sample.to_le_bytes());
-            }
-        }
-
-        wav.resize(total_bytes, 0);
-        wav
+        kithara_test_utils::create_saw_wav(total_bytes)
     }
 
     fn master_playlist_uniform() -> &'static str {

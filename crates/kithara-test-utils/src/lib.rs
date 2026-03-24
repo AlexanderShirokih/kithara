@@ -27,6 +27,7 @@ mod log_filter;
 pub mod memory_source;
 pub mod rng;
 pub mod server_url;
+pub mod signal_source;
 pub mod wav;
 
 /// Re-export of `kithara_test_macros::test` under the `kithara` namespace.
@@ -44,4 +45,5 @@ pub use http_server::TestHttpServer;
 pub use log_filter::rust_log_filter;
 pub use rng::*;
 pub use server_url::join_server_url;
+pub use signal_source::*;
 pub use wav::{create_saw_wav, create_test_wav};

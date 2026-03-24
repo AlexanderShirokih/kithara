@@ -35,27 +35,7 @@ const D: SawWav = SawWav::DEFAULT;
 const SEGMENT_COUNT: usize = 30;
 
 fn create_wav_init_segment() -> Vec<u8> {
-    let bytes_per_sample: u16 = 2;
-    let byte_rate = D.sample_rate * D.channels as u32 * bytes_per_sample as u32;
-    let block_align = D.channels * bytes_per_sample;
-    let data_size = 0xFFFF_FFFFu32;
-    let file_size = 0xFFFF_FFFFu32;
-
-    let mut wav = Vec::with_capacity(44);
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&file_size.to_le_bytes());
-    wav.extend_from_slice(b"WAVE");
-    wav.extend_from_slice(b"fmt ");
-    wav.extend_from_slice(&16u32.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
-    wav.extend_from_slice(&D.channels.to_le_bytes());
-    wav.extend_from_slice(&D.sample_rate.to_le_bytes());
-    wav.extend_from_slice(&byte_rate.to_le_bytes());
-    wav.extend_from_slice(&block_align.to_le_bytes());
-    wav.extend_from_slice(&(bytes_per_sample * 8).to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&data_size.to_le_bytes());
-    wav
+    kithara_test_utils::fixture_protocol::create_wav_init_header(D.sample_rate, D.channels)
 }
 
 fn create_pcm_segments() -> Vec<u8> {

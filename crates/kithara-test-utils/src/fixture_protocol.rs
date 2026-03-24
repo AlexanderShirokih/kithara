@@ -331,27 +331,7 @@ pub fn create_pcm_segments(
 /// Create a 44-byte WAV init segment header (streaming mode: sizes = 0xFFFFFFFF).
 #[must_use]
 pub fn create_wav_init_header(sample_rate: u32, channels: u16) -> Vec<u8> {
-    let bytes_per_sample: u16 = 2;
-    let byte_rate = sample_rate * channels as u32 * bytes_per_sample as u32;
-    let block_align = channels * bytes_per_sample;
-    let data_size = 0xFFFF_FFFFu32;
-    let file_size = 0xFFFF_FFFFu32;
-
-    let mut wav = Vec::with_capacity(44);
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&file_size.to_le_bytes());
-    wav.extend_from_slice(b"WAVE");
-    wav.extend_from_slice(b"fmt ");
-    wav.extend_from_slice(&16u32.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
-    wav.extend_from_slice(&channels.to_le_bytes());
-    wav.extend_from_slice(&sample_rate.to_le_bytes());
-    wav.extend_from_slice(&byte_rate.to_le_bytes());
-    wav.extend_from_slice(&block_align.to_le_bytes());
-    wav.extend_from_slice(&(bytes_per_sample * 8).to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&data_size.to_le_bytes());
-    wav
+    crate::wav::build_wav_header(sample_rate, channels, None).to_vec()
 }
 
 #[cfg(test)]
