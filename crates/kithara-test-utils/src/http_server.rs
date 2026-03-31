@@ -3,13 +3,18 @@
 use std::{io, time::Duration};
 
 use axum::Router;
-use tokio::{net::TcpListener, sync::oneshot, time::sleep as tokio_sleep};
+use tokio::{
+    net::TcpListener,
+    sync::{oneshot, watch},
+    time::sleep as tokio_sleep,
+};
 use url::Url;
 
 /// Lightweight HTTP test server wrapper.
 pub struct TestHttpServer {
     base_url: Url,
     shutdown_tx: Option<oneshot::Sender<()>>,
+    done_rx: watch::Receiver<bool>,
 }
 
 impl TestHttpServer {
@@ -19,12 +24,21 @@ impl TestHttpServer {
     ///
     /// Panics if listener bind or URL parsing fails.
     pub async fn new(router: Router) -> Self {
+        Self::bind("127.0.0.1:0", router).await
+    }
+
+    /// Spawn `router` on the given address (e.g. `"0.0.0.0:3444"`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if listener bind or URL parsing fails.
+    pub async fn bind(addr: &str, router: Router) -> Self {
         const BIND_RETRIES: usize = 25;
         const BIND_RETRY_DELAY_MS: u64 = 40;
 
         let mut attempts = 0usize;
         let listener = loop {
-            match TcpListener::bind("127.0.0.1:0").await {
+            match TcpListener::bind(addr).await {
                 Ok(listener) => break listener,
                 Err(error)
                     if matches!(
@@ -49,12 +63,14 @@ impl TestHttpServer {
             .expect("read test listener local addr");
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (done_tx, done_rx) = watch::channel(false);
         let server = axum::serve(listener, router).with_graceful_shutdown(async {
             shutdown_rx.await.ok();
         });
 
         tokio::spawn(async move {
             server.await.expect("run test HTTP server");
+            let _ = done_tx.send(true);
         });
 
         tokio_sleep(Duration::from_millis(100)).await;
@@ -62,6 +78,7 @@ impl TestHttpServer {
         Self {
             base_url: Url::parse(&format!("http://{}", addr)).expect("parse base URL"),
             shutdown_tx: Some(shutdown_tx),
+            done_rx,
         }
     }
 
@@ -79,6 +96,15 @@ impl TestHttpServer {
     #[must_use]
     pub fn base_url(&self) -> &Url {
         &self.base_url
+    }
+
+    /// Wait until the server task completes.
+    pub async fn completion(&mut self) {
+        while !*self.done_rx.borrow_and_update() {
+            if self.done_rx.changed().await.is_err() {
+                break;
+            }
+        }
     }
 }
 

@@ -17,7 +17,6 @@
 
 //! Shared test utilities for the kithara workspace.
 
-pub mod asset_server;
 pub mod fixture_client;
 pub mod fixture_protocol;
 pub mod fixtures;
@@ -32,6 +31,7 @@ pub mod server_url;
 pub mod signal_pcm;
 pub mod signal_source;
 mod signal_source_utils;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod test_server;
 pub mod wav;
 
@@ -43,7 +43,6 @@ pub mod kithara {
     pub use kithara_test_macros::{fixture, test};
 }
 
-pub use asset_server::{AssetServer, serve_assets};
 pub use fixtures::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use http_server::TestHttpServer;
@@ -51,5 +50,6 @@ pub use log_filter::rust_log_filter;
 pub use rng::*;
 pub use server_url::join_server_url;
 pub use signal_source_utils::*;
-pub use test_server::run_test_server;
+#[cfg(not(target_arch = "wasm32"))]
+pub use test_server::{TestServerHelper, run_test_server};
 pub use wav::{create_test_wav, create_wav_exact_bytes};

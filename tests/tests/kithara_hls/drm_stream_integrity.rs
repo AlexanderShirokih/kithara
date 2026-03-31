@@ -21,7 +21,7 @@ use kithara_platform::{
     time::{Duration, Instant},
     tokio::task::spawn_blocking,
 };
-use kithara_test_utils::{TestTempDir, serve_assets, temp_dir};
+use kithara_test_utils::{TestServerHelper, TestTempDir, temp_dir};
 use tokio_util::sync::CancellationToken;
 
 fn is_known_box(tag: &[u8; 4]) -> bool {
@@ -137,19 +137,19 @@ fn scan_boxes(
     env(KITHARA_HANG_TIMEOUT_SECS = "3")
 )]
 // path × label × ephemeral × abr_variant
-#[case::hls_disk_v0("/hls/master.m3u8", "HLS-disk-v0", false, 0)]
-#[case::hls_disk_v3("/hls/master.m3u8", "HLS-disk-v3", false, 3)]
-#[case::hls_eph_v0("/hls/master.m3u8", "HLS-eph-v0", true, 0)]
-#[case::hls_eph_v3("/hls/master.m3u8", "HLS-eph-v3", true, 3)]
-#[case::drm_disk_v0("/drm/master.m3u8", "DRM-disk-v0", false, 0)]
-#[case::drm_disk_v3("/drm/master.m3u8", "DRM-disk-v3", false, 3)]
-#[case::drm_eph_v0("/drm/master.m3u8", "DRM-eph-v0", true, 0)]
-#[case::drm_eph_v3("/drm/master.m3u8", "DRM-eph-v3", true, 3)]
+#[case::hls_disk_v0("hls/master.m3u8", "HLS-disk-v0", false, 0)]
+#[case::hls_disk_v3("hls/master.m3u8", "HLS-disk-v3", false, 3)]
+#[case::hls_eph_v0("hls/master.m3u8", "HLS-eph-v0", true, 0)]
+#[case::hls_eph_v3("hls/master.m3u8", "HLS-eph-v3", true, 3)]
+#[case::drm_disk_v0("drm/master.m3u8", "DRM-disk-v0", false, 0)]
+#[case::drm_disk_v3("drm/master.m3u8", "DRM-disk-v3", false, 3)]
+#[case::drm_eph_v0("drm/master.m3u8", "DRM-eph-v0", true, 0)]
+#[case::drm_eph_v3("drm/master.m3u8", "DRM-eph-v3", true, 3)]
 // Auto cases: start on v0, ABR will switch up
-#[case::hls_disk_auto("/hls/master.m3u8", "HLS-disk-auto", false, 99)]
-#[case::hls_eph_auto("/hls/master.m3u8", "HLS-eph-auto", true, 99)]
-#[case::drm_disk_auto("/drm/master.m3u8", "DRM-disk-auto", false, 99)]
-#[case::drm_eph_auto("/drm/master.m3u8", "DRM-eph-auto", true, 99)]
+#[case::hls_disk_auto("hls/master.m3u8", "HLS-disk-auto", false, 99)]
+#[case::hls_eph_auto("hls/master.m3u8", "HLS-eph-auto", true, 99)]
+#[case::drm_disk_auto("drm/master.m3u8", "DRM-disk-auto", false, 99)]
+#[case::drm_eph_auto("drm/master.m3u8", "DRM-eph-auto", true, 99)]
 async fn drm_stream_byte_integrity(
     temp_dir: TestTempDir,
     #[case] path: &str,
@@ -157,8 +157,8 @@ async fn drm_stream_byte_integrity(
     #[case] ephemeral: bool,
     #[case] abr_variant: usize,
 ) {
-    let server = serve_assets().await;
-    let url = server.url(path);
+    let server = TestServerHelper::new().await;
+    let url = server.asset(path);
     let cancel = CancellationToken::new();
 
     let mut store = StoreOptions::new(temp_dir.path());

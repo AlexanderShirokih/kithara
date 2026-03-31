@@ -16,7 +16,7 @@ use kithara_platform::{
     time::{Instant, sleep},
     tokio::task::spawn,
 };
-use kithara_test_utils::{TestTempDir, Xorshift64, serve_assets, temp_dir};
+use kithara_test_utils::{TestServerHelper, TestTempDir, Xorshift64, temp_dir};
 use tracing::info;
 
 const NEXT_CHUNK_TIMEOUT_MS: u64 = 10_000;
@@ -99,8 +99,8 @@ async fn next_chunk_with_timeout(
 #[cfg_attr(not(target_arch = "wasm32"), case::mmap(false))]
 #[case::ephemeral(true)]
 async fn live_stress_real_mp3_seek_read_cache(#[case] ephemeral: bool, temp_dir: TestTempDir) {
-    let server = serve_assets().await;
-    let url = server.url("/track.mp3");
+    let server = TestServerHelper::new().await;
+    let url = server.asset("track.mp3");
     let mut store = StoreOptions::new(temp_dir.path());
     if ephemeral {
         store.ephemeral = true;

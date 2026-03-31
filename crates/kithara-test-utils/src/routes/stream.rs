@@ -14,10 +14,10 @@ use axum::{Router, extract::Path, http::StatusCode, response::IntoResponse, rout
 pub(crate) fn router() -> Router {
     Router::new()
         .route("/stream/{hls_spec}", get(master_playlist))
-        .route("/stream/{hls_spec}/{variant}.m3u8", get(media_playlist))
-        .route("/stream/{hls_spec}/init/{variant}.mp4", get(init_segment))
+        .route("/stream/{hls_spec}/{media_playlist}", get(media_playlist))
+        .route("/stream/{hls_spec}/init/{init_segment}", get(init_segment))
         .route(
-            "/stream/{hls_spec}/seg/{segment}.m4s",
+            "/stream/{hls_spec}/seg/{media_segment}",
             get(media_segment).head(media_segment),
         )
 }
@@ -28,20 +28,24 @@ async fn master_playlist(Path(hls_spec): Path<String>) -> impl IntoResponse {
     StatusCode::NOT_IMPLEMENTED.into_response()
 }
 
-async fn media_playlist(Path((hls_spec, variant)): Path<(String, String)>) -> impl IntoResponse {
-    let _ = (hls_spec, variant);
+async fn media_playlist(
+    Path((hls_spec, media_playlist)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let _ = (hls_spec, media_playlist);
     // TODO: decode spec, generate media playlist for variant
     StatusCode::NOT_IMPLEMENTED.into_response()
 }
 
-async fn init_segment(Path((hls_spec, variant)): Path<(String, String)>) -> impl IntoResponse {
-    let _ = (hls_spec, variant);
+async fn init_segment(Path((hls_spec, init_segment)): Path<(String, String)>) -> impl IntoResponse {
+    let _ = (hls_spec, init_segment);
     // TODO: decode spec, generate init.mp4 for variant
     StatusCode::NOT_IMPLEMENTED.into_response()
 }
 
-async fn media_segment(Path((hls_spec, segment)): Path<(String, String)>) -> impl IntoResponse {
-    let _ = (hls_spec, segment);
+async fn media_segment(
+    Path((hls_spec, media_segment)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let _ = (hls_spec, media_segment);
     // TODO: decode spec, generate .m4s for variant+segment
     StatusCode::NOT_IMPLEMENTED.into_response()
 }

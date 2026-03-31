@@ -22,7 +22,7 @@ use kithara::{
     stream::Stream,
 };
 use kithara_platform::{time::Instant, tokio::task::spawn_blocking};
-use kithara_test_utils::{TestTempDir, serve_assets, temp_dir};
+use kithara_test_utils::{TestServerHelper, TestTempDir, temp_dir};
 use memory_stats::memory_stats;
 use tracing::info;
 
@@ -52,8 +52,8 @@ async fn test_hls_playback_rss_within_budget(temp_dir: TestTempDir) {
             .expect("memory_stats unsupported")
             .physical_mem;
 
-        let server = serve_assets().await;
-        let url = server.url("/hls/master.m3u8");
+        let server = TestServerHelper::new().await;
+        let url = server.asset("hls/master.m3u8");
 
         let hls_config = HlsConfig::new(url)
             .with_store(StoreOptions::new(temp_dir.path()))
@@ -140,8 +140,8 @@ const LEAK_TOLERANCE_MB: usize = 5;
 )]
 async fn test_hls_playback_no_rss_leak(temp_dir: TestTempDir) {
     let _guard = FunctionsGuardBuilder::new("rss_leak").build();
-    let server = serve_assets().await;
-    let url = server.url("/hls/master.m3u8");
+    let server = TestServerHelper::new().await;
+    let url = server.asset("hls/master.m3u8");
 
     let hls_config = HlsConfig::new(url)
         .with_store(StoreOptions::new(temp_dir.path()))

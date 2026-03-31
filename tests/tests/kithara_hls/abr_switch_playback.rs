@@ -13,7 +13,7 @@ use kithara::{
     stream::Stream,
 };
 use kithara_platform::time::{Duration, Instant, sleep};
-use kithara_test_utils::{TestTempDir, serve_assets, temp_dir};
+use kithara_test_utils::{TestServerHelper, TestTempDir, temp_dir};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -30,8 +30,8 @@ use tracing::info;
     env(KITHARA_HANG_TIMEOUT_SECS = "3")
 )]
 async fn abr_switch_real_assets_does_not_hang(temp_dir: TestTempDir) {
-    let server = serve_assets().await;
-    let url = server.url("/hls/master.m3u8");
+    let server = TestServerHelper::new().await;
+    let url = server.asset("hls/master.m3u8");
 
     let cancel = CancellationToken::new();
     let hls_config = HlsConfig::new(url)
@@ -85,22 +85,22 @@ async fn abr_switch_real_assets_does_not_hang(temp_dir: TestTempDir) {
     timeout(Duration::from_secs(30)),
     env(KITHARA_HANG_TIMEOUT_SECS = "5")
 )]
-#[case::drm_abr_auto_sw("/drm/master.m3u8", true, false)]
-#[case::drm_abr_auto_hw("/drm/master.m3u8", true, true)]
-#[case::hls_abr_auto_sw("/hls/master.m3u8", true, false)]
-#[case::hls_abr_auto_hw("/hls/master.m3u8", true, true)]
-#[case::drm_manual_v0_sw("/drm/master.m3u8", false, false)]
-#[case::drm_manual_v0_hw("/drm/master.m3u8", false, true)]
-#[case::hls_manual_v0_sw("/hls/master.m3u8", false, false)]
-#[case::hls_manual_v0_hw("/hls/master.m3u8", false, true)]
+#[case::drm_abr_auto_sw("drm/master.m3u8", true, false)]
+#[case::drm_abr_auto_hw("drm/master.m3u8", true, true)]
+#[case::hls_abr_auto_sw("hls/master.m3u8", true, false)]
+#[case::hls_abr_auto_hw("hls/master.m3u8", true, true)]
+#[case::drm_manual_v0_sw("drm/master.m3u8", false, false)]
+#[case::drm_manual_v0_hw("drm/master.m3u8", false, true)]
+#[case::hls_manual_v0_sw("hls/master.m3u8", false, false)]
+#[case::hls_manual_v0_hw("hls/master.m3u8", false, true)]
 async fn stream_continues_after_seek(
     temp_dir: TestTempDir,
     #[case] path: &str,
     #[case] abr_auto: bool,
     #[case] prefer_hardware: bool,
 ) {
-    let server = serve_assets().await;
-    let url = server.url(path);
+    let server = TestServerHelper::new().await;
+    let url = server.asset(path);
 
     let cancel = CancellationToken::new();
     let abr_mode = if abr_auto {
@@ -186,8 +186,8 @@ async fn stream_continues_after_seek(
     env(KITHARA_HANG_TIMEOUT_SECS = "3")
 )]
 async fn fixed_variant_real_assets_plays_without_hang(temp_dir: TestTempDir) {
-    let server = serve_assets().await;
-    let url = server.url("/hls/master.m3u8");
+    let server = TestServerHelper::new().await;
+    let url = server.asset("hls/master.m3u8");
 
     let cancel = CancellationToken::new();
     let hls_config = HlsConfig::new(url)
@@ -238,11 +238,11 @@ async fn fixed_variant_real_assets_plays_without_hang(temp_dir: TestTempDir) {
     env(KITHARA_HANG_TIMEOUT_SECS = "5"),
     tracing("kithara_audio=warn,kithara_hls=warn,symphonia_format_isomp4=warn")
 )]
-#[case::drm("/drm/master.m3u8")]
-#[case::hls("/hls/master.m3u8")]
+#[case::drm("drm/master.m3u8")]
+#[case::hls("hls/master.m3u8")]
 async fn seek_after_eof_mmap_produces_samples(temp_dir: TestTempDir, #[case] path: &str) {
-    let server = serve_assets().await;
-    let url = server.url(path);
+    let server = TestServerHelper::new().await;
+    let url = server.asset(path);
 
     let cancel = CancellationToken::new();
     let hls_config = HlsConfig::new(url)
@@ -308,8 +308,8 @@ async fn seek_after_eof_mmap_produces_samples(temp_dir: TestTempDir, #[case] pat
     env(KITHARA_HANG_TIMEOUT_SECS = "5")
 )]
 async fn mp3_stream_continues_after_seek(temp_dir: TestTempDir) {
-    let server = serve_assets().await;
-    let url = server.url("/track.mp3");
+    let server = TestServerHelper::new().await;
+    let url = server.asset("track.mp3");
 
     let file_config = FileConfig::new(url.into()).with_store(StoreOptions::new(temp_dir.path()));
     let config = AudioConfig::<File>::new(file_config).with_hint("mp3");
@@ -385,8 +385,8 @@ async fn mp3_stream_continues_after_seek(temp_dir: TestTempDir) {
 async fn abr_frozen_during_seek_resumes_after(temp_dir: TestTempDir) {
     use kithara::{audio::PcmReader, decode::PcmChunk};
 
-    let server = serve_assets().await;
-    let url = server.url("/hls/master.m3u8");
+    let server = TestServerHelper::new().await;
+    let url = server.asset("hls/master.m3u8");
 
     let hls_config = HlsConfig::new(url)
         .with_store(StoreOptions::new(temp_dir.path()))
