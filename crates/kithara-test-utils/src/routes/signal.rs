@@ -5,6 +5,7 @@
 //! - `GET /signal/sawtooth/{spec_with_ext}` — ascending saw-tooth.
 //! - `GET /signal/sawtooth-desc/{spec_with_ext}` — descending saw-tooth.
 //! - `GET /signal/sine/{spec_with_ext}` — sine wave.
+//! - `GET /signal/silence/{spec_with_ext}` — digital silence (all zeros).
 //!
 //! `spec_with_ext` is a single path segment in the form
 //! `<base64url(JSON)>[.<ext>]`, where the optional last `.` separates the
@@ -26,17 +27,29 @@
 //!
 //! - `ext`: `wav | mp3 | flac | aac | m4a`; can be passed in the path suffix or in JSON
 //! - length: exactly one of `seconds`, `frames`, `file_bytes`, or `infinite`
-//! - `freq` is required for `/signal/sine/...` and rejected for sawtooth routes
+//! - `freq` is required for `/signal/sine/...` and rejected for sawtooth and silence routes
+
+use std::convert::Infallible;
 
 use axum::{
     Router,
+    body::{Body, Bytes},
     extract::Path,
-    http::StatusCode,
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
 };
+use futures::stream;
 
-use crate::signal_spec::{SignalKind, parse_signal_request};
+use crate::{
+    signal_pcm::{SignalLength, SignalPcm, signal},
+    signal_spec::{
+        ResolvedSignalSpec, SignalFormat, SignalKind, SignalRequest, parse_signal_request,
+    },
+    wav::{WavHeader, create_wav_from_signal},
+};
+
+const PCM_STREAM_CHUNK_BYTES: usize = 16 * 1024;
 
 pub(crate) fn router() -> Router {
     Router::new()
@@ -46,6 +59,7 @@ pub(crate) fn router() -> Router {
             get(sawtooth_descending),
         )
         .route("/signal/sine/{spec_with_ext}", get(sine))
+        .route("/signal/silence/{spec_with_ext}", get(silence))
 }
 
 async fn sawtooth(Path(spec_with_ext): Path<String>) -> Response {
@@ -60,14 +74,115 @@ async fn sine(Path(spec_with_ext): Path<String>) -> Response {
     handle_signal(SignalKind::Sine, &spec_with_ext)
 }
 
+async fn silence(Path(spec_with_ext): Path<String>) -> Response {
+    handle_signal(SignalKind::Silence, &spec_with_ext)
+}
+
 fn handle_signal(kind: SignalKind, spec_with_ext: &str) -> Response {
     match parse_signal_request(kind, spec_with_ext) {
-        Ok(_request) => {
-            // TODO: use parsed request to build PCM and encode the requested artifact.
-            StatusCode::NOT_IMPLEMENTED.into_response()
-        }
+        Ok(request) => build_signal_response(&request),
         Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
     }
+}
+
+fn build_signal_response(request: &SignalRequest) -> Response {
+    match request.format {
+        SignalFormat::Wav => build_wav_response(&request.spec),
+        SignalFormat::Mp3 | SignalFormat::Flac | SignalFormat::Aac | SignalFormat::M4a => (
+            StatusCode::NOT_IMPLEMENTED,
+            "signal format is not implemented yet",
+        )
+            .into_response(),
+    }
+}
+
+fn build_wav_response(spec: &ResolvedSignalSpec) -> Response {
+    match spec.kind {
+        SignalKind::Sawtooth => build_wav_response_for_signal(signal::Sawtooth, spec),
+        SignalKind::SawtoothDescending => {
+            build_wav_response_for_signal(signal::SawtoothDescending, spec)
+        }
+        SignalKind::Sine => spec.sine_freq_hz.map_or_else(
+            || {
+                (
+                    StatusCode::BAD_REQUEST,
+                    "sine signal requires a normalized `freq` field",
+                )
+                    .into_response()
+            },
+            |freq_hz| build_wav_response_for_signal(signal::SineWave(freq_hz), spec),
+        ),
+        SignalKind::Silence => build_wav_response_for_signal(signal::Silence, spec),
+    }
+}
+
+fn build_wav_response_for_signal<S: signal::SignalFn>(
+    signal: S,
+    spec: &ResolvedSignalSpec,
+) -> Response {
+    let mut response = match spec.length {
+        SignalLength::Finite { .. } => render_wav(signal, spec).into_response(),
+        SignalLength::Infinite => stream_wav(signal, spec).into_response(),
+    };
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("audio/wav"),
+    );
+    response
+}
+
+fn render_wav<S: signal::SignalFn>(signal: S, spec: &ResolvedSignalSpec) -> Vec<u8> {
+    create_wav_from_signal(SignalPcm::new(
+        signal,
+        spec.sample_rate,
+        spec.channels,
+        spec.length,
+    ))
+}
+
+fn stream_wav<S: signal::SignalFn>(signal: S, spec: &ResolvedSignalSpec) -> Body {
+    let channels = spec.channels;
+    let chunk_size = pcm_stream_chunk_size(channels);
+    let header = Bytes::from(Vec::<u8>::from(WavHeader::new(
+        spec.sample_rate,
+        channels,
+        None,
+    )));
+    let state = InfiniteWavState {
+        header: Some(header),
+        pcm: SignalPcm::new(signal, spec.sample_rate, channels, SignalLength::Infinite),
+        offset: 0,
+        chunk_size,
+    };
+    let stream = stream::unfold(state, |mut state| async move {
+        if let Some(header) = state.header.take() {
+            return Some((Ok::<Bytes, Infallible>(header), state));
+        }
+
+        let mut chunk = vec![0u8; state.chunk_size];
+        let written = state.pcm.read_pcm_at(state.offset, &mut chunk);
+        if written == 0 {
+            return None;
+        }
+
+        state.offset += written;
+        chunk.truncate(written);
+        Some((Ok(Bytes::from(chunk)), state))
+    });
+
+    Body::from_stream(stream)
+}
+
+fn pcm_stream_chunk_size(channels: u16) -> usize {
+    let bytes_per_frame = channels as usize * size_of::<i16>();
+    PCM_STREAM_CHUNK_BYTES - (PCM_STREAM_CHUNK_BYTES % bytes_per_frame)
+}
+
+struct InfiniteWavState<S: signal::SignalFn> {
+    header: Option<Bytes>,
+    pcm: SignalPcm<S>,
+    offset: usize,
+    chunk_size: usize,
 }
 
 #[cfg(test)]
@@ -87,16 +202,40 @@ mod tests {
         let saw = encode(r#"{"seconds":1,"sample_rate":44100,"channels":2}"#);
         let sine = encode(r#"{"seconds":1,"sample_rate":44100,"channels":2,"freq":440}"#);
         let saw_json_ext = encode(r#"{"ext":"wav","seconds":1,"sample_rate":44100,"channels":2}"#);
+        let silence = encode(r#"{"seconds":1,"sample_rate":44100,"channels":2}"#);
         let valid_cases = [
-            format!("/signal/sawtooth/{saw}.wav"),
-            format!("/signal/sawtooth-desc/{saw}.wav"),
-            format!("/signal/sine/{sine}.wav"),
-            format!("/signal/sawtooth/{saw_json_ext}"),
+            (
+                format!("/signal/sawtooth/{saw}.wav"),
+                -32768,
+                b"RIFF".as_slice(),
+            ),
+            (
+                format!("/signal/sawtooth-desc/{saw}.wav"),
+                32767,
+                b"RIFF".as_slice(),
+            ),
+            (format!("/signal/sine/{sine}.wav"), 0, b"RIFF".as_slice()),
+            (
+                format!("/signal/sawtooth/{saw_json_ext}"),
+                -32768,
+                b"RIFF".as_slice(),
+            ),
+            (
+                format!("/signal/silence/{silence}.wav"),
+                0,
+                b"RIFF".as_slice(),
+            ),
         ];
 
-        for path in valid_cases {
+        for (path, first_sample, magic) in valid_cases {
             let response = reqwest::get(server.url(&path)).await.unwrap();
-            assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[header::CONTENT_TYPE], "audio/wav");
+
+            let bytes = response.bytes().await.unwrap();
+            assert!(bytes.len() >= 46);
+            assert_eq!(&bytes[0..4], magic);
+            assert_eq!(i16::from_le_bytes([bytes[44], bytes[45]]), first_sample);
         }
 
         let invalid = reqwest::get(server.url("/signal/sine/not-base64.wav"))
@@ -107,5 +246,44 @@ mod tests {
             invalid.text().await.unwrap(),
             "signal spec is not valid base64url"
         );
+
+        let not_implemented = reqwest::get(server.url(&format!("/signal/sawtooth/{saw}.mp3")))
+            .await
+            .unwrap();
+        assert_eq!(not_implemented.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(
+            not_implemented.text().await.unwrap(),
+            "signal format is not implemented yet"
+        );
+    }
+
+    #[tokio::test]
+    async fn infinite_wav_streams_header_and_pcm() {
+        let server = TestHttpServer::new(router()).await;
+        let saw = encode(r#"{"infinite":true,"sample_rate":44100,"channels":2,"ext":"wav"}"#);
+        let response = reqwest::get(server.url(&format!("/signal/sawtooth/{saw}")))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "audio/wav");
+        assert!(response.headers().get(header::CONTENT_LENGTH).is_none());
+
+        let mut response = response;
+        let mut bytes = Vec::new();
+        while bytes.len() < 48 {
+            let Some(chunk) = response.chunk().await.unwrap() else {
+                panic!("stream ended before enough WAV bytes were received");
+            };
+            bytes.extend_from_slice(&chunk);
+        }
+
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(
+            u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]),
+            0xFFFF_FFFF
+        );
+        assert_eq!(i16::from_le_bytes([bytes[44], bytes[45]]), -32768);
+        assert_eq!(i16::from_le_bytes([bytes[46], bytes[47]]), -32768);
     }
 }

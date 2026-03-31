@@ -22,6 +22,7 @@ pub(crate) enum SignalKind {
     Sawtooth,
     SawtoothDescending,
     Sine,
+    Silence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,11 +216,11 @@ fn normalize_signal_spec(
 
             Some(freq)
         }
-        SignalKind::Sawtooth | SignalKind::SawtoothDescending => {
+        SignalKind::Sawtooth | SignalKind::SawtoothDescending | SignalKind::Silence => {
             if payload.freq.is_some() {
                 return Err(SignalRequestError::InvalidField {
                     field: "freq",
-                    message: "is not allowed for sawtooth routes",
+                    message: "is not allowed for sawtooth, silence, or sawtooth-desc routes",
                 });
             }
 
@@ -383,6 +384,13 @@ mod tests {
                 "wav",
                 SignalLength::Infinite,
                 Some(440.0),
+            ),
+            (
+                SignalKind::Silence,
+                r#"{"seconds":1,"sample_rate":44100,"channels":2}"#,
+                "wav",
+                SignalLength::from_frames(44_100),
+                None,
             ),
         ];
 

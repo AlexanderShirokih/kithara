@@ -14,8 +14,6 @@ mod kithara_audio;
 mod kithara_bufpool;
 
 mod kithara_decode {
-    pub(crate) mod fixture;
-
     mod decoder_seek_tests;
     mod decoder_tests;
     mod timeline_tests;

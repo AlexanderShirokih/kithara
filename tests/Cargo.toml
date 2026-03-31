@@ -136,7 +136,7 @@ path = "bin/fixture_server.rs"
 test = false
 
 [[bin]]
-name = "unified_server"
+name = "test_server"
 path = "bin/test_server.rs"
 test = false
 

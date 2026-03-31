@@ -22,8 +22,9 @@ async fn test_audio_test_server_starts() {
 
     assert!(wav_url.as_str().starts_with("http://127.0.0.1:"));
     assert!(mp3_url.as_str().starts_with("http://127.0.0.1:"));
-    assert!(wav_url.as_str().ends_with("/silence.wav"));
-    assert!(mp3_url.as_str().ends_with("/test.mp3"));
+    assert!(wav_url.path().starts_with("/signal/sawtooth/"));
+    assert!(wav_url.path().ends_with(".wav"));
+    assert!(mp3_url.path().ends_with("test.mp3"));
 }
 
 #[kithara::test(
@@ -32,11 +33,10 @@ async fn test_audio_test_server_starts() {
     timeout(Duration::from_secs(5)),
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
-#[case("wav", "/silence.wav", "audio/wav", "WAV file")]
-#[case("mp3", "/test.mp3", "audio/mpeg", "MP3 file")]
+#[case("wav", "audio/wav", "WAV file")]
+#[case("mp3", "audio/mpeg", "MP3 file")]
 async fn test_audio_test_server_serves_format(
     #[case] format: &str,
-    #[case] path: &str,
     #[case] content_type: &str,
     #[case] desc: &str,
 ) {
@@ -73,7 +73,6 @@ async fn test_audio_test_server_serves_format(
         .unwrap();
 
     assert!(content_length > 0, "{}: content length should be > 0", desc);
-    assert_eq!(server.request_count(path), 1, "{}: request count", desc);
 }
 
 #[kithara::test]

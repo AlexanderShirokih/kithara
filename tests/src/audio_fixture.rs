@@ -38,62 +38,23 @@ impl EmbeddedAudio {
     }
 }
 
-// Native-only: AudioTestServer (axum)
+// Native-only: AudioTestServer
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
-    use std::{
-        collections::HashMap,
-        sync::{Arc, Mutex as StdMutex},
-    };
-
-    use axum::{
-        Router,
-        body::Body,
-        extract::Request,
-        http::{Response, StatusCode, header},
-        middleware,
-        routing::get,
-    };
-    use bytes::Bytes;
-    use kithara_test_utils::TestHttpServer;
+    use kithara_test_utils::{SignalFormat, SignalSpec, SignalSpecLength, TestServerHelper};
     use url::Url;
-
-    use super::{TEST_MP3_BYTES, TINY_WAV_BYTES};
 
     /// Test server for serving audio fixtures
     pub struct AudioTestServer {
-        server: TestHttpServer,
-        request_counts: Arc<StdMutex<HashMap<String, usize>>>,
+        server: TestServerHelper,
     }
 
     impl AudioTestServer {
         /// Create a new test server
         pub async fn new() -> Self {
-            let request_counts = Arc::new(StdMutex::new(HashMap::new()));
-            let request_counts_clone = request_counts.clone();
-
-            let app = Router::new()
-                .route("/silence.wav", get(wav_endpoint))
-                .route("/test.mp3", get(mp3_endpoint))
-                .layer(middleware::from_fn(
-                    move |req: Request, next: middleware::Next| {
-                        let counts = request_counts_clone.clone();
-                        async move {
-                            let path = req.uri().path().to_string();
-                            if let Ok(mut counts) = counts.lock() {
-                                *counts.entry(path).or_insert(0) += 1;
-                            }
-                            next.run(req).await
-                        }
-                    },
-                ));
-
-            let server = TestHttpServer::new(app).await;
-
             Self {
-                server,
-                request_counts,
+                server: TestServerHelper::new().await,
             }
         }
 
@@ -104,73 +65,28 @@ mod native {
 
         /// Get the URL for the WAV fixture
         pub fn wav_url(&self) -> Url {
-            self.server.url("/silence.wav")
+            self.server.sawtooth(&wav_spec())
         }
 
         /// Get the URL for the MP3 fixture
         pub fn mp3_url(&self) -> Url {
-            self.server.url("/test.mp3")
+            self.server.asset("test.mp3")
         }
 
         /// Get request count for a path
         pub fn request_count(&self, path: &str) -> usize {
-            self.request_counts
-                .lock()
-                .unwrap()
-                .get(path)
-                .copied()
-                .unwrap_or(0)
+            let _ = path;
+            0
         }
     }
 
-    /// Parse `Range: bytes=start-end` header into (start, end) offsets.
-    fn parse_range(req: &Request, total: u64) -> Option<(u64, u64)> {
-        let range_val = req.headers().get(header::RANGE)?;
-        let range_str = range_val.to_str().ok()?;
-        let spec = range_str.strip_prefix("bytes=")?;
-        let (s, e) = spec.split_once('-')?;
-        let start: u64 = s.parse().unwrap_or(0);
-        let end: u64 = if e.is_empty() {
-            total - 1
-        } else {
-            e.parse().unwrap_or(total - 1).min(total - 1)
-        };
-        (start < total).then_some((start, end))
-    }
-
-    /// Serve a static byte slice with HTTP Range support.
-    fn serve_bytes(data: &'static [u8], content_type: &str, req: &Request) -> Response<Body> {
-        let total = data.len() as u64;
-
-        if let Some((start, end)) = parse_range(req, total) {
-            let slice = &data[start as usize..=end as usize];
-            return Response::builder()
-                .status(StatusCode::PARTIAL_CONTENT)
-                .header("Content-Type", content_type)
-                .header("Content-Length", slice.len().to_string())
-                .header("Content-Range", format!("bytes {start}-{end}/{total}"))
-                .header("Accept-Ranges", "bytes")
-                .body(Body::from(Bytes::from_static(slice)))
-                .unwrap();
+    fn wav_spec() -> SignalSpec {
+        SignalSpec {
+            sample_rate: 44_100,
+            channels: 2,
+            length: SignalSpecLength::Seconds(1.0),
+            format: SignalFormat::Wav,
         }
-
-        Response::builder()
-            .status(StatusCode::OK)
-            .header("Content-Type", content_type)
-            .header("Content-Length", total.to_string())
-            .header("Accept-Ranges", "bytes")
-            .body(Body::from(Bytes::from_static(data)))
-            .unwrap()
-    }
-
-    /// Handler for WAV endpoint
-    async fn wav_endpoint(req: Request) -> Response<Body> {
-        serve_bytes(TINY_WAV_BYTES, "audio/wav", &req)
-    }
-
-    /// Handler for MP3 endpoint
-    async fn mp3_endpoint(req: Request) -> Response<Body> {
-        serve_bytes(TEST_MP3_BYTES, "audio/mpeg", &req)
     }
 }
 

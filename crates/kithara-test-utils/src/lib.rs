@@ -32,6 +32,7 @@ pub mod signal_pcm;
 pub mod signal_source;
 mod signal_source_utils;
 pub(crate) mod signal_spec;
+pub mod signal_url;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod test_server;
 pub mod wav;
@@ -51,6 +52,7 @@ pub use log_filter::rust_log_filter;
 pub use rng::*;
 pub use server_url::join_server_url;
 pub use signal_source_utils::*;
+pub use signal_url::{SignalFormat, SignalKind, SignalSpec, SignalSpecLength, signal_path};
 #[cfg(not(target_arch = "wasm32"))]
 pub use test_server::{TestServerHelper, run_test_server};
 pub use wav::{create_test_wav, create_wav_exact_bytes};
