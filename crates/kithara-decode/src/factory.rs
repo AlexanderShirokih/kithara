@@ -242,7 +242,7 @@ impl DecoderFactory {
 
         // Priority 3: MIME type mapping
         if let Some(ref mime) = hint.mime
-            && let Some(codec) = Self::codec_from_mime(mime)
+            && let Some(codec) = AudioCodec::from_mime(mime)
         {
             return Ok(codec);
         }
@@ -269,40 +269,6 @@ impl DecoderFactory {
             "caf" => Some(AudioCodec::Alac),
             _ => None,
         }
-    }
-
-    /// Map MIME type to codec.
-    fn codec_from_mime(mime: &str) -> Option<AudioCodec> {
-        let mime_lower = mime.to_lowercase();
-
-        // Check for specific codec indicators
-        if mime_lower.contains("mp3") || mime_lower == "audio/mpeg" {
-            return Some(AudioCodec::Mp3);
-        }
-        if mime_lower.contains("aac") || mime_lower == "audio/aac" {
-            return Some(AudioCodec::AacLc);
-        }
-        if mime_lower.contains("flac") || mime_lower == "audio/flac" {
-            return Some(AudioCodec::Flac);
-        }
-        if mime_lower.contains("vorbis") || mime_lower == "audio/vorbis" {
-            return Some(AudioCodec::Vorbis);
-        }
-        if mime_lower.contains("opus") || mime_lower == "audio/opus" {
-            return Some(AudioCodec::Opus);
-        }
-        if mime_lower == "audio/ogg" {
-            // Ogg container, default to Vorbis
-            return Some(AudioCodec::Vorbis);
-        }
-        if mime_lower == "audio/wav" || mime_lower == "audio/wave" || mime_lower == "audio/x-wav" {
-            return Some(AudioCodec::Pcm);
-        }
-        if mime_lower == "audio/mp4" || mime_lower == "audio/x-m4a" {
-            return Some(AudioCodec::AacLc);
-        }
-
-        None
     }
 
     /// Infer likely codec from container format.
@@ -451,9 +417,6 @@ impl DecoderFactory {
     where
         R: Read + Seek + Send + Sync + 'static,
     {
-        // Only pass extension hint, don't derive container format.
-        // This ensures Symphonia uses its probe mechanism which can handle
-        // files with junk data or unusual metadata.
         let probe_hint = ProbeHint {
             extension: hint.map(String::from),
             ..Default::default()
@@ -776,7 +739,7 @@ mod tests {
     #[case("")]
     #[case("video/mp4")]
     fn test_codec_from_mime_unknown_returns_none(#[case] mime: &str) {
-        assert!(DecoderFactory::codec_from_mime(mime).is_none());
+        assert!(AudioCodec::from_mime(mime).is_none());
     }
 
     #[kithara::test]

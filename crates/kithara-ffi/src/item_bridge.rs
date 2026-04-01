@@ -31,7 +31,7 @@ pub(crate) struct ItemEventBridge {
 impl ItemEventBridge {
     /// Spawn a task that translates resource events into item callbacks.
     pub(crate) fn spawn(
-        rx: broadcast::Receiver<Event>,
+        rx: kithara_events::EventReceiver,
         observer: Arc<dyn ItemObserver>,
         duration_seconds: Option<f64>,
         cancel: CancellationToken,
@@ -47,7 +47,7 @@ impl ItemEventBridge {
     }
 
     fn spawn_event_task(
-        mut rx: broadcast::Receiver<Event>,
+        mut rx: kithara_events::EventReceiver,
         observer: Arc<dyn ItemObserver>,
         mut duration_seconds: Option<f64>,
         cancel: CancellationToken,
@@ -93,6 +93,8 @@ impl ItemEventBridge {
             *last_buffered = Some(buffered);
             observer.on_event(FfiItemEvent::BufferedDurationChanged { seconds: buffered });
         }
+
+        Self::dispatch_variant_events(observer, event);
 
         if let Some(error) = Self::error_from_event(event) {
             observer.on_event(FfiItemEvent::StatusChanged {
@@ -143,6 +145,49 @@ impl ItemEventBridge {
         let hi = u32::try_from(value >> U64_HIGH_SHIFT).ok()?;
         let lo = u32::try_from(value & u64::from(u32::MAX)).ok()?;
         Some(f64::from(hi) * U32_MAX_PLUS_ONE + f64::from(lo))
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "variant index/count fits u32"
+    )]
+    fn dispatch_variant_events(observer: &Arc<dyn ItemObserver>, event: &Event) {
+        match event {
+            Event::Hls(HlsEvent::VariantsDiscovered { variants, .. }) => {
+                let ffi_variants = variants
+                    .iter()
+                    .map(|v| crate::types::FfiVariant {
+                        index: v.index as u32,
+                        bandwidth_bps: v.bandwidth_bps.unwrap_or(0),
+                        name: v.name.clone(),
+                    })
+                    .collect();
+                observer.on_event(FfiItemEvent::VariantsDiscovered {
+                    variants: ffi_variants,
+                });
+            }
+            Event::Hls(HlsEvent::AbrModeChanged {
+                mode: kithara::abr::AbrMode::Manual(idx),
+            }) => {
+                observer.on_event(FfiItemEvent::VariantSelected {
+                    variant: crate::types::FfiVariant {
+                        index: *idx as u32,
+                        bandwidth_bps: 0,
+                        name: None,
+                    },
+                });
+            }
+            Event::Hls(HlsEvent::VariantApplied { to_variant, .. }) => {
+                observer.on_event(FfiItemEvent::VariantApplied {
+                    variant: crate::types::FfiVariant {
+                        index: *to_variant as u32,
+                        bandwidth_bps: 0,
+                        name: None,
+                    },
+                });
+            }
+            _ => {}
+        }
     }
 
     fn error_from_event(event: &Event) -> Option<FfiError> {

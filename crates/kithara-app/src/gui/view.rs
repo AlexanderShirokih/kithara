@@ -109,6 +109,7 @@ const SEEK_STEP: f32 = 0.1;
 const BORDER_RADIUS: f32 = 12.0;
 const BORDER_RADIUS_SECTION: f32 = 10.0;
 const BORDER_RADIUS_BUTTON: f32 = 8.0;
+const BORDER_RADIUS_PILL: f32 = 4.0;
 const BORDER_WIDTH: f32 = 1.0;
 const BORDER_RADIUS_CIRCLE: f32 = 100.0;
 
@@ -148,6 +149,11 @@ const EQ_SIMPLE_LABEL_THRESHOLD: usize = 3;
 
 const BLINK_DIVISOR: u8 = 5;
 const BLINK_PERIOD: u64 = 2;
+
+// Playrate pill buttons
+const PLAYRATE_PADDING_Y: u16 = 3;
+const PLAYRATE_PADDING_X: u16 = 6;
+const PLAYRATE_SPACING: f32 = 4.0;
 
 pub(crate) fn view(state: &Kithara) -> Element<'_, Message> {
     let p = state.palette;
@@ -225,22 +231,26 @@ fn view_now_playing(state: &Kithara) -> Element<'_, Message> {
 
     let subtitle = track_subtitle(state);
 
-    container(
-        column![
-            row![
-                Icon::MusicNote.view(MUSIC_NOTE_SIZE, p.accent),
-                text(track_name).size(TRACK_NAME_FONT).color(p.text)
-            ]
-            .spacing(ELEMENT_SPACING)
-            .align_y(Alignment::Center),
-            text(subtitle).size(CAPTION_FONT).color(p.muted)
+    let mut col = column![
+        row![
+            Icon::MusicNote.view(MUSIC_NOTE_SIZE, p.accent),
+            text(track_name).size(TRACK_NAME_FONT).color(p.text)
         ]
-        .spacing(COMPACT_SPACING),
-    )
-    .width(Length::Fill)
-    .padding(SECTION_PADDING)
-    .style(section_style(p))
-    .into()
+        .spacing(ELEMENT_SPACING)
+        .align_y(Alignment::Center),
+        text(subtitle).size(CAPTION_FONT).color(p.muted)
+    ]
+    .spacing(COMPACT_SPACING);
+
+    if !state.variant_label.is_empty() {
+        col = col.push(text(&state.variant_label).size(CAPTION_FONT).color(p.muted));
+    }
+
+    container(col)
+        .width(Length::Fill)
+        .padding(SECTION_PADDING)
+        .style(section_style(p))
+        .into()
 }
 
 fn view_seek(state: &Kithara) -> Element<'_, Message> {
@@ -318,7 +328,9 @@ fn view_transport(state: &Kithara) -> Element<'_, Message> {
         Icon::Repeat
     };
 
-    let toggles_row = row![
+    let rate_buttons = view_playrate(state);
+
+    let bottom_row = row![
         icon_button(
             Icon::Shuffle,
             TOGGLE_ICON_SIZE,
@@ -326,6 +338,8 @@ fn view_transport(state: &Kithara) -> Element<'_, Message> {
             TOGGLE_ICON_PADDING,
             Message::ToggleShuffle
         ),
+        Space::new().width(Length::Fill),
+        rate_buttons,
         Space::new().width(Length::Fill),
         icon_button(
             repeat_icon,
@@ -339,13 +353,57 @@ fn view_transport(state: &Kithara) -> Element<'_, Message> {
     .align_y(Alignment::Center);
 
     container(
-        column![transport_row, toggles_row]
+        column![transport_row, bottom_row]
             .spacing(ELEMENT_SPACING)
             .align_x(Alignment::Center),
     )
     .width(Length::Fill)
     .padding([TRANSPORT_PADDING_Y, TRANSPORT_PADDING_X])
     .into()
+}
+
+fn view_playrate(state: &Kithara) -> Element<'_, Message> {
+    const RATES: [f32; 6] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+    let p = state.palette;
+
+    let buttons = RATES.iter().map(|&rate| {
+        let is_selected = (state.selected_rate - rate).abs() < f32::EPSILON;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "rate 0.5–2.0"
+        )]
+        let label = if rate == rate.floor() {
+            format!("{}x", rate as u8)
+        } else {
+            format!("{rate:.2}x")
+        };
+        let btn_text = text(label)
+            .size(SMALL_FONT)
+            .color(if is_selected { p.bg } else { p.muted });
+        let btn = button(btn_text)
+            .style(move |_theme, _status| button::Style {
+                background: Some(if is_selected {
+                    p.accent.into()
+                } else {
+                    p.bg_panel.into()
+                }),
+                text_color: if is_selected { p.bg } else { p.muted },
+                border: Border {
+                    radius: BORDER_RADIUS_PILL.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .padding([PLAYRATE_PADDING_Y, PLAYRATE_PADDING_X])
+            .on_press(Message::PlayRateChanged(rate));
+        Element::from(btn)
+    });
+
+    row(buttons)
+        .spacing(PLAYRATE_SPACING)
+        .align_y(Alignment::Center)
+        .into()
 }
 
 fn view_volume(state: &Kithara) -> Element<'_, Message> {
@@ -588,18 +646,33 @@ fn view_dj(state: &Kithara) -> Element<'_, Message> {
 
 fn view_settings(state: &Kithara) -> Element<'_, Message> {
     let p = state.palette;
-    container(
-        column![
-            text("Settings").size(HEADING_FONT).color(p.text),
-            text("Playback and appearance options will be added here.")
-                .size(SETTINGS_BODY_FONT)
-                .color(p.muted),
-        ]
-        .spacing(SETTINGS_SPACING),
-    )
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
+    let mut col =
+        column![text("Settings").size(HEADING_FONT).color(p.text),].spacing(SETTINGS_SPACING);
+
+    // Quality picker (ABR mode)
+    col = col.push(text("Quality").size(SETTINGS_BODY_FONT).color(p.text));
+    let mut quality_row = row![].spacing(COMPACT_SPACING);
+    quality_row = quality_row.push(abr_button(
+        "Auto",
+        state.abr_mode_is_auto,
+        p,
+        Message::SetAbrMode(None),
+    ));
+    for (idx, label) in &state.abr_variants {
+        let active = state.selected_variant == Some(*idx);
+        quality_row = quality_row.push(abr_button(
+            label,
+            active,
+            p,
+            Message::SetAbrMode(Some(*idx)),
+        ));
+    }
+    col = col.push(quality_row);
+
+    container(col)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
 
 fn truncate_name(name: &str, max_chars: usize) -> String {
@@ -843,6 +916,15 @@ fn slider_style(p: GuiPalette) -> impl Fn(&Theme, SliderStatus) -> SliderStyle {
             },
         }
     }
+}
+
+fn abr_button<'a>(label: &str, active: bool, p: GuiPalette, msg: Message) -> Element<'a, Message> {
+    let text_color = if active { p.accent } else { p.muted };
+    button(text(label.to_string()).size(CAPTION_FONT).color(text_color))
+        .on_press(msg)
+        .padding(Padding::from([2, 6]))
+        .style(ghost_button_style(p))
+        .into()
 }
 
 fn track_subtitle(state: &Kithara) -> String {

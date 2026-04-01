@@ -8,8 +8,6 @@ use std::{
 };
 
 use derive_setters::Setters;
-#[cfg(feature = "hls")]
-use kithara_abr::AbrOptions;
 #[cfg(any(feature = "file", feature = "hls"))]
 use kithara_assets::StoreOptions;
 use kithara_audio::{AudioConfig, AudioWorkerHandle, ResamplerQuality};
@@ -102,9 +100,9 @@ const DEFAULT_PRELOAD_CHUNKS: NonZeroUsize = NonZeroUsize::new(3).unwrap();
 #[derive(Setters)]
 #[setters(prefix = "with_", strip_option)]
 pub struct ResourceConfig {
-    /// ABR (Adaptive Bitrate) configuration.
+    /// ABR controller (shared across tracks in a player).
     #[cfg(feature = "hls")]
-    pub abr: AbrOptions,
+    pub abr: Option<kithara_abr::AbrController<kithara_abr::ThroughputEstimator>>,
     /// Unified event bus for streaming, decode, and audio events.
     ///
     /// When set, the bus is propagated to the underlying stream and audio
@@ -231,7 +229,7 @@ impl ResourceConfig {
 
         Ok(Self {
             #[cfg(feature = "hls")]
-            abr: AbrOptions::default(),
+            abr: None,
             bus: None,
             byte_pool: None,
             cancel: None,
@@ -365,22 +363,22 @@ impl ResourceConfig {
             }
         };
 
-        let mut abr = self.abr;
-        // Map preferred_peak_bitrate → AbrOptions::max_bandwidth_bps.
-        // Only apply if the value is a finite number >= 1.0 bps.
-        if self.preferred_peak_bitrate.is_finite() && self.preferred_peak_bitrate >= 1.0 {
-            #[expect(clippy::cast_sign_loss)] // guarded by >= 1.0 check above
-            #[expect(clippy::cast_possible_truncation)]
-            // f64 → u64 is fine for bitrate values in practical range
-            let cap = self.preferred_peak_bitrate as u64;
-            abr.max_bandwidth_bps = Some(cap);
-        }
-
         let mut hls_config = HlsConfig::new(url)
             .with_store(self.store)
             .with_net(self.net)
-            .with_abr(abr)
             .with_keys(self.keys);
+
+        hls_config.abr = self.abr;
+
+        if self.preferred_peak_bitrate.is_finite() && self.preferred_peak_bitrate >= 1.0 {
+            #[expect(clippy::cast_sign_loss)]
+            #[expect(clippy::cast_possible_truncation)]
+            let cap = self.preferred_peak_bitrate as u64;
+            let ctrl = hls_config.abr.get_or_insert_with(|| {
+                kithara_abr::AbrController::new(kithara_abr::AbrOptions::default())
+            });
+            ctrl.set_max_bandwidth_bps(Some(cap));
+        }
 
         if let Some(bytes) = self.look_ahead_bytes {
             hls_config = hls_config.with_look_ahead_bytes(bytes);
@@ -562,7 +560,12 @@ mod tests {
             .unwrap()
             .with_preferred_peak_bitrate(512_000.0);
         let audio_config = config.into_hls_config().unwrap();
-        assert_eq!(audio_config.stream.abr.max_bandwidth_bps, Some(512_000));
+        let abr = audio_config
+            .stream
+            .abr
+            .as_ref()
+            .expect("controller should be set");
+        assert_eq!(abr.max_bandwidth_bps(), Some(512_000));
     }
 
     #[kithara::test]
@@ -603,5 +606,35 @@ mod tests {
         let audio_config = config.into_hls_config().unwrap();
         assert!(audio_config.worker.is_some());
         worker.shutdown();
+    }
+
+    #[cfg(feature = "file")]
+    #[kithara::test]
+    fn file_hint_none_for_url_without_extension() {
+        // URL path has no file extension — hint must be None, not garbage.
+        let config =
+            ResourceConfig::new("https://cdn-edge.zvq.me/track/streamhq?id=125475417").unwrap();
+        let audio_config = config.into_file_config();
+        assert_eq!(
+            audio_config.hint, None,
+            "URL without file extension must produce hint=None"
+        );
+    }
+
+    #[cfg(feature = "file")]
+    #[kithara::test]
+    #[case("https://example.com/song.mp3", Some("mp3"))]
+    #[case("https://example.com/audio.flac", Some("flac"))]
+    #[case("https://example.com/track/stream", None)]
+    #[case("https://example.com/track/streamhq?id=123", None)]
+    #[case("https://example.com/audio", None)]
+    fn file_hint_from_url_extension(#[case] url: &str, #[case] expected: Option<&str>) {
+        let config = ResourceConfig::new(url).unwrap();
+        let audio_config = config.into_file_config();
+        assert_eq!(
+            audio_config.hint.as_deref(),
+            expected,
+            "hint mismatch for URL: {url}"
+        );
     }
 }

@@ -40,6 +40,10 @@ struct PlayerView: View {
             Spacer().frame(height: 16)
             volumeSection
             Spacer().frame(height: 16)
+            eqSection
+            Spacer().frame(height: 16)
+            qualitySection
+            Spacer().frame(height: 16)
             playlistSection
             Spacer().frame(height: 16)
             errorSection
@@ -120,10 +124,17 @@ struct PlayerView: View {
             Image(systemName: "music.note")
                 .font(.system(size: 16))
                 .foregroundStyle(Color.kitharaGold)
-            Text(viewModel.trackName)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(Color.kitharaLight)
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(viewModel.trackName)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(Color.kitharaLight)
+                    .lineLimit(1)
+                if let variant = viewModel.currentVariantLabel {
+                    Text(variant)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.kitharaMuted)
+                }
+            }
             Spacer()
         }
         .padding(12)
@@ -248,6 +259,108 @@ struct PlayerView: View {
                 .font(.system(size: 12, design: .monospaced))
                 .foregroundStyle(Color.kitharaMuted)
                 .frame(width: 36, alignment: .trailing)
+        }
+        .padding(12)
+        .background(Color.kitharaPanel)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    // MARK: - EQ
+
+    private var eqSection: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Text("EQ")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.kitharaLight)
+                Spacer()
+                Button {
+                    viewModel.resetEq()
+                } label: {
+                    Text("Reset")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.kitharaMuted)
+                }
+                .buttonStyle(.plain)
+            }
+
+            HStack(spacing: 4) {
+                ForEach(0..<viewModel.eqGains.count, id: \.self) { band in
+                    VStack(spacing: 4) {
+                        Slider(
+                            value: Binding(
+                                get: { viewModel.eqGains[band] },
+                                set: { viewModel.setEqGain(band: band, db: $0) }
+                            ),
+                            in: -24...6,
+                            step: 0.5
+                        )
+                        .rotationEffect(.degrees(-90))
+                        .frame(width: 20, height: 80)
+
+                        Text(eqBandLabel(band))
+                            .font(.system(size: 8))
+                            .foregroundStyle(Color.kitharaMuted)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(12)
+        .background(Color.kitharaPanel)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func eqBandLabel(_ band: Int) -> String {
+        let count = viewModel.eqGains.count
+        guard count > 0 else { return "" }
+        let minFreq: Double = 30
+        let maxFreq: Double = 18000
+        let freq = minFreq * pow(maxFreq / minFreq, Double(band) / Double(max(count - 1, 1)))
+        if freq >= 1000 {
+            return String(format: "%.0fk", freq / 1000)
+        }
+        return String(format: "%.0f", freq)
+    }
+
+    // MARK: - Quality
+
+    private var qualitySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Quality")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.kitharaLight)
+
+            HStack(spacing: 6) {
+                Button {
+                    viewModel.setAbrMode(variantIndex: nil)
+                } label: {
+                    Text("Auto")
+                        .font(.system(size: 12, weight: viewModel.abrIsAuto ? .bold : .regular))
+                        .foregroundStyle(viewModel.abrIsAuto ? Color.kitharaBg : .kitharaMuted)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(viewModel.abrIsAuto ? Color.kitharaGold : Color.kitharaPanel)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+
+                ForEach(viewModel.discoveredVariants, id: \.index) { variant in
+                    let isSelected = viewModel.selectedVariantIndex == variant.index
+                    Button {
+                        viewModel.setAbrMode(variantIndex: variant.index)
+                    } label: {
+                        Text(variant.label)
+                            .font(.system(size: 12, weight: isSelected ? .bold : .regular))
+                            .foregroundStyle(isSelected ? Color.kitharaBg : .kitharaMuted)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(isSelected ? Color.kitharaGold : Color.kitharaPanel)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
         .padding(12)
         .background(Color.kitharaPanel)

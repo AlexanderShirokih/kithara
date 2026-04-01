@@ -28,6 +28,11 @@ final class PlayerViewModel: ObservableObject {
     @Published var volume: Float = 1.0
     @Published var isMuted = false
     @Published var selectedRate: Float = 1.0
+    @Published var eqGains: [Float] = []
+    @Published var currentVariantLabel: String?
+    @Published private(set) var discoveredVariants: [(index: UInt32, label: String)] = []
+    @Published var abrIsAuto = true
+    @Published var selectedVariantIndex: UInt32?
 
     private let player = KitharaPlayer()
     private var cancellables = Set<AnyCancellable>()
@@ -39,6 +44,7 @@ final class PlayerViewModel: ObservableObject {
         volume = player.volume
         isMuted = player.isMuted
         player.defaultRate = selectedRate
+        eqGains = Array(repeating: 0, count: player.eqBandCount)
 
         player.eventPublisher
             .receive(on: DispatchQueue.main)
@@ -48,25 +54,32 @@ final class PlayerViewModel: ObservableObject {
                 case let .timeChanged(seconds):
                     if !self.isSeeking { self.currentTime = seconds }
                 case let .rateChanged(rate):
+                    print("[KitharaDemo] player rateChanged: \(rate)")
                     self.isPlaying = rate > 0
                 case let .statusChanged(ffiStatus):
+                    print("[KitharaDemo] player statusChanged: \(ffiStatus)")
                     if self.errorMessage == nil {
                         self.status = PlayerStatus(ffi: ffiStatus)
                     }
                 case let .durationChanged(seconds):
+                    print("[KitharaDemo] player durationChanged: \(seconds)s")
                     self.duration = seconds
                 case let .error(message):
+                    print("[KitharaDemo] player error: \(message)")
                     self.errorMessage = message
                     self.status = .failed
                 case .currentItemChanged:
-                    break
+                    print("[KitharaDemo] player currentItemChanged")
                 case let .volumeChanged(vol):
                     self.volume = vol
                 case let .muteChanged(muted):
                     self.isMuted = muted
                 case .itemDidPlayToEnd:
+                    print("[KitharaDemo] player itemDidPlayToEnd (time=\(self.currentTime), duration=\(String(describing: self.duration)))")
                     self.playNext(afterPlaybackEnded: true)
-                case .timeControlStatusChanged, .bufferedDurationChanged:
+                case let .bufferedDurationChanged(seconds):
+                    print("[KitharaDemo] player buffered: \(seconds)s")
+                case .timeControlStatusChanged:
                     break
                 }
             }
@@ -133,6 +146,34 @@ final class PlayerViewModel: ObservableObject {
 
         if shouldStartPlayback {
             loadTrack(entry, force: true)
+        }
+    }
+
+    // MARK: - EQ
+
+    func setEqGain(band: Int, db: Float) {
+        player.setEqGain(band: band, gainDb: db)
+        if band < eqGains.count {
+            eqGains[band] = db
+        }
+    }
+
+    func resetEq() {
+        player.resetEq()
+        eqGains = Array(repeating: 0, count: eqGains.count)
+    }
+
+    // MARK: - ABR
+
+    func setAbrMode(variantIndex: UInt32?) {
+        if let idx = variantIndex {
+            player.setAbrMode(.manual(index: Int(idx)))
+            abrIsAuto = false
+            selectedVariantIndex = idx
+        } else {
+            player.setAbrMode(.auto)
+            abrIsAuto = true
+            selectedVariantIndex = nil
         }
     }
 
@@ -238,17 +279,42 @@ final class PlayerViewModel: ObservableObject {
         isSeeking = false
         status = .unknown
         shouldReloadCurrentTrack = false
+        currentVariantLabel = nil
+        selectedVariantIndex = nil
+        abrIsAuto = true
 
         let item = KitharaPlayerItem(url: track.url)
         itemCancellable = item.eventPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] event in
-                if case let .error(message) = event {
+                switch event {
+                case let .error(message):
+                    print("[KitharaDemo] item error: \(message)")
                     self?.errorMessage = message
                     self?.status = .failed
+                case let .durationChanged(seconds):
+                    print("[KitharaDemo] duration: \(seconds)s")
+                case let .variantsDiscovered(variants):
+                    let labels = variants.map { "\($0.bandwidthBps / 1000)k" }.joined(separator: ", ")
+                    print("[KitharaDemo] variants: \(labels)")
+                    self?.discoveredVariants = variants.map { v in
+                        let label = v.name ?? "\(v.bandwidthBps / 1000)k"
+                        return (index: v.index, label: label)
+                    }
+                case let .variantSelected(variant):
+                    let label = variant.name ?? "\(variant.bandwidthBps / 1000) kbps"
+                    print("[KitharaDemo] variant selected: \(label)")
+                    self?.selectedVariantIndex = variant.index
+                case let .variantApplied(variant):
+                    let label = variant.name ?? "\(variant.bandwidthBps / 1000) kbps"
+                    print("[KitharaDemo] variant applied: \(label)")
+                    self?.currentVariantLabel = label
+                default:
+                    break
                 }
             }
 
+        print("[KitharaDemo] loading: \(track.url)")
         item.load()
 
         do {
@@ -257,6 +323,7 @@ final class PlayerViewModel: ObservableObject {
             currentTrackId = track.id
             player.play()
         } catch {
+            print("[KitharaDemo] insert error: \(error)")
             errorMessage = "\(error)"
             status = .failed
         }

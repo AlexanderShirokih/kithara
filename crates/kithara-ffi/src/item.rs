@@ -8,7 +8,10 @@ use std::{
     },
 };
 
-use kithara::play::{Resource, ResourceConfig};
+use kithara::{
+    abr::AbrMode,
+    play::{Resource, ResourceConfig},
+};
 use kithara_platform::{
     Mutex,
     tokio::{runtime as tokio_runtime, sync::Notify},
@@ -32,12 +35,15 @@ pub struct AudioPlayerItem {
     headers: Option<HashMap<String, String>>,
     preferred_peak_bitrate: Mutex<f64>,
     preferred_peak_bitrate_expensive: Mutex<f64>,
+    abr_mode: Mutex<Option<crate::types::FfiAbrMode>>,
     resource: Mutex<Option<Resource>>,
     store: Mutex<StoreOptions>,
     event_bridge: Mutex<Option<ItemEventBridge>>,
     observer: Mutex<Option<Arc<dyn ItemObserver>>>,
     loading: AtomicBool,
     load_notify: Notify,
+    /// Scoped event bus — set by `AudioPlayer` when item is inserted.
+    pub(crate) bus: Mutex<Option<kithara_events::EventBus>>,
     /// Shared audio worker — set by `AudioPlayer` when item is inserted.
     pub(crate) worker: Mutex<Option<kithara::audio::AudioWorkerHandle>>,
     /// Shared runtime — set by `AudioPlayer` when item is inserted.
@@ -64,12 +70,14 @@ impl AudioPlayerItem {
             headers: additional_headers,
             preferred_peak_bitrate: Mutex::new(0.0),
             preferred_peak_bitrate_expensive: Mutex::new(0.0),
+            abr_mode: Mutex::new(None),
             resource: Mutex::new(None),
             store: Mutex::new(StoreOptions::default()),
             event_bridge: Mutex::new(None),
             observer: Mutex::new(None),
             loading: AtomicBool::new(false),
             load_notify: Notify::new(),
+            bus: Mutex::new(None),
             worker: Mutex::new(None),
             runtime: Mutex::new(None),
             key_options: Mutex::new(None),
@@ -99,6 +107,11 @@ impl AudioPlayerItem {
 
     pub fn set_preferred_peak_bitrate_for_expensive_networks(&self, bitrate: f64) {
         *self.preferred_peak_bitrate_expensive.lock_sync() = bitrate;
+    }
+
+    /// Set ABR mode. Must be called before `load()`.
+    pub fn set_abr_mode(&self, mode: crate::types::FfiAbrMode) {
+        *self.abr_mode.lock_sync() = Some(mode);
     }
 
     /// Synchronous fire-and-forget load.
@@ -224,6 +237,9 @@ impl AudioPlayerItem {
             config = config.with_headers(headers.clone().into());
         }
 
+        if let Some(ref b) = *self.bus.lock_sync() {
+            config.bus = Some(b.clone());
+        }
         if let Some(ref w) = *self.worker.lock_sync() {
             config.worker = Some(w.clone());
         }
@@ -232,6 +248,23 @@ impl AudioPlayerItem {
         }
         if let Some(ref keys) = *self.key_options.lock_sync() {
             config = config.with_keys(keys.clone());
+        }
+
+        if let Some(mode) = *self.abr_mode.lock_sync() {
+            let abr_mode = match mode {
+                crate::types::FfiAbrMode::Auto => AbrMode::Auto(None),
+                crate::types::FfiAbrMode::Manual { variant_index } => {
+                    AbrMode::Manual(variant_index as usize)
+                }
+            };
+            if let Some(ref ctrl) = config.abr {
+                ctrl.set_mode(abr_mode);
+            } else {
+                config.abr = Some(kithara::abr::AbrController::new(kithara::abr::AbrOptions {
+                    mode: abr_mode,
+                    ..kithara::abr::AbrOptions::default()
+                }));
+            }
         }
 
         Ok(ResourceLoadConfig { config })
@@ -259,6 +292,8 @@ impl AudioPlayerItem {
 
 #[cfg(test)]
 mod tests {
+    use tracing::debug;
+
     use super::*;
 
     #[kithara::test]
@@ -334,5 +369,31 @@ mod tests {
         let item = AudioPlayerItem::new("https://example.com/a.mp3".into(), Some(headers));
         let config = item.build_resource_config();
         assert!(config.is_ok());
+    }
+
+    #[kithara::test(tokio, timeout(std::time::Duration::from_secs(30)))]
+    #[ignore = "requires internet; zvuk URLs require corporate VPN"]
+    #[case::silvercomet("https://stream.silvercomet.top/track.mp3")]
+    #[case::zvuk("https://cdn-edge.zvq.me/track/streamhq?id=151585912")]
+    async fn ffi_item_load_produces_resource_with_duration(#[case] url: &str) {
+        let item = AudioPlayerItem::new(url.into(), None);
+        item.clone().load();
+        item.wait_for_load().await;
+
+        let resource = item.take_resource();
+        assert!(
+            resource.is_ok(),
+            "{url}: take_resource failed: {:?}",
+            resource.err()
+        );
+        let resource = resource.expect("checked");
+        let duration = resource.duration();
+        debug!("{url}: duration={duration:?}");
+        assert!(
+            duration.is_some(),
+            "{url}: duration must be reported (got None)"
+        );
+        let dur_secs = duration.expect("checked").as_secs_f64();
+        assert!(dur_secs > 30.0, "{url}: expected >30s, got {dur_secs:.1}s");
     }
 }

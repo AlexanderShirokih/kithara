@@ -27,8 +27,8 @@
 //!     play_audio(chunk);
 //! }
 //!
-//! // Events via decode_events()
-//! let mut events = audio.decode_events();
+//! // Events via event_bus()
+//! let mut events = audio.event_bus().subscribe();
 //! while let Ok(event) = events.recv().await {
 //!     println!("Audio: {:?}", event);
 //! }
@@ -54,9 +54,7 @@ pub mod internal;
 
 // Public API exports
 pub use audio::Audio;
-pub use effects::eq::{
-    EqBandConfig, EqEffect, FilterKind, compute_coefficients, generate_log_spaced_bands,
-};
+pub use effects::eq::{EqBandConfig, EqEffect, FilterKind, IsolatorEq, generate_log_spaced_bands};
 pub use pipeline::config::AudioConfig;
 pub use resampler::{ResamplerParams, ResamplerProcessor, ResamplerQuality};
 pub use traits::{AudioEffect, DecodeError, DecodeResult, PcmReader};

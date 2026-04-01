@@ -24,6 +24,9 @@ pub(crate) fn update(state: &mut Kithara, message: Message) -> Task<Message> {
             if let Some(next_idx) = state.playlist.get_next_track() {
                 state.current_track_index = Some(next_idx);
                 state.track_name = state.playlist.track_name(next_idx);
+                state.variant_label.clear();
+                state.abr_mode_is_auto = true;
+                state.selected_variant = None;
                 state.load_track(next_idx)
             } else {
                 Task::none()
@@ -34,6 +37,7 @@ pub(crate) fn update(state: &mut Kithara, message: Message) -> Task<Message> {
             if let Some(prev_idx) = state.playlist.get_prev_track() {
                 state.current_track_index = Some(prev_idx);
                 state.track_name = state.playlist.track_name(prev_idx);
+                state.variant_label.clear();
                 state.load_track(prev_idx)
             } else {
                 Task::none()
@@ -81,6 +85,15 @@ pub(crate) fn update(state: &mut Kithara, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        Message::PlayRateChanged(rate) => {
+            state.selected_rate = rate;
+            state.player.set_default_rate(rate);
+            if state.playing {
+                state.player.play();
+            }
+            Task::none()
+        }
+
         Message::CrossfadeChanged(secs) => {
             state.crossfade = secs;
             state.player.set_crossfade_duration(secs);
@@ -91,6 +104,9 @@ pub(crate) fn update(state: &mut Kithara, message: Message) -> Task<Message> {
             state.playlist.on_track_selected(idx);
             state.current_track_index = Some(idx);
             state.track_name = state.playlist.track_name(idx);
+            state.variant_label.clear();
+            state.abr_mode_is_auto = true;
+            state.selected_variant = None;
             state.load_track(idx)
         }
 
@@ -111,9 +127,31 @@ pub(crate) fn update(state: &mut Kithara, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        Message::SetAbrMode(variant) => {
+            use kithara::abr::AbrMode;
+            state.abr_mode_is_auto = variant.is_none();
+            state.selected_variant = variant;
+            state
+                .player
+                .set_abr_mode(variant.map_or(AbrMode::Auto(None), AbrMode::Manual));
+            Task::none()
+        }
+
         Message::Tick => {
             let _ = state.player.tick();
             state.blink_counter = state.blink_counter.wrapping_add(1);
+
+            // Sync variant label and ABR variants from background listener.
+            if let Ok(label) = state.shared_variant_label.lock()
+                && *label != state.variant_label
+            {
+                state.variant_label.clone_from(&label);
+            }
+            if let Ok(sv) = state.shared_abr_variants.lock()
+                && *sv != state.abr_variants
+            {
+                state.abr_variants.clone_from(&sv);
+            }
 
             // Sync playback state.
             state.playing = state.player.is_playing();

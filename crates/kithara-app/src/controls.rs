@@ -91,15 +91,14 @@ impl AppController {
 
     /// Create a `TrackLoadParams` for async track loading.
     #[must_use]
-    pub fn load_params(&self) -> TrackLoadParams {
+    pub fn load_params(&self, danger_accept_invalid_certs: bool) -> TrackLoadParams {
         TrackLoadParams {
             player: Arc::clone(&self.player),
             playlist: Arc::clone(&self.playlist),
+            danger_accept_invalid_certs,
         }
     }
 }
-
-const EVENT_BUS_CAPACITY: usize = 32;
 
 /// Shared, cloneable context for loading tracks asynchronously.
 ///
@@ -109,6 +108,7 @@ const EVENT_BUS_CAPACITY: usize = 32;
 pub struct TrackLoadParams {
     player: Arc<PlayerImpl>,
     playlist: Arc<Playlist>,
+    danger_accept_invalid_certs: bool,
 }
 
 impl TrackLoadParams {
@@ -127,7 +127,7 @@ impl TrackLoadParams {
     /// Build a `ResourceConfig` for the track at `index`.
     ///
     /// This is THE ONLY place that applies DRM key options.
-    /// Creates an `EventBus` so callers can subscribe before `Resource::new()`.
+    /// `prepare_config()` injects a scoped `EventBus` from the player's root bus.
     ///
     /// # Errors
     /// Returns an error if the index is out of range or the URL is invalid.
@@ -144,11 +144,8 @@ impl TrackLoadParams {
             config = config.with_keys(crate::drm::make_key_options());
         }
 
+        config.net.insecure = self.danger_accept_invalid_certs;
         self.player.prepare_config(&mut config);
-
-        // Attach an event bus so File/HLS can wire the on_slow callback
-        // and we can subscribe before Resource::new().
-        config = config.with_events(EventBus::new(EVENT_BUS_CAPACITY));
 
         Ok(config)
     }

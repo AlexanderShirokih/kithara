@@ -13,10 +13,8 @@ use derivative::Derivative;
 use derive_setters::Setters;
 use kithara_audio::{AudioWorkerHandle, EqBandConfig, generate_log_spaced_bands};
 use kithara_bufpool::{PcmPool, pcm_pool};
-use kithara_platform::{
-    Mutex,
-    tokio::{runtime::Handle as RuntimeHandle, sync::broadcast},
-};
+use kithara_events::EventBus;
+use kithara_platform::{Mutex, tokio::runtime::Handle as RuntimeHandle};
 use portable_atomic::AtomicF32;
 use ringbuf::traits::Consumer;
 use tracing::{debug, warn};
@@ -36,17 +34,24 @@ use crate::{
     types::{ActionAtItemEnd, PlayerStatus, SessionDuckingMode, SlotId},
 };
 
-/// Capacity of the player event broadcast channel.
-const PLAYER_EVENT_CHANNEL_CAPACITY: usize = 64;
-
 /// Minimum playback rate to prevent stalling.
 const MIN_PLAYBACK_RATE: f32 = 0.01;
 
 /// Configuration for the player.
-#[derive(Clone, Debug, Derivative, Setters)]
-#[derivative(Default)]
+#[derive(Clone, Derivative, Setters)]
+#[derivative(Default, Debug)]
 #[setters(prefix = "with_", strip_option)]
 pub struct PlayerConfig {
+    /// Shared ABR controller. When `None`, a default one is created.
+    #[derivative(Debug = "ignore")]
+    pub abr: Option<kithara_abr::AbrController<kithara_abr::ThroughputEstimator>>,
+    /// Root event bus for this player.
+    ///
+    /// When set, all player/engine/resource events are published here.
+    /// Resources receive a `bus.scoped()` child via `prepare_config()`.
+    /// When `None`, a default root bus is created.
+    #[setters(skip)]
+    pub bus: Option<EventBus>,
     /// Crossfade duration in seconds. Default: 1.0.
     #[derivative(Default(value = "1.0"))]
     pub crossfade_duration: f32,
@@ -76,11 +81,11 @@ pub struct PlayerImpl {
     config: PlayerConfig,
 
     action_at_item_end: Mutex<ActionAtItemEnd>,
+    bus: EventBus,
     crossfade_duration: AtomicF32,
     current_index: AtomicUsize,
     current_slot: Mutex<Option<SlotId>>,
     default_rate: AtomicF32,
-    events_tx: broadcast::Sender<PlayerEvent>,
     /// Items drop before engine — Audio tracks unregister from worker
     /// while it is still alive.
     items: Mutex<Vec<Option<Resource>>>,
@@ -99,11 +104,13 @@ pub struct PlayerImpl {
 impl PlayerImpl {
     /// Create a new player with the given configuration.
     #[must_use]
-    pub fn new(config: PlayerConfig) -> Self {
+    pub fn new(mut config: PlayerConfig) -> Self {
         let resolved_pool = config
             .pcm_pool
             .clone()
             .unwrap_or_else(|| pcm_pool().clone());
+
+        let bus = config.bus.clone().unwrap_or_default();
 
         let engine_config = EngineConfig {
             eq_layout: config.eq_layout.clone(),
@@ -111,16 +118,20 @@ impl PlayerImpl {
             pcm_pool: Some(resolved_pool.clone()),
             ..EngineConfig::default()
         };
-        let engine = EngineImpl::new(engine_config);
+        let engine = EngineImpl::new(engine_config, bus.clone());
+        if config.abr.is_none() {
+            config.abr = Some(kithara_abr::AbrController::new(
+                kithara_abr::AbrOptions::default(),
+            ));
+        }
 
-        let (events_tx, _) = broadcast::channel(PLAYER_EVENT_CHANNEL_CAPACITY);
         Self {
             action_at_item_end: Mutex::new(ActionAtItemEnd::default()),
             crossfade_duration: AtomicF32::new(config.crossfade_duration),
             current_index: AtomicUsize::new(0),
             current_slot: Mutex::new(None),
             default_rate: AtomicF32::new(config.default_rate),
-            events_tx,
+            bus,
             items: Mutex::new(Vec::new()),
             muted: AtomicBool::new(false),
             pcm_pool: resolved_pool,
@@ -162,6 +173,13 @@ impl PlayerImpl {
         config.host_sample_rate = std::num::NonZeroU32::new(self.engine.master_sample_rate());
         if let Some(rt) = self.engine.runtime() {
             config.runtime = Some(rt.clone());
+        }
+        #[cfg(feature = "hls")]
+        if config.abr.is_none() {
+            config.abr.clone_from(&self.config.abr);
+        }
+        if config.bus.is_none() {
+            config.bus = Some(self.bus.scoped());
         }
     }
 
@@ -248,8 +266,8 @@ impl PlayerImpl {
         let _ = self.send_to_slot(PlayerCmd::SetPaused(false));
 
         self.set_status(PlayerStatus::ReadyToPlay);
-        let _ = self.events_tx.send(PlayerEvent::CurrentItemChanged);
-        let _ = self.events_tx.send(PlayerEvent::RateChanged { rate });
+        self.bus.publish(PlayerEvent::CurrentItemChanged);
+        self.bus.publish(PlayerEvent::RateChanged { rate });
         debug!(rate, "play");
     }
 
@@ -257,7 +275,7 @@ impl PlayerImpl {
     pub fn pause(&self) {
         self.rate.store(0.0, Ordering::Relaxed);
         let _ = self.send_to_slot(PlayerCmd::SetPaused(true));
-        let _ = self.events_tx.send(PlayerEvent::RateChanged { rate: 0.0 });
+        self.bus.publish(PlayerEvent::RateChanged { rate: 0.0 });
         debug!("pause");
     }
 
@@ -275,9 +293,7 @@ impl PlayerImpl {
         self.rate.store(clamped, Ordering::Relaxed);
         self.playback_rate_shared.store(clamped, Ordering::Relaxed);
         let _ = self.send_to_slot(PlayerCmd::SetPlaybackRate(clamped));
-        let _ = self
-            .events_tx
-            .send(PlayerEvent::RateChanged { rate: clamped });
+        self.bus.publish(PlayerEvent::RateChanged { rate: clamped });
     }
 
     /// Get shared playback rate atomic for the audio pipeline.
@@ -309,9 +325,8 @@ impl PlayerImpl {
         if !self.is_muted() {
             self.apply_effective_volume(clamped);
         }
-        let _ = self
-            .events_tx
-            .send(PlayerEvent::VolumeChanged { volume: clamped });
+        self.bus
+            .publish(PlayerEvent::VolumeChanged { volume: clamped });
     }
 
     /// Get process-wide session ducking mode.
@@ -336,7 +351,7 @@ impl PlayerImpl {
         self.muted.store(muted, Ordering::Relaxed);
         let effective = if muted { 0.0 } else { self.volume() };
         self.apply_effective_volume(effective);
-        let _ = self.events_tx.send(PlayerEvent::MuteChanged { muted });
+        self.bus.publish(PlayerEvent::MuteChanged { muted });
     }
 
     /// Current item index in the queue.
@@ -353,7 +368,7 @@ impl PlayerImpl {
         if current + 1 < items.len() {
             self.current_index.store(current + 1, Ordering::Relaxed);
             drop(items);
-            let _ = self.events_tx.send(PlayerEvent::CurrentItemChanged);
+            self.bus.publish(PlayerEvent::CurrentItemChanged);
             debug!(new_index = current + 1, "advanced to next item");
         }
     }
@@ -386,8 +401,20 @@ impl PlayerImpl {
     }
 
     /// Subscribe to player events.
-    pub fn subscribe(&self) -> broadcast::Receiver<PlayerEvent> {
-        self.events_tx.subscribe()
+    ///
+    /// Returns an [`EventReceiver`](kithara_events::EventReceiver) that delivers
+    /// all events published to this player's root bus (player events, engine
+    /// events, and resource events from all items).
+    pub fn subscribe(&self) -> kithara_events::EventReceiver {
+        self.bus.subscribe()
+    }
+
+    /// Root event bus for this player.
+    ///
+    /// Use `bus().scoped()` to create a child scope for a resource.
+    #[must_use]
+    pub fn bus(&self) -> &EventBus {
+        &self.bus
     }
 
     /// Get player configuration.
@@ -490,7 +517,7 @@ impl PlayerImpl {
         while let Some(notification) = state.notification_rx.lock_sync().try_pop() {
             match notification {
                 PlayerNotification::TrackPlaybackStopped(_) => {
-                    let _ = self.events_tx.send(PlayerEvent::ItemDidPlayToEnd);
+                    self.bus.publish(PlayerEvent::ItemDidPlayToEnd);
                 }
                 other => {
                     tracing::trace!(?other, "unhandled player notification");
@@ -537,6 +564,19 @@ impl PlayerImpl {
         Ok(())
     }
 
+    /// Get the shared ABR controller (if configured).
+    #[must_use]
+    pub fn abr(&self) -> Option<&kithara_abr::AbrController<kithara_abr::ThroughputEstimator>> {
+        self.config.abr.as_ref()
+    }
+
+    /// Change ABR mode at runtime. Takes effect on next `decide()`.
+    pub fn set_abr_mode(&self, mode: kithara_abr::AbrMode) {
+        if let Some(ref ctrl) = self.config.abr {
+            ctrl.set_mode(mode);
+        }
+    }
+
     /// Select and load a queue item by index.
     pub fn select_item(&self, index: usize, autoplay: bool) -> Result<(), PlayError> {
         let items_len = self.item_count();
@@ -549,7 +589,7 @@ impl PlayerImpl {
         self.ensure_engine_started()?;
         self.ensure_slot()?;
         self.current_index.store(index, Ordering::Relaxed);
-        let _ = self.events_tx.send(PlayerEvent::CurrentItemChanged);
+        self.bus.publish(PlayerEvent::CurrentItemChanged);
 
         let _ = self.send_to_slot(PlayerCmd::SetFadeDuration(self.crossfade_duration()));
         self.load_current_item();
@@ -558,14 +598,13 @@ impl PlayerImpl {
             let default_rate = self.default_rate();
             self.rate.store(default_rate, Ordering::Relaxed);
             let _ = self.send_to_slot(PlayerCmd::SetPaused(false));
-            let _ = self
-                .events_tx
-                .send(PlayerEvent::RateChanged { rate: default_rate });
+            self.bus
+                .publish(PlayerEvent::RateChanged { rate: default_rate });
             self.set_status(PlayerStatus::ReadyToPlay);
         } else {
             self.rate.store(0.0, Ordering::Relaxed);
             let _ = self.send_to_slot(PlayerCmd::SetPaused(true));
-            let _ = self.events_tx.send(PlayerEvent::RateChanged { rate: 0.0 });
+            self.bus.publish(PlayerEvent::RateChanged { rate: 0.0 });
         }
 
         Ok(())
@@ -584,9 +623,8 @@ impl PlayerImpl {
         if *status != new_status {
             *status = new_status;
             drop(status);
-            let _ = self
-                .events_tx
-                .send(PlayerEvent::StatusChanged { status: new_status });
+            self.bus
+                .publish(PlayerEvent::StatusChanged { status: new_status });
         }
     }
 
@@ -707,6 +745,7 @@ impl crate::traits::dj::eq::Equalizer for PlayerImpl {
 mod tests {
     use kithara_audio::mock::TestPcmReader;
     use kithara_decode::PcmSpec;
+    use kithara_events::Event;
     use kithara_test_utils::kithara;
 
     use super::*;
@@ -837,6 +876,8 @@ mod tests {
     #[kithara::test]
     fn player_config_custom() {
         let config = PlayerConfig {
+            abr: None,
+            bus: None,
             crossfade_duration: 2.0,
             default_rate: 0.5,
             eq_layout: generate_log_spaced_bands(5),
@@ -950,7 +991,10 @@ mod tests {
         let mut rx = player.subscribe();
         player.advance_to_next_item();
         let event = rx.try_recv();
-        assert!(matches!(event, Ok(PlayerEvent::CurrentItemChanged)));
+        assert!(matches!(
+            event,
+            Ok(Event::Player(PlayerEvent::CurrentItemChanged))
+        ));
     }
 
     #[kithara::test(tokio)]
@@ -998,9 +1042,18 @@ mod tests {
         let e1 = rx.try_recv();
         let e2 = rx.try_recv();
         let e3 = rx.try_recv();
-        assert!(matches!(e1, Ok(PlayerEvent::VolumeChanged { .. })));
-        assert!(matches!(e2, Ok(PlayerEvent::MuteChanged { .. })));
-        assert!(matches!(e3, Ok(PlayerEvent::RateChanged { .. })));
+        assert!(matches!(
+            e1,
+            Ok(Event::Player(PlayerEvent::VolumeChanged { .. }))
+        ));
+        assert!(matches!(
+            e2,
+            Ok(Event::Player(PlayerEvent::MuteChanged { .. }))
+        ));
+        assert!(matches!(
+            e3,
+            Ok(Event::Player(PlayerEvent::RateChanged { .. }))
+        ));
     }
 
     #[kithara::test(tokio)]

@@ -8,14 +8,11 @@ use std::{
 pub use kithara_abr::{AbrMode, AbrOptions};
 use kithara_assets::{AssetStoreBuilder, ProcessChunkFn, ResourceKey};
 use kithara_drm::DecryptContext;
-use kithara_events::{Event, EventBus};
+use kithara_events::{DEFAULT_EVENT_BUS_CAPACITY, Event, EventBus};
 use kithara_net::{HttpClient, NetOptions};
 use kithara_platform::tokio::sync::broadcast;
 use kithara_storage::ResourceExt;
 use tokio_util::sync::CancellationToken;
-
-/// Capacity of the HLS event bus.
-const EVENT_BUS_CAPACITY: usize = 16;
 
 use crate::source::build_pair;
 pub use crate::{
@@ -69,9 +66,10 @@ pub fn make_test_source_with_fetch(
         fetch,
         segments,
         playlist_state,
-        bus: EventBus::new(EVENT_BUS_CAPACITY),
+        bus: EventBus::new(DEFAULT_EVENT_BUS_CAPACITY),
         variant_fence: None,
         _backend: None,
+        last_fallback_key: std::sync::atomic::AtomicU64::new(u64::MAX),
     }
 }
 
@@ -126,7 +124,7 @@ pub fn set_source_variant_fence(source: &mut HlsSource, fence: Option<usize>) {
 }
 
 #[must_use]
-pub fn subscribe_source_events(source: &HlsSource) -> broadcast::Receiver<Event> {
+pub fn subscribe_source_events(source: &HlsSource) -> kithara_events::EventReceiver {
     source.bus.subscribe()
 }
 

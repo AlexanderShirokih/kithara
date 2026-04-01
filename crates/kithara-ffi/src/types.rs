@@ -118,6 +118,25 @@ pub fn parse_url(s: &str) -> FfiResult<Url> {
     })
 }
 
+/// FFI-friendly player configuration.
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "backend-uniffi", derive(uniffi::Record))]
+pub struct FfiPlayerConfig {
+    /// Number of EQ bands (log-spaced). Default: [`DEFAULT_EQ_BAND_COUNT`].
+    pub eq_band_count: u32,
+}
+
+/// Default number of log-spaced EQ bands.
+const DEFAULT_EQ_BAND_COUNT: u32 = 10;
+
+impl Default for FfiPlayerConfig {
+    fn default() -> Self {
+        Self {
+            eq_band_count: DEFAULT_EQ_BAND_COUNT,
+        }
+    }
+}
+
 /// FFI-friendly mirror of [`PlayerStatus`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "backend-uniffi", derive(uniffi::Enum))]
@@ -221,10 +240,46 @@ pub enum FfiPlayerEvent {
 #[derive(Debug)]
 #[cfg_attr(feature = "backend-uniffi", derive(uniffi::Enum))]
 pub enum FfiItemEvent {
-    DurationChanged { seconds: f64 },
-    BufferedDurationChanged { seconds: f64 },
-    StatusChanged { status: FfiItemStatus },
-    Error { error: String },
+    DurationChanged {
+        seconds: f64,
+    },
+    BufferedDurationChanged {
+        seconds: f64,
+    },
+    StatusChanged {
+        status: FfiItemStatus,
+    },
+    VariantsDiscovered {
+        variants: Vec<FfiVariant>,
+    },
+    /// User selected a variant in the picker (may not be applied yet).
+    VariantSelected {
+        variant: FfiVariant,
+    },
+    /// Stream actually switched to a new variant.
+    VariantApplied {
+        variant: FfiVariant,
+    },
+    Error {
+        error: String,
+    },
+}
+
+/// FFI-friendly HLS variant descriptor.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "backend-uniffi", derive(uniffi::Record))]
+pub struct FfiVariant {
+    pub index: u32,
+    pub bandwidth_bps: u64,
+    pub name: Option<String>,
+}
+
+/// FFI-friendly ABR mode.
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "backend-uniffi", derive(uniffi::Enum))]
+pub enum FfiAbrMode {
+    Auto,
+    Manual { variant_index: u32 },
 }
 
 /// Snapshot of the player's current state, returned by [`AudioPlayer::snapshot`].

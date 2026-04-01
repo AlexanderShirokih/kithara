@@ -8,8 +8,7 @@ options:
 
 packages:
   Kithara:
-    url: https://github.com/zvuk/kithara
-    from: "0.0.1"
+    path: ../../../
 
 targets:
   KitharaDemo:
@@ -20,11 +19,11 @@ targets:
     dependencies:
       - package: Kithara
         product: Kithara
+    info:
+      path: Sources/Info.plist
+      properties:
+        UILaunchScreen: {}
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.kithara.demo
         SWIFT_VERSION: "6.0"
-        GENERATE_INFOPLIST_FILE: true
-      platforms:
-        iOS:
-          INFOPLIST_KEY_UILaunchScreen_Generation: true

@@ -17,6 +17,8 @@ pub(crate) enum Message {
     EqBandChanged(usize, f32),
     /// Reset a single EQ band to 0 dB.
     EqBandReset(usize),
+    /// Playback rate changed.
+    PlayRateChanged(f32),
     /// Crossfade duration changed (seconds).
     CrossfadeChanged(f32),
     /// Select a track from the playlist by index.
@@ -25,6 +27,8 @@ pub(crate) enum Message {
     TabSelected(Tab),
     /// A track finished loading asynchronously (index, result).
     TrackLoaded(usize, Result<(), String>),
+    /// Switch ABR mode (None = Auto).
+    SetAbrMode(Option<usize>),
     /// Periodic tick from the subscription (100 ms).
     Tick,
     /// Toggle shuffle mode.

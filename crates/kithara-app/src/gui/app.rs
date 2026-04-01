@@ -1,7 +1,13 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use iced::{Subscription, Task, Theme, time as iced_time};
-use kithara::{play::Engine, prelude::PlayerImpl};
+use kithara::{
+    events::EventBus,
+    prelude::{Event, HlsEvent, PlayerImpl, Resource},
+};
 use tokio::sync::broadcast::error::RecvError;
 use tracing::info;
 
@@ -35,12 +41,24 @@ pub(crate) struct Kithara {
     // EQ band gains in dB (one per band from eq_layout).
     pub(crate) eq_bands: Vec<f32>,
 
+    // Playback rate.
+    pub(crate) selected_rate: f32,
+
     // Crossfade duration in seconds.
     pub(crate) crossfade: f32,
 
     // Track info.
     pub(crate) current_track_index: Option<usize>,
     pub(crate) track_name: String,
+    pub(crate) variant_label: String,
+    pub(crate) shared_variant_label: Arc<Mutex<String>>,
+    pub(crate) shared_abr_variants: Arc<Mutex<Vec<(usize, String)>>>,
+    pub(crate) abr_variants: Vec<(usize, String)>,
+    pub(crate) abr_mode_is_auto: bool,
+    /// Variant index selected by user in picker (`None` = auto).
+    /// Updated immediately on click. Separate from `variant_label`
+    /// which reflects the actually applied variant from `VariantApplied` event.
+    pub(crate) selected_variant: Option<usize>,
 
     // UI state.
     pub(crate) active_tab: Tab,
@@ -76,9 +94,16 @@ impl Kithara {
             seek_position: 0.0,
             is_seeking: false,
             eq_bands: vec![0.0; eq_band_count],
+            selected_rate: 1.0,
             crossfade,
             current_track_index: None,
             track_name: String::new(),
+            variant_label: String::new(),
+            shared_variant_label: Arc::new(Mutex::new(String::new())),
+            shared_abr_variants: Arc::new(Mutex::new(Vec::new())),
+            abr_variants: Vec::new(),
+            abr_mode_is_auto: true,
+            selected_variant: None,
             active_tab: Tab::Playlist,
             shuffle_enabled: false,
             repeat_enabled: false,
@@ -88,9 +113,20 @@ impl Kithara {
         // Start event logging inside iced's tokio runtime.
         start_event_logging(&state.player);
 
-        // Spawn async loading for all tracks.
+        // Set initial track name.
+        if !state.playlist.is_empty() {
+            state.current_track_index = Some(0);
+            state.track_name = state.playlist.track_name(0);
+            state.playlist.on_track_selected(0);
+        }
+
+        // Load all tracks. The first track uses load_track() which subscribes
+        // to variant events for the GUI label/picker. Others use load_and_apply.
         let mut tasks = Vec::new();
-        for i in 0..state.playlist.len() {
+        if !state.playlist.is_empty() {
+            tasks.push(state.load_track(0));
+        }
+        for i in 1..state.playlist.len() {
             let params = state.load_params.clone();
             tasks.push(Task::perform(
                 async move {
@@ -105,13 +141,6 @@ impl Kithara {
                     }
                 },
             ));
-        }
-
-        // Set initial track name.
-        if !state.playlist.is_empty() {
-            state.current_track_index = Some(0);
-            state.track_name = state.playlist.track_name(0);
-            state.playlist.on_track_selected(0);
         }
 
         (state, Task::batch(tasks))
@@ -129,25 +158,66 @@ impl Kithara {
         iced_time::every(Duration::from_millis(TICK_INTERVAL_MS)).map(|_| Message::Tick)
     }
 
-    /// Load a track and select it for playback.
-    ///
-    /// Unlike `load_and_apply` (which only auto-selects the first loaded track),
-    /// this explicitly calls `select_item` after loading — needed for user-initiated
-    /// track switches (Next/Prev/SelectTrack).
+    /// Load a track, select it for playback, and listen for variant events.
     pub(crate) fn load_track(&self, index: usize) -> Task<Message> {
         let params = self.load_params.clone();
         let player = Arc::clone(&self.player);
+        let variant_label = Arc::clone(&self.shared_variant_label);
+        let shared_variants = Arc::clone(&self.shared_abr_variants);
         Task::perform(
             async move {
-                let resource = params
-                    .load_resource(index)
-                    .await
-                    .map_err(|e| format!("{e}"))?;
+                let config = params.build_config(index).map_err(|e| format!("{e}"))?;
+                let event_rx = config.bus.as_ref().map(EventBus::subscribe);
+                let resource = Resource::new(config).await.map_err(|e| format!("{e}"))?;
                 player.replace_item(index, resource);
                 params.playlist().set_status(index, TrackStatus::Loaded);
                 player
                     .select_item(index, true)
                     .map_err(|e| format!("{e}"))?;
+
+                // Listen for ABR variant changes in the background.
+                if let Some(mut rx) = event_rx {
+                    tokio::spawn(async move {
+                        let mut variants = Vec::new();
+                        while let Ok(event) = rx.recv().await {
+                            match &event {
+                                Event::Hls(HlsEvent::VariantsDiscovered {
+                                    variants: v,
+                                    initial_variant,
+                                }) => {
+                                    variants.clone_from(v);
+                                    let text = variant_display_label(&variants, *initial_variant);
+                                    if let Ok(mut l) = variant_label.lock() {
+                                        *l = text;
+                                    }
+                                    let gui_variants: Vec<(usize, String)> = variants
+                                        .iter()
+                                        .map(|vi| {
+                                            let label = vi.name.clone().unwrap_or_else(|| {
+                                                vi.bandwidth_bps.map_or_else(
+                                                    || format!("v{}", vi.index),
+                                                    |b| format!("{}k", b / 1000),
+                                                )
+                                            });
+                                            (vi.index, label)
+                                        })
+                                        .collect();
+                                    if let Ok(mut sv) = shared_variants.lock() {
+                                        *sv = gui_variants;
+                                    }
+                                }
+                                Event::Hls(HlsEvent::VariantApplied { to_variant, .. }) => {
+                                    let text = variant_display_label(&variants, *to_variant);
+                                    if let Ok(mut l) = variant_label.lock() {
+                                        *l = text;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    });
+                }
+
                 Ok(())
             },
             move |result| Message::TrackLoaded(index, result),
@@ -155,26 +225,32 @@ impl Kithara {
     }
 }
 
+fn variant_display_label(variants: &[kithara::abr::VariantInfo], index: usize) -> String {
+    variants.get(index).map_or_else(
+        || format!("variant {index}"),
+        |v| {
+            v.name.clone().unwrap_or_else(|| {
+                v.bandwidth_bps.map_or_else(
+                    || format!("variant {index}"),
+                    |b| format!("{} kbps", b / 1000),
+                )
+            })
+        },
+    )
+}
+
 /// Spawn background tasks that log player and engine events.
 ///
 /// Must be called from within a tokio runtime (iced provides one).
 fn start_event_logging(player: &Arc<PlayerImpl>) {
-    let mut player_rx = player.subscribe();
-    let mut engine_rx = player.engine().subscribe();
+    let mut rx = player.subscribe();
 
     tokio::spawn(async move {
         loop {
-            tokio::select! {
-                result = player_rx.recv() => match result {
-                    Ok(event) => info!("[player] {event:?}"),
-                    Err(RecvError::Lagged(n)) => info!("[player] events lagged: {n}"),
-                    Err(RecvError::Closed) => break,
-                },
-                result = engine_rx.recv() => match result {
-                    Ok(event) => info!("[engine] {event:?}"),
-                    Err(RecvError::Lagged(n)) => info!("[engine] events lagged: {n}"),
-                    Err(RecvError::Closed) => break,
-                },
+            match rx.recv().await {
+                Ok(event) => info!("{event:?}"),
+                Err(RecvError::Lagged(n)) => info!("events lagged: {n}"),
+                Err(RecvError::Closed) => break,
             }
         }
     });
