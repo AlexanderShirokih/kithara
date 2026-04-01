@@ -30,7 +30,7 @@ async fn test_hls_session_creation(
     temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn StdError + Send + Sync>> {
     let server = TestServer::new().await;
-    let test_stream_url = server.url("/master.m3u8")?;
+    let test_stream_url = server.url("/master.m3u8");
     info!("Testing HLS session creation with URL: {}", test_stream_url);
 
     // Create event bus
@@ -108,7 +108,7 @@ async fn test_hls_session_events_consumption(
     temp_dir: TestTempDir,
 ) -> Result<(), Box<dyn StdError + Send + Sync>> {
     let server = TestServer::new().await;
-    let test_stream_url = server.url("/master.m3u8")?;
+    let test_stream_url = server.url("/master.m3u8");
     info!("Testing HLS session events consumption");
 
     // Create event bus

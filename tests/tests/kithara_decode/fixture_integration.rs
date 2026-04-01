@@ -3,8 +3,12 @@
 //! Tests that verify the audio fixtures work correctly and can be used
 //! by decode tests without external network access.
 
-use kithara_integration_tests::audio_fixture::{AudioTestServer, EmbeddedAudio};
+use std::io::Cursor;
+
+use kithara::decode::{DecoderConfig, DecoderFactory};
+use kithara_integration_tests::audio_fixture::EmbeddedAudio;
 use kithara_platform::time::Duration;
+use kithara_test_utils::{SignalFormat, SignalSpec, SignalSpecLength, TestServerHelper};
 use reqwest::Client;
 
 #[kithara::test(
@@ -12,13 +16,11 @@ use reqwest::Client;
     timeout(Duration::from_secs(5)),
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
-async fn test_audio_test_server_starts() {
-    // Test that the server can start and serve requests
-    let server = AudioTestServer::new().await;
+async fn test_test_server_helper_serves_audio_fixture_urls() {
+    let server = TestServerHelper::new().await;
 
-    // Verify we can get URLs
-    let wav_url = server.wav_url();
-    let mp3_url = server.mp3_url();
+    let wav_url = server.sawtooth(&wav_spec()).await;
+    let mp3_url = server.asset("test.mp3");
 
     assert!(wav_url.as_str().starts_with("http://127.0.0.1:"));
     assert!(mp3_url.as_str().starts_with("http://127.0.0.1:"));
@@ -35,17 +37,17 @@ async fn test_audio_test_server_starts() {
 )]
 #[case("wav", "audio/wav", "WAV file")]
 #[case("mp3", "audio/mpeg", "MP3 file")]
-async fn test_audio_test_server_serves_format(
+async fn test_test_server_helper_serves_format(
     #[case] format: &str,
     #[case] content_type: &str,
     #[case] desc: &str,
 ) {
-    let server = AudioTestServer::new().await;
+    let server = TestServerHelper::new().await;
     let client = Client::new();
 
     let url = match format {
-        "wav" => server.wav_url(),
-        "mp3" => server.mp3_url(),
+        "wav" => server.sawtooth(&wav_spec()).await,
+        "mp3" => server.asset("test.mp3"),
         _ => panic!("Unknown format: {}", format),
     };
 
@@ -75,6 +77,56 @@ async fn test_audio_test_server_serves_format(
     assert!(content_length > 0, "{}: content length should be > 0", desc);
 }
 
+#[kithara::test(
+    native,
+    tokio,
+    timeout(Duration::from_secs(10)),
+    env(KITHARA_HANG_TIMEOUT_SECS = "1")
+)]
+#[case(SignalFormat::Mp3, "mp3", "audio/mpeg")]
+#[case(SignalFormat::Flac, "flac", "audio/flac")]
+#[case(SignalFormat::Aac, "aac", "audio/aac")]
+#[case(SignalFormat::M4a, "m4a", "audio/mp4")]
+async fn test_signal_server_encoded_formats_are_decodable(
+    #[case] format: SignalFormat,
+    #[case] ext: &str,
+    #[case] content_type: &str,
+) {
+    let server = TestServerHelper::new().await;
+    let client = Client::new();
+    let spec = SignalSpec {
+        sample_rate: 44_100,
+        channels: 2,
+        length: SignalSpecLength::Seconds(1.0),
+        format,
+    };
+
+    let response = client
+        .get(server.sawtooth(&spec).await)
+        .send()
+        .await
+        .unwrap_or_else(|error| panic!("Failed to fetch /signal encoded fixture: {error}"));
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        content_type
+    );
+
+    let bytes = response.bytes().await.unwrap();
+    assert!(!bytes.is_empty());
+
+    let mut decoder = DecoderFactory::create_with_probe(
+        Cursor::new(bytes.to_vec()),
+        Some(ext),
+        DecoderConfig::default(),
+    )
+    .unwrap();
+
+    let chunk = decoder.next_chunk().unwrap().unwrap();
+    assert!(!chunk.pcm.is_empty());
+}
+
 #[kithara::test]
 fn test_embedded_audio_contains_data() {
     let audio = EmbeddedAudio::get();
@@ -89,6 +141,15 @@ fn test_embedded_audio_contains_data() {
 
     // MP3 should be larger than WAV (our test MP3 is 2.9MB)
     assert!(mp3_data.len() > wav_data.len());
+}
+
+fn wav_spec() -> SignalSpec {
+    SignalSpec {
+        sample_rate: 44_100,
+        channels: 2,
+        length: SignalSpecLength::Seconds(1.0),
+        format: SignalFormat::Wav,
+    }
 }
 
 // Note: More comprehensive decode tests will be added when the actual

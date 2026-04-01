@@ -64,12 +64,12 @@ impl BrowserKind {
 struct SeleniumConfig {
     browser: BrowserKind,
     chromedriver_path: String,
-    fixture_port: u16,
     geckodriver_path: String,
     headless: bool,
     page_url_override: Option<String>,
     startup_timeout: Duration,
     switch_wait_seconds: u64,
+    test_server_port: u16,
     trunk_port: u16,
     wait_timeout: Duration,
     webdriver_port: u16,
@@ -88,7 +88,6 @@ impl SeleniumConfig {
             browser,
             chromedriver_path: env::var("CHROMEDRIVER")
                 .unwrap_or_else(|_| "/opt/homebrew/bin/chromedriver".to_string()),
-            fixture_port: env_u16("KITHARA_SELENIUM_FIXTURE_PORT", 3333),
             geckodriver_path: env::var("GECKODRIVER")
                 .unwrap_or_else(|_| "/opt/homebrew/bin/geckodriver".to_string()),
             headless: env_bool("KITHARA_SELENIUM_HEADLESS", true),
@@ -98,6 +97,7 @@ impl SeleniumConfig {
                 DEFAULT_STARTUP_TIMEOUT.as_secs(),
             )),
             switch_wait_seconds: env_u64("KITHARA_SELENIUM_SWITCH_WAIT_SECS", 12),
+            test_server_port: env_u16("KITHARA_SELENIUM_TEST_SERVER_PORT", 3444),
             trunk_port: env_u16("KITHARA_SELENIUM_TRUNK_PORT", 9092),
             wait_timeout: Duration::from_secs(env_u64(
                 "KITHARA_SELENIUM_WAIT_TIMEOUT_SECS",
@@ -108,20 +108,20 @@ impl SeleniumConfig {
         }
     }
 
-    fn fixture_base_url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.fixture_port)
+    fn test_server_base_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.test_server_port)
     }
 
     fn hls_url(&self) -> String {
-        format!("{}/hls/master.m3u8", self.fixture_base_url())
+        format!("{}/assets/hls/master.m3u8", self.test_server_base_url())
     }
 
     fn mp3_url(&self) -> String {
-        format!("{}/track.mp3", self.fixture_base_url())
+        format!("{}/assets/track.mp3", self.test_server_base_url())
     }
 
     fn drm_url(&self) -> String {
-        format!("{}/drm/master.m3u8", self.fixture_base_url())
+        format!("{}/assets/drm/master.m3u8", self.test_server_base_url())
     }
 
     fn page_url(&self) -> String {
@@ -169,7 +169,7 @@ impl Drop for ChildGuard {
 #[derive(Debug)]
 struct SeleniumHarness {
     config: SeleniumConfig,
-    fixture_server: Option<ChildGuard>,
+    test_server: Option<ChildGuard>,
     trunk_server: Option<ChildGuard>,
     webdriver_server: Option<ChildGuard>,
 }
@@ -178,28 +178,28 @@ impl SeleniumHarness {
     async fn start(config: SeleniumConfig) -> Result<Self, String> {
         let mut harness = Self {
             config,
-            fixture_server: None,
+            test_server: None,
             trunk_server: None,
             webdriver_server: None,
         };
 
-        harness.ensure_fixture_server().await?;
+        harness.ensure_test_server().await?;
         harness.ensure_trunk_server().await?;
         harness.ensure_webdriver_server().await?;
 
         Ok(harness)
     }
 
-    async fn ensure_fixture_server(&mut self) -> Result<(), String> {
-        let health_url = format!("{}/health", self.config.fixture_base_url());
+    async fn ensure_test_server(&mut self) -> Result<(), String> {
+        let health_url = format!("{}/health", self.config.test_server_base_url());
         if http_ok(&health_url).await {
-            println!("[selenium] fixture server already running: {health_url}");
+            println!("[selenium] test server already running: {health_url}");
             return Ok(());
         }
 
         println!(
-            "[selenium] starting fixture server on port {}",
-            self.config.fixture_port
+            "[selenium] starting test server on port {}",
+            self.config.test_server_port
         );
         let mut cmd = Command::new("cargo");
         cmd.current_dir(repo_root())
@@ -208,11 +208,11 @@ impl SeleniumHarness {
                 "-p",
                 "kithara-integration-tests",
                 "--bin",
-                "fixture_server",
+                "test_server",
             ])
-            .env("FIXTURE_PORT", self.config.fixture_port.to_string());
+            .env("TEST_SERVER_PORT", self.config.test_server_port.to_string());
 
-        self.fixture_server = Some(ChildGuard::spawn("fixture_server", cmd)?);
+        self.test_server = Some(ChildGuard::spawn("test_server", cmd)?);
         wait_http_ready(&health_url, self.config.startup_timeout).await
     }
 
@@ -1463,7 +1463,7 @@ async fn wait_page_ready(url: &str, timeout: Duration) -> Result<(), String> {
 
 /// Create a [`WasmPlayerSelenium`] session with its owning harness.
 ///
-/// Returns both the harness (which keeps trunk/webdriver/fixture-server
+/// Returns both the harness (which keeps trunk/webdriver/test-server
 /// processes alive via [`ChildGuard`]) and the WebDriver session.
 /// The caller must keep the harness alive for the session's lifetime
 /// and drop it **after** the session is closed.

@@ -131,11 +131,6 @@ perf = [
 ]
 
 [[bin]]
-name = "fixture_server"
-path = "bin/fixture_server.rs"
-test = false
-
-[[bin]]
 name = "test_server"
 path = "bin/test_server.rs"
 test = false

@@ -140,7 +140,7 @@ async fn stress_seek_lifecycle_with_zero_reset(#[case] ephemeral: bool) {
     })
     .await;
 
-    let url = server.url("/master.m3u8").expect("url");
+    let url = server.url("/master.m3u8");
     info!(%url, "HLS server ready");
 
     let temp_dir = TestTempDir::new();

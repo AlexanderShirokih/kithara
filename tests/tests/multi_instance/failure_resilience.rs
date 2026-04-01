@@ -110,7 +110,7 @@ async fn create_hls_audio(
     cache_dir: &Path,
     cancel: CancellationToken,
 ) -> Audio<Stream<Hls>> {
-    let url = server.url("/master.m3u8").expect("url");
+    let url = server.url("/master.m3u8");
 
     let hls_config = HlsConfig::new(url)
         .with_store(StoreOptions::new(cache_dir))

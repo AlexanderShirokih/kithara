@@ -111,7 +111,7 @@ async fn stress_random_seek_read_hls(
     })
     .await;
 
-    let url = server.url("/master.m3u8").expect("url");
+    let url = server.url("/master.m3u8");
     let total_bytes = server.total_bytes();
     let init_len = server.init_len();
     info!(

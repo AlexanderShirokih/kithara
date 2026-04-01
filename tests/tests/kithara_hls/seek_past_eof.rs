@@ -69,7 +69,7 @@ async fn seek_beyond_head_total_within_actual_total(
     })
     .await;
 
-    let url = server.url("/master.m3u8").unwrap();
+    let url = server.url("/master.m3u8");
 
     let config = HlsConfig::new(url)
         .with_store(StoreOptions::new(temp_dir.path()))

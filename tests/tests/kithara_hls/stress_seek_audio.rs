@@ -89,7 +89,7 @@ async fn stress_seek_audio_hls_wav(#[case] ephemeral: bool) {
     })
     .await;
 
-    let url = server.url("/master.m3u8").expect("url");
+    let url = server.url("/master.m3u8");
     info!(%url, segments = SEGMENT_COUNT, "HLS server ready");
 
     // Step 3: Create Audio<Stream<Hls>>

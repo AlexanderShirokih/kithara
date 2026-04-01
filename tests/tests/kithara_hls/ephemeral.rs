@@ -131,7 +131,7 @@ async fn ephemeral_pipeline_no_disk_writes() {
     })
     .await;
 
-    let url = server.url("/master.m3u8").expect("url");
+    let url = server.url("/master.m3u8");
     let temp_dir = TestTempDir::new();
     let cancel = CancellationToken::new();
 

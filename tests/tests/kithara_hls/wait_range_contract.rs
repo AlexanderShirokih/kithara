@@ -43,7 +43,7 @@ async fn seek_burst_then_tail_read_stays_contiguous(#[case] ephemeral: bool) {
         ..Default::default()
     })
     .await;
-    let url = server.url("/master.m3u8").expect("url");
+    let url = server.url("/master.m3u8");
 
     let store = StoreOptions::new(temp_dir.path())
         .with_ephemeral(ephemeral)
@@ -156,7 +156,7 @@ async fn ephemeral_small_cache_reads_entire_stream() {
         ..Default::default()
     })
     .await;
-    let url = server.url("/master.m3u8").expect("url");
+    let url = server.url("/master.m3u8");
     let total_bytes = server.total_bytes();
 
     let store = StoreOptions::new(temp_dir.path())

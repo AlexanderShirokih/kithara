@@ -21,14 +21,10 @@ mod kithara_decode {
 }
 
 mod kithara_file {
-    pub(crate) mod fixture;
-
     mod live_stress_real_mp3;
 }
 
 mod kithara_hls {
-    pub(crate) mod fixture;
-
     mod deferred_abr_debug;
     mod drm_stream_integrity;
     mod source_internal_cases;

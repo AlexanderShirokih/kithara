@@ -415,7 +415,7 @@ async fn player_worker_hls_then_unavailable_mp3_then_mp3_recovery(
     let player = PlayerImpl::new(PlayerConfig::default());
     let worker = player.worker().clone();
     let store = store_options(&temp_dir, ephemeral);
-    let hls_url = hls_server.url("/master.m3u8").unwrap();
+    let hls_url = hls_server.url("/master.m3u8");
     let ok_url = file_server.url("/ok.mp3");
     let bad_url = file_server.url("/gone.mp3");
 
@@ -473,7 +473,7 @@ async fn shared_worker_hls_then_mp3_reopen_keeps_backward_seek_ephemeral(temp_di
     let file_server = TestHttpServer::new(test_app()).await;
     let worker = AudioWorkerHandle::new();
     let store = store_options(&temp_dir, true);
-    let hls_url = hls_server.url("/master.m3u8").unwrap();
+    let hls_url = hls_server.url("/master.m3u8");
     let ok_url = file_server.url("/ok.mp3");
 
     let hls_seek = warm_hls_worker(&hls_url, store.clone(), worker.clone()).await;
@@ -543,8 +543,8 @@ async fn sequential_hls_warmup_does_not_poison_next_ephemeral_session() {
     let worker_b = AudioWorkerHandle::new();
     let store_a = store_options(&temp_a, false);
     let store_b = store_options(&temp_b, true);
-    let hls_url_a = server_a.url("/master.m3u8").unwrap();
-    let hls_url_b = server_b.url("/master.m3u8").unwrap();
+    let hls_url_a = server_a.url("/master.m3u8");
+    let hls_url_b = server_b.url("/master.m3u8");
 
     let first_pos = warm_hls_worker(&hls_url_a, store_a, worker_a.clone()).await;
     assert!(
@@ -576,8 +576,8 @@ async fn sequential_hls_warmup_drop_only_does_not_poison_next_ephemeral_session(
     let worker_b = AudioWorkerHandle::new();
     let store_a = store_options(&temp_a, false);
     let store_b = store_options(&temp_b, true);
-    let hls_url_a = server_a.url("/master.m3u8").unwrap();
-    let hls_url_b = server_b.url("/master.m3u8").unwrap();
+    let hls_url_a = server_a.url("/master.m3u8");
+    let hls_url_b = server_b.url("/master.m3u8");
 
     let first_pos = warm_hls_worker(&hls_url_a, store_a, worker_a.clone()).await;
     assert!(
@@ -609,8 +609,8 @@ async fn sequential_hls_read_only_session_does_not_poison_next_ephemeral_session
     let worker_b = AudioWorkerHandle::new();
     let store_a = store_options(&temp_a, false);
     let store_b = store_options(&temp_b, true);
-    let hls_url_a = server_a.url("/master.m3u8").unwrap();
-    let hls_url_b = server_b.url("/master.m3u8").unwrap();
+    let hls_url_a = server_a.url("/master.m3u8");
+    let hls_url_b = server_b.url("/master.m3u8");
 
     let first_pos = warm_hls_worker_without_seek(&hls_url_a, store_a, worker_a.clone()).await;
     assert!(
@@ -641,8 +641,8 @@ async fn sequential_hls_stream_sessions_do_not_poison_next_ephemeral_session() {
     let temp_b = TestTempDir::new();
     let store_a = store_options(&temp_a, false);
     let store_b = store_options(&temp_b, true);
-    let hls_url_a = server_a.url("/master.m3u8").unwrap();
-    let hls_url_b = server_b.url("/master.m3u8").unwrap();
+    let hls_url_a = server_a.url("/master.m3u8");
+    let hls_url_b = server_b.url("/master.m3u8");
 
     let first_read = read_hls_stream_some(&hls_url_a, store_a).await;
     assert!(first_read > 0, "first HLS stream session must read bytes");
@@ -668,7 +668,7 @@ async fn player_worker_hls_then_mp3_reopen_keeps_backward_seek(
     let player = PlayerImpl::new(PlayerConfig::default());
     let worker = player.worker().clone();
     let store = store_options(&temp_dir, ephemeral);
-    let hls_url = hls_server.url("/master.m3u8").unwrap();
+    let hls_url = hls_server.url("/master.m3u8");
     let ok_url = file_server.url("/ok.mp3");
 
     let hls_seek = warm_hls_worker(&hls_url, store.clone(), worker.clone()).await;
@@ -742,7 +742,7 @@ async fn stress_offline_crossfade_no_gaps() {
 
     let hls_server = open_audio_hls_server().await;
     let store = store_options(&temp_dir(), true);
-    let hls_url = hls_server.url("/master.m3u8").unwrap();
+    let hls_url = hls_server.url("/master.m3u8");
 
     let worker = AudioWorkerHandle::new();
     let mut player = OfflinePlayer::new(SR);

@@ -104,7 +104,7 @@ async fn stress_seek_abr_audio() {
     })
     .await;
 
-    let url = server.url("/master.m3u8").expect("url");
+    let url = server.url("/master.m3u8");
     info!(%url, "HLS server ready with 2 variants");
 
     // Create Audio<Stream<Hls>> with Auto ABR starting on V0

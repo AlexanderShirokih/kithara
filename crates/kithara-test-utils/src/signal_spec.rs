@@ -25,6 +25,23 @@ pub(crate) enum SignalKind {
     Silence,
 }
 
+impl TryFrom<&str> for SignalKind {
+    type Error = SignalRequestError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "sawtooth" => Ok(Self::Sawtooth),
+            "sawtooth-desc" => Ok(Self::SawtoothDescending),
+            "sine" => Ok(Self::Sine),
+            "silence" => Ok(Self::Silence),
+            _ => Err(SignalRequestError::InvalidField {
+                field: "signal_kind",
+                message: "must be one of `sawtooth`, `sawtooth-desc`, `sine`, or `silence`",
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SignalFormat {
     Wav,
@@ -32,6 +49,18 @@ pub(crate) enum SignalFormat {
     Flac,
     Aac,
     M4a,
+}
+
+impl SignalFormat {
+    pub(crate) const fn path_ext(self) -> &'static str {
+        match self {
+            Self::Wav => "wav",
+            Self::Mp3 => "mp3",
+            Self::Flac => "flac",
+            Self::Aac => "aac",
+            Self::M4a => "m4a",
+        }
+    }
 }
 
 impl TryFrom<&str> for SignalFormat {
@@ -315,6 +344,13 @@ fn normalize_length(
             return Err(SignalRequestError::InvalidField {
                 field: "infinite",
                 message: "must be `true` when provided",
+            });
+        }
+
+        if format != SignalFormat::Wav {
+            return Err(SignalRequestError::InvalidField {
+                field: "infinite",
+                message: "is currently only supported for `wav`",
             });
         }
 

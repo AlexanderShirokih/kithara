@@ -40,7 +40,7 @@ async fn test_basic_hls_playback(
     cancel_token: CancellationToken,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let server = TestServer::new().await;
-    let test_stream_url = server.url("/master.m3u8")?;
+    let test_stream_url = server.url("/master.m3u8");
     info!("Starting HLS playback test with URL: {}", test_stream_url);
 
     // Create event bus
@@ -109,7 +109,7 @@ async fn test_hls_session_creation(
     cancel_token: CancellationToken,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let server = TestServer::new().await;
-    let test_stream_url = server.url("/master.m3u8")?;
+    let test_stream_url = server.url("/master.m3u8");
 
     // Create event bus
     let bus = EventBus::new(32);

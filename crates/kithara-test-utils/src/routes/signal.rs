@@ -42,10 +42,12 @@ use axum::{
 use futures::stream;
 
 use crate::{
+    audio_encode::encode_signal,
     signal_pcm::{SignalLength, SignalPcm, signal},
     signal_spec::{
         ResolvedSignalSpec, SignalFormat, SignalKind, SignalRequest, parse_signal_request,
     },
+    token_store::{get_signal, is_token},
     wav::{WavHeader, create_wav_from_signal},
 };
 
@@ -79,20 +81,59 @@ async fn silence(Path(spec_with_ext): Path<String>) -> Response {
 }
 
 fn handle_signal(kind: SignalKind, spec_with_ext: &str) -> Response {
-    match parse_signal_request(kind, spec_with_ext) {
+    match resolve_signal_request(kind, spec_with_ext) {
         Ok(request) => build_signal_response(&request),
         Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+    }
+}
+
+fn resolve_signal_request(
+    kind: SignalKind,
+    spec_with_ext: &str,
+) -> Result<SignalRequest, crate::signal_spec::SignalRequestError> {
+    let (candidate, path_ext) = split_token_candidate(spec_with_ext);
+    if is_token(candidate) {
+        let Some(request) = get_signal(candidate) else {
+            return Err(crate::signal_spec::SignalRequestError::InvalidField {
+                field: "token",
+                message: "was not found",
+            });
+        };
+        if request.spec.kind != kind {
+            return Err(crate::signal_spec::SignalRequestError::InvalidField {
+                field: "token",
+                message: "does not match the requested signal route",
+            });
+        }
+        if let Some(path_ext) = path_ext
+            && path_ext != request.format.path_ext()
+        {
+            return Err(crate::signal_spec::SignalRequestError::InvalidField {
+                field: "ext",
+                message: "must match the registered token format",
+            });
+        }
+        return Ok(request);
+    }
+
+    parse_signal_request(kind, spec_with_ext)
+}
+
+fn split_token_candidate(spec_with_ext: &str) -> (&str, Option<&str>) {
+    match spec_with_ext.rsplit_once('.') {
+        Some((candidate, ext)) if !candidate.is_empty() && !ext.is_empty() => {
+            (candidate, Some(ext))
+        }
+        _ => (spec_with_ext, None),
     }
 }
 
 fn build_signal_response(request: &SignalRequest) -> Response {
     match request.format {
         SignalFormat::Wav => build_wav_response(&request.spec),
-        SignalFormat::Mp3 | SignalFormat::Flac | SignalFormat::Aac | SignalFormat::M4a => (
-            StatusCode::NOT_IMPLEMENTED,
-            "signal format is not implemented yet",
-        )
-            .into_response(),
+        SignalFormat::Mp3 | SignalFormat::Flac | SignalFormat::Aac | SignalFormat::M4a => {
+            build_encoded_response(request.format, &request.spec)
+        }
     }
 }
 
@@ -138,6 +179,53 @@ fn render_wav<S: signal::SignalFn>(signal: S, spec: &ResolvedSignalSpec) -> Vec<
         spec.channels,
         spec.length,
     ))
+}
+
+fn build_encoded_response(format: SignalFormat, spec: &ResolvedSignalSpec) -> Response {
+    match spec.kind {
+        SignalKind::Sawtooth => build_encoded_response_for_signal(signal::Sawtooth, spec, format),
+        SignalKind::SawtoothDescending => {
+            build_encoded_response_for_signal(signal::SawtoothDescending, spec, format)
+        }
+        SignalKind::Sine => spec.sine_freq_hz.map_or_else(
+            || {
+                (
+                    StatusCode::BAD_REQUEST,
+                    "sine signal requires a normalized `freq` field",
+                )
+                    .into_response()
+            },
+            |freq_hz| build_encoded_response_for_signal(signal::SineWave(freq_hz), spec, format),
+        ),
+        SignalKind::Silence => build_encoded_response_for_signal(signal::Silence, spec, format),
+    }
+}
+
+fn build_encoded_response_for_signal<S: signal::SignalFn>(
+    signal: S,
+    spec: &ResolvedSignalSpec,
+    format: SignalFormat,
+) -> Response {
+    match encode_signal(signal, spec, format) {
+        Ok(encoded) => {
+            let mut response = encoded.bytes.into_response();
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static(encoded.content_type),
+            );
+            response
+        }
+
+        Err(error) if error.is_bad_request() => {
+            (StatusCode::BAD_REQUEST, error.to_string()).into_response()
+        }
+
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("signal encoding failed: {error}"),
+        )
+            .into_response(),
+    }
 }
 
 fn stream_wav<S: signal::SignalFn>(signal: S, spec: &ResolvedSignalSpec) -> Body {
@@ -238,6 +326,22 @@ mod tests {
             assert_eq!(i16::from_le_bytes([bytes[44], bytes[45]]), first_sample);
         }
 
+        let encoded_cases = [
+            (format!("/signal/sawtooth/{saw}.mp3"), "audio/mpeg"),
+            (format!("/signal/sawtooth/{saw}.flac"), "audio/flac"),
+            (format!("/signal/sawtooth/{saw}.aac"), "audio/aac"),
+            (format!("/signal/sawtooth/{saw}.m4a"), "audio/mp4"),
+        ];
+
+        for (path, content_type) in encoded_cases {
+            let response = reqwest::get(server.url(&path)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[header::CONTENT_TYPE], content_type);
+
+            let bytes = response.bytes().await.unwrap();
+            assert!(!bytes.is_empty());
+        }
+
         let invalid = reqwest::get(server.url("/signal/sine/not-base64.wav"))
             .await
             .unwrap();
@@ -247,43 +351,16 @@ mod tests {
             "signal spec is not valid base64url"
         );
 
-        let not_implemented = reqwest::get(server.url(&format!("/signal/sawtooth/{saw}.mp3")))
-            .await
-            .unwrap();
-        assert_eq!(not_implemented.status(), StatusCode::NOT_IMPLEMENTED);
+        let unsupported_infinite = reqwest::get(server.url(&format!(
+            "/signal/sawtooth/{}.mp3",
+            encode(r#"{"infinite":true,"sample_rate":44100,"channels":2}"#)
+        )))
+        .await
+        .unwrap();
+        assert_eq!(unsupported_infinite.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
-            not_implemented.text().await.unwrap(),
-            "signal format is not implemented yet"
+            unsupported_infinite.text().await.unwrap(),
+            "invalid signal spec field `infinite`: is currently only supported for `wav`"
         );
-    }
-
-    #[tokio::test]
-    async fn infinite_wav_streams_header_and_pcm() {
-        let server = TestHttpServer::new(router()).await;
-        let saw = encode(r#"{"infinite":true,"sample_rate":44100,"channels":2,"ext":"wav"}"#);
-        let response = reqwest::get(server.url(&format!("/signal/sawtooth/{saw}")))
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers()[header::CONTENT_TYPE], "audio/wav");
-        assert!(response.headers().get(header::CONTENT_LENGTH).is_none());
-
-        let mut response = response;
-        let mut bytes = Vec::new();
-        while bytes.len() < 48 {
-            let Some(chunk) = response.chunk().await.unwrap() else {
-                panic!("stream ended before enough WAV bytes were received");
-            };
-            bytes.extend_from_slice(&chunk);
-        }
-
-        assert_eq!(&bytes[0..4], b"RIFF");
-        assert_eq!(
-            u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]),
-            0xFFFF_FFFF
-        );
-        assert_eq!(i16::from_le_bytes([bytes[44], bytes[45]]), -32768);
-        assert_eq!(i16::from_le_bytes([bytes[46], bytes[47]]), -32768);
     }
 }

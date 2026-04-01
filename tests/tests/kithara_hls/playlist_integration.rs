@@ -31,7 +31,7 @@ async fn fetch_master_playlist_from_network(
 ) -> HlsResult<()> {
     let server = test_server.await;
     let fetch_manager = test_fetch_manager(&assets_fixture, net_fixture);
-    let master_url = server.url("/master.m3u8")?;
+    let master_url = server.url("/master.m3u8");
     let master_playlist = fetch_manager.master_playlist(&master_url).await?;
 
     assert_eq!(master_playlist.variants.len(), 3);
@@ -51,7 +51,7 @@ async fn fetch_media_playlist_from_network(
 ) -> HlsResult<()> {
     let server = test_server.await;
     let fetch_manager = test_fetch_manager(&assets_fixture, net_fixture);
-    let media_url = server.url("/v0.m3u8")?;
+    let media_url = server.url("/v0.m3u8");
 
     let media_playlist = fetch_manager
         .media_playlist(&media_url, VariantId(0))
@@ -74,7 +74,7 @@ async fn resolve_url_with_base_override(
     net_fixture: kithara::net::HttpClient,
 ) -> HlsResult<()> {
     let server = test_server.await;
-    let base_url = server.url("/custom/base/")?;
+    let base_url = server.url("/custom/base/");
     let fetch_manager =
         test_fetch_manager(&assets_fixture, net_fixture).with_base_url(Some(base_url.clone()));
 
@@ -105,14 +105,14 @@ async fn fetch_media_playlist_for_different_variants(
     let fetch_manager = test_fetch_manager(&assets_fixture, net_fixture);
 
     // Test variant 0
-    let media_url_0 = server.url("/v0.m3u8")?;
+    let media_url_0 = server.url("/v0.m3u8");
     let media_playlist_0 = fetch_manager
         .media_playlist(&media_url_0, VariantId(0))
         .await?;
     assert_eq!(media_playlist_0.segments.len(), 3);
 
     // Test variant 1 (different playlist)
-    let media_url_1 = server.url("/v1.m3u8")?;
+    let media_url_1 = server.url("/v1.m3u8");
     let media_playlist_1 = fetch_manager
         .media_playlist(&media_url_1, VariantId(1))
         .await?;
@@ -134,7 +134,7 @@ async fn fetch_manager_caching_behavior(
 ) -> HlsResult<()> {
     let server = test_server.await;
     let fetch_manager = test_fetch_manager(&assets_fixture, net_fixture);
-    let master_url = server.url("/master.m3u8")?;
+    let master_url = server.url("/master.m3u8");
 
     // First fetch
     let master1 = fetch_manager.master_playlist(&master_url).await?;
@@ -184,7 +184,7 @@ async fn resolve_multiple_relative_urls(
     net_fixture: kithara::net::HttpClient,
 ) -> HlsResult<()> {
     let server = test_server.await;
-    let base_url = server.url("/base/")?;
+    let base_url = server.url("/base/");
     let fetch_manager =
         test_fetch_manager(&assets_fixture, net_fixture).with_base_url(Some(base_url.clone()));
 
@@ -224,12 +224,12 @@ async fn fetch_manager_with_different_base_urls(
     let server = test_server.await;
     // Test with no base URL
     let fetch_manager_no_base = test_fetch_manager(&assets_fixture, net_fixture.clone());
-    let master_url = server.url("/master.m3u8")?;
+    let master_url = server.url("/master.m3u8");
     let master_no_base = fetch_manager_no_base.master_playlist(&master_url).await?;
     assert_eq!(master_no_base.variants.len(), 3);
 
     // Test with base URL
-    let base_url = server.url("/custom/base/")?;
+    let base_url = server.url("/custom/base/");
     let fetch_manager_with_base =
         test_fetch_manager(&assets_fixture, net_fixture).with_base_url(Some(base_url));
 

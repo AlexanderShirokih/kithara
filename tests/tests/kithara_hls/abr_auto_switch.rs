@@ -94,7 +94,7 @@ async fn abr_auto_switch_during_playback() {
     })
     .await;
 
-    let url = server.url("/master.m3u8").expect("url");
+    let url = server.url("/master.m3u8");
     info!(%url, "HLS server ready with 2 variants");
 
     let temp_dir = TestTempDir::new();

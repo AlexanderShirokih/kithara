@@ -17,9 +17,16 @@
 
 //! Shared test utilities for the kithara workspace.
 
-pub mod fixture_client;
+#[cfg(not(target_arch = "wasm32"))]
+mod audio_encode;
 pub mod fixture_protocol;
 pub mod fixtures;
+mod hls_blob_store;
+pub mod hls_fixture;
+pub(crate) mod hls_spec;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod hls_stream;
+pub mod hls_url;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod http_server;
 mod log_filter;
@@ -33,8 +40,8 @@ pub mod signal_source;
 mod signal_source_utils;
 pub(crate) mod signal_spec;
 pub mod signal_url;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod test_server;
+mod token_store;
 pub mod wav;
 
 /// Re-export of `kithara_test_macros::test` under the `kithara` namespace.
@@ -46,6 +53,17 @@ pub mod kithara {
 }
 
 pub use fixtures::*;
+pub use hls_blob_store::register_hls_blob;
+pub use hls_fixture::{
+    AbrTestServer, EncryptionConfig, HlsTestServer, HlsTestServerConfig, TestServer, abr,
+    master_playlist, test_master_playlist, test_master_playlist_encrypted,
+    test_master_playlist_with_init, test_media_playlist, test_media_playlist_encrypted,
+    test_media_playlist_with_init, test_segment_data, test_server,
+};
+pub use hls_url::{
+    HlsSpec, encode_hls_spec, hls_init_path, hls_key_path, hls_master_path, hls_media_path,
+    hls_segment_path,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use http_server::TestHttpServer;
 pub use log_filter::rust_log_filter;
@@ -53,6 +71,7 @@ pub use rng::*;
 pub use server_url::join_server_url;
 pub use signal_source_utils::*;
 pub use signal_url::{SignalFormat, SignalKind, SignalSpec, SignalSpecLength, signal_path};
+pub use test_server::TestServerHelper;
 #[cfg(not(target_arch = "wasm32"))]
-pub use test_server::{TestServerHelper, run_test_server};
+pub use test_server::run_test_server;
 pub use wav::{create_test_wav, create_wav_exact_bytes};

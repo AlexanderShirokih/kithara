@@ -20,8 +20,6 @@ mod kithara_decode {
 }
 
 mod kithara_file {
-    pub(crate) mod fixture;
-
     #[cfg(not(target_arch = "wasm32"))]
     mod early_stream_close;
     #[cfg(not(target_arch = "wasm32"))]
@@ -29,8 +27,6 @@ mod kithara_file {
 }
 
 mod kithara_hls {
-    pub(crate) mod fixture;
-
     mod abr_integration;
     mod basic_playback;
     mod deferred_abr;

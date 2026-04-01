@@ -28,7 +28,7 @@ async fn debug_sequential_read(temp_dir: TestTempDir, cancel_token: Cancellation
     info!("=== Starting debug_sequential_read test ===");
 
     let server = TestServer::new().await;
-    let url = server.url("/master.m3u8").unwrap();
+    let url = server.url("/master.m3u8");
     info!("Test server URL: {}", url);
 
     // Create event bus

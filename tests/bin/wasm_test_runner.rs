@@ -1,10 +1,10 @@
-//! Custom WASM test runner that starts fixture server automatically.
+//! Custom WASM test runner that starts the unified test server automatically.
 //!
 //! Cargo invokes this as: `wasm_test_runner <test.wasm> [filter] [--options...]`
 //!
-//! It starts the fixture server in-process (as a tokio task), waits for it
-//! to be ready, then delegates to `wasm-bindgen-test-runner` with all args
-//! forwarded. When the process exits, the fixture server dies with it.
+//! It starts the test server binary, waits for it to be ready, then delegates
+//! to `wasm-bindgen-test-runner` with all args forwarded. When the process
+//! exits, the test server dies with it.
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::{
@@ -12,7 +12,7 @@ use std::{
     ffi::OsString,
     fs,
     path::PathBuf,
-    process::{self, Command, Stdio},
+    process::{self, Child, Command, Stdio},
     time::Instant,
 };
 
@@ -107,77 +107,38 @@ fn default_runner_timeout_secs(args: &[String]) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[tokio::main]
-async fn main() {
-    let args: Vec<String> = env::args().skip(1).collect();
-    let port: u16 = env::var("FIXTURE_PORT")
+async fn http_ready(url: &str) -> bool {
+    reqwest::get(url).await.is_ok()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn spawn_server_binary(
+    name: &'static str,
+    binary_name: &'static str,
+    port_env_name: &'static str,
+    port: u16,
+    health_url: &str,
+    startup_timeout_secs: u64,
+) -> Child {
+    let server_bin = env::current_exe()
         .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(3333);
-    let fixture_startup_timeout_secs: u64 = env::var("FIXTURE_STARTUP_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(30);
-    let runner_timeout_secs = default_runner_timeout_secs(&args);
-    let health_url = format!("http://127.0.0.1:{port}/health");
-    eprintln!("wasm-bindgen watchdog timeout: {runner_timeout_secs}s");
+        .and_then(|p| {
+            let dir = p.parent()?;
+            Some(dir.join(binary_name))
+        })
+        .unwrap_or_else(|| panic!("could not find {binary_name} binary next to wasm_test_runner"));
 
-    // Check if server is already running (developer started it manually)
-    let already_running = reqwest::get(&health_url).await.is_ok();
+    let mut child = Command::new(&server_bin)
+        .env(port_env_name, port.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| panic!("failed to start {name} at {}: {e}", server_bin.display()));
 
-    if !already_running {
-        // Start fixture server as a background tokio task (in this process).
-        // Import the server module from fixture_server binary is not possible
-        // directly, so we start it as a subprocess.
-        let fixture_bin = env::current_exe()
-            .ok()
-            .and_then(|p| {
-                let dir = p.parent()?;
-                Some(dir.join("fixture_server"))
-            })
-            .expect("could not find fixture_server binary next to wasm_test_runner");
-
-        let mut child = Command::new(&fixture_bin)
-            .env("FIXTURE_PORT", port.to_string())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap_or_else(|e| {
-                panic!(
-                    "failed to start fixture_server at {}: {e}",
-                    fixture_bin.display()
-                )
-            });
-
-        // Wait for readiness (default: up to 30 seconds; configurable via env).
-        let mut ready = false;
-        let max_attempts = fixture_startup_timeout_secs.saturating_mul(10).max(1);
-        for _ in 0..max_attempts {
-            if let Ok(Some(status)) = child.try_wait() {
-                let output = child.wait_with_output().ok();
-                let stdout = output
-                    .as_ref()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| "<empty>".to_string());
-                let stderr = output
-                    .as_ref()
-                    .map(|o| String::from_utf8_lossy(&o.stderr).trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| "<empty>".to_string());
-                panic!(
-                    "fixture_server exited before becoming ready (status: {status})\nfixture_server stdout:\n{stdout}\nfixture_server stderr:\n{stderr}"
-                );
-            }
-
-            if reqwest::get(&health_url).await.is_ok() {
-                ready = true;
-                break;
-            }
-            sleep(Duration::from_millis(100)).await;
-        }
-        if !ready {
-            let _ = child.kill();
+    let mut ready = false;
+    let max_attempts = startup_timeout_secs.saturating_mul(10).max(1);
+    for _ in 0..max_attempts {
+        if let Ok(Some(status)) = child.try_wait() {
             let output = child.wait_with_output().ok();
             let stdout = output
                 .as_ref()
@@ -190,26 +151,80 @@ async fn main() {
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "<empty>".to_string());
             panic!(
-                "fixture server did not become ready within {fixture_startup_timeout_secs} seconds\nfixture_server stdout:\n{stdout}\nfixture_server stderr:\n{stderr}"
+                "{name} exited before becoming ready (status: {status})\n{name} stdout:\n{stdout}\n{name} stderr:\n{stderr}"
             );
         }
 
-        eprintln!("Fixture server started on port {port}");
+        if http_ready(health_url).await {
+            ready = true;
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
 
-        // Run wasm-bindgen-test-runner under a host-side watchdog timeout.
-        let status = run_wasm_bindgen_runner(&args, runner_timeout_secs).await;
+    if !ready {
+        let _ = child.kill();
+        let output = child.wait_with_output().ok();
+        let stdout = output
+            .as_ref()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "<empty>".to_string());
+        let stderr = output
+            .as_ref()
+            .map(|o| String::from_utf8_lossy(&o.stderr).trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "<empty>".to_string());
+        panic!(
+            "{name} did not become ready within {startup_timeout_secs} seconds\n{name} stdout:\n{stdout}\n{name} stderr:\n{stderr}"
+        );
+    }
 
-        // Kill fixture server
+    child
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::main]
+async fn main() {
+    let args: Vec<String> = env::args().skip(1).collect();
+    let test_server_port: u16 = env::var("TEST_SERVER_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3444);
+    let test_server_startup_timeout_secs: u64 = env::var("TEST_SERVER_STARTUP_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(30);
+    let runner_timeout_secs = default_runner_timeout_secs(&args);
+    let test_server_health_url = format!("http://127.0.0.1:{test_server_port}/health");
+    eprintln!("wasm-bindgen watchdog timeout: {runner_timeout_secs}s");
+
+    let test_server_already_running = http_ready(&test_server_health_url).await;
+    let mut test_server_child = None;
+
+    if !test_server_already_running {
+        test_server_child = Some(
+            spawn_server_binary(
+                "test_server",
+                "test_server",
+                "TEST_SERVER_PORT",
+                test_server_port,
+                &test_server_health_url,
+                test_server_startup_timeout_secs,
+            )
+            .await,
+        );
+        eprintln!("Test server started on port {test_server_port}");
+    } else {
+        eprintln!("Test server already running on port {test_server_port}");
+    }
+
+    let status = run_wasm_bindgen_runner(&args, runner_timeout_secs).await;
+
+    if let Some(mut child) = test_server_child {
         let _ = child.kill();
         let _ = child.wait();
-
-        process::exit(status.code().unwrap_or(1));
-    } else {
-        eprintln!("Fixture server already running on port {port}");
-
-        // Delegate to wasm-bindgen-test-runner with all args forwarded.
-        let status = run_wasm_bindgen_runner(&args, runner_timeout_secs).await;
-
-        process::exit(status.code().unwrap_or(1));
     }
+
+    process::exit(status.code().unwrap_or(1));
 }

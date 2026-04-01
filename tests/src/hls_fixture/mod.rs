@@ -1,17 +1,11 @@
-//! Test fixtures for HLS integration tests
+//! Test fixtures for HLS integration tests.
 //!
-//! This module provides reusable test infrastructure including:
-//! - HTTP test servers for HLS content (in-process on native, remote on WASM)
-//! - Asset store helpers
-//! - Encryption/decryption utilities
-//! - ABR testing infrastructure
+//! Server-side HLS helpers now live in `kithara-test-utils`; this module keeps
+//! local asset and crypto helpers plus compatibility re-exports for tests.
 
-pub mod abr;
 pub mod assets;
 pub mod builders;
 pub mod crypto;
-pub mod scalable_server;
-pub mod server;
 
 // Re-export commonly used types
 pub use assets::*;
@@ -20,9 +14,13 @@ pub use builders::*;
 pub use crypto::*;
 #[cfg(target_arch = "wasm32")]
 pub use crypto::{aes128_iv, aes128_plaintext_segment};
+pub use kithara_test_utils::hls_fixture::{
+    AbrTestServer, EncryptionConfig, HlsTestServer, HlsTestServerConfig, TestServer, abr,
+    master_playlist, test_master_playlist, test_master_playlist_encrypted,
+    test_master_playlist_with_init, test_media_playlist, test_media_playlist_encrypted,
+    test_media_playlist_with_init, test_segment_data, test_server,
+};
 // Common types
 use kithara::hls::HlsError;
-pub use scalable_server::*;
-pub use server::*;
 
 pub type HlsResult<T> = Result<T, HlsError>;

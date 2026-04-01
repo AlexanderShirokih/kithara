@@ -120,7 +120,7 @@ async fn create_hls_server_abr(wav_data: Arc<Vec<u8>>) -> HlsTestServer {
 
 /// Create an `Audio<Stream<Hls>>` for a single-variant (manual ABR) stream.
 async fn create_hls_audio(server: &HlsTestServer, cache_dir: &Path) -> Audio<Stream<Hls>> {
-    let url = server.url("/master.m3u8").expect("url");
+    let url = server.url("/master.m3u8");
     let cancel = CancellationToken::new();
 
     let hls_config = HlsConfig::new(url)
@@ -142,7 +142,7 @@ async fn create_hls_audio(server: &HlsTestServer, cache_dir: &Path) -> Audio<Str
 
 /// Create an `Audio<Stream<Hls>>` with auto ABR.
 async fn create_hls_audio_abr(server: &HlsTestServer, cache_dir: &Path) -> Audio<Stream<Hls>> {
-    let url = server.url("/master.m3u8").expect("url");
+    let url = server.url("/master.m3u8");
     let cancel = CancellationToken::new();
 
     let hls_config = HlsConfig::new(url)

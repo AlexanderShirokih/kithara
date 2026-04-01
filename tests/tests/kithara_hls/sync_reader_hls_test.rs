@@ -36,7 +36,7 @@ async fn test_sync_reader_reads_all_bytes_from_hls(temp_dir: TestTempDir) {
     )
     .await;
 
-    let url = server.url("/master.m3u8").unwrap();
+    let url = server.url("/master.m3u8");
     let cancel_token = CancellationToken::new();
 
     // Configure HLS - fixed variant 0 (no ABR switching for this test)

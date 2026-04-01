@@ -64,7 +64,7 @@ async fn test_abr_variant_switch_no_byte_glitches(
     )
     .await;
 
-    let url = server.url("/master.m3u8")?;
+    let url = server.url("/master.m3u8");
     info!("Test server started at: {}", url);
 
     // Create cancellation token
@@ -206,7 +206,7 @@ async fn test_basic_multi_segment_reading(
     )
     .await;
 
-    let url = server.url("/master.m3u8")?;
+    let url = server.url("/master.m3u8");
     let cancel_token = CancellationToken::new();
 
     let config = HlsConfig::new(url)
@@ -276,7 +276,7 @@ async fn test_abr_variant_switch_with_seek_backward(
     )
     .await;
 
-    let url = server.url("/master.m3u8")?;
+    let url = server.url("/master.m3u8");
     let cancel_token = CancellationToken::new();
 
     // Create event bus for tracking variant switches

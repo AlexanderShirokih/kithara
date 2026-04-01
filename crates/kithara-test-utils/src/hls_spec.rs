@@ -1,0 +1,372 @@
+use std::{fmt, sync::Arc};
+
+use base64::{
+    Engine as _,
+    engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD},
+};
+use thiserror::Error;
+
+use crate::{
+    fixture_protocol::{DataMode, DelayRule, EncryptionRequest, InitMode, PcmPattern},
+    hls_blob_store::resolve_hls_blob,
+    hls_url::HlsSpec,
+};
+
+const MAX_SPEC_BYTES: usize = 32 * 1024;
+const MAX_VARIANTS: usize = 16;
+const MAX_SEGMENTS_PER_VARIANT: usize = 4096;
+const MAX_SEGMENT_SIZE: usize = 8 * 1024 * 1024;
+const MAX_DURATION_SECS: f64 = 600.0;
+const MIN_SAMPLE_RATE: u32 = 8_000;
+const MAX_SAMPLE_RATE: u32 = 192_000;
+const MAX_CHANNELS: u16 = 8;
+
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedHlsSpec {
+    pub(crate) variant_count: usize,
+    pub(crate) segments_per_variant: usize,
+    pub(crate) segment_size: usize,
+    pub(crate) segment_duration_secs: f64,
+    pub(crate) data_mode: ResolvedDataMode,
+    pub(crate) init_mode: ResolvedInitMode,
+    pub(crate) variant_bandwidths: Vec<u64>,
+    pub(crate) delay_rules: Vec<DelayRule>,
+    pub(crate) encryption: Option<ResolvedEncryption>,
+    pub(crate) head_reported_segment_size: Option<usize>,
+    pub(crate) key_data: Option<Arc<Vec<u8>>>,
+    cache_key: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ResolvedDataMode {
+    TestPattern,
+    AbrBinary,
+    SharedBytes(Arc<Vec<u8>>),
+    PerVariantBytes(Vec<Arc<Vec<u8>>>),
+    SawWav {
+        sample_rate: u32,
+        channels: u16,
+    },
+    PerVariantPcm {
+        sample_rate: u32,
+        channels: u16,
+        patterns: Vec<PcmPattern>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ResolvedInitMode {
+    None,
+    TestInit,
+    WavHeader { sample_rate: u32, channels: u16 },
+    PerVariantBytes(Vec<Arc<Vec<u8>>>),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedEncryption {
+    pub(crate) key: [u8; 16],
+    pub(crate) iv: Option<[u8; 16]>,
+    iv_hex: Option<String>,
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum HlsSpecError {
+    #[error("hls spec is too large")]
+    SpecTooLarge,
+    #[error("hls spec is not valid base64url")]
+    InvalidBase64,
+    #[error("hls spec is not valid JSON")]
+    InvalidJson,
+    #[error("invalid hls spec field `{field}`: {message}")]
+    InvalidField {
+        field: &'static str,
+        message: &'static str,
+    },
+    #[error("hls blob `{0}` is not registered")]
+    MissingBlob(String),
+    #[error("invalid encryption key or iv")]
+    InvalidEncryption,
+}
+
+impl ResolvedHlsSpec {
+    pub(crate) fn cache_key(&self) -> &str {
+        &self.cache_key
+    }
+}
+
+pub(crate) fn parse_hls_spec(encoded: &str) -> Result<ResolvedHlsSpec, HlsSpecError> {
+    if encoded.len() > MAX_SPEC_BYTES {
+        return Err(HlsSpecError::SpecTooLarge);
+    }
+
+    let bytes = URL_SAFE_NO_PAD
+        .decode(encoded)
+        .or_else(|_| URL_SAFE.decode(encoded))
+        .map_err(|_| HlsSpecError::InvalidBase64)?;
+    let spec: HlsSpec = serde_json::from_slice(&bytes).map_err(|_| HlsSpecError::InvalidJson)?;
+    resolve_hls_spec(spec)
+}
+
+pub(crate) fn resolve_hls_spec(spec: HlsSpec) -> Result<ResolvedHlsSpec, HlsSpecError> {
+    validate_hls_shape(&spec)?;
+
+    let variant_count = spec.variant_count;
+    let mut variant_bandwidths = Vec::with_capacity(variant_count);
+    for variant in 0..variant_count {
+        let bandwidth = spec
+            .variant_bandwidths
+            .as_ref()
+            .and_then(|values| values.get(variant).copied())
+            .unwrap_or((variant + 1) as u64 * 1_280_000);
+        variant_bandwidths.push(bandwidth);
+    }
+
+    let data_mode = normalize_data_mode(&spec.data_mode)?;
+    let init_mode = normalize_init_mode(&spec.init_mode)?;
+    let encryption = spec
+        .encryption
+        .as_ref()
+        .map(normalize_encryption)
+        .transpose()?;
+    let key_data = match (spec.key_hex.as_deref(), spec.key_blob_ref.as_deref()) {
+        (Some(_), Some(_)) => {
+            return Err(HlsSpecError::InvalidField {
+                field: "key",
+                message: "use either `key_hex` or `key_blob_ref`, not both",
+            });
+        }
+        (Some(key_hex), None) => Some(Arc::new(
+            hex::decode(key_hex).map_err(|_| HlsSpecError::InvalidEncryption)?,
+        )),
+        (None, Some(key_ref)) => Some(resolve_blob(key_ref)?),
+        (None, None) => None,
+    };
+    let cache_key = build_cache_key(&spec);
+
+    Ok(ResolvedHlsSpec {
+        variant_count,
+        segments_per_variant: spec.segments_per_variant,
+        segment_size: spec.segment_size,
+        segment_duration_secs: spec.segment_duration_secs,
+        data_mode,
+        init_mode,
+        variant_bandwidths,
+        delay_rules: spec.delay_rules,
+        encryption,
+        head_reported_segment_size: spec.head_reported_segment_size,
+        key_data,
+        cache_key,
+    })
+}
+
+fn validate_hls_shape(spec: &HlsSpec) -> Result<(), HlsSpecError> {
+    if spec.variant_count == 0 || spec.variant_count > MAX_VARIANTS {
+        return Err(HlsSpecError::InvalidField {
+            field: "variant_count",
+            message: "must be between 1 and 16",
+        });
+    }
+    if spec.segments_per_variant == 0 || spec.segments_per_variant > MAX_SEGMENTS_PER_VARIANT {
+        return Err(HlsSpecError::InvalidField {
+            field: "segments_per_variant",
+            message: "must be between 1 and 4096",
+        });
+    }
+    if spec.segment_size == 0 || spec.segment_size > MAX_SEGMENT_SIZE {
+        return Err(HlsSpecError::InvalidField {
+            field: "segment_size",
+            message: "must be between 1 byte and 8 MiB",
+        });
+    }
+    if !spec.segment_duration_secs.is_finite()
+        || spec.segment_duration_secs <= 0.0
+        || spec.segment_duration_secs > MAX_DURATION_SECS
+    {
+        return Err(HlsSpecError::InvalidField {
+            field: "segment_duration_secs",
+            message: "must be finite, > 0, and <= 600 seconds",
+        });
+    }
+    if let Some(head_size) = spec.head_reported_segment_size
+        && head_size == 0
+    {
+        return Err(HlsSpecError::InvalidField {
+            field: "head_reported_segment_size",
+            message: "must be > 0 when provided",
+        });
+    }
+    Ok(())
+}
+
+fn normalize_data_mode(data_mode: &DataMode) -> Result<ResolvedDataMode, HlsSpecError> {
+    match data_mode {
+        DataMode::TestPattern => Ok(ResolvedDataMode::TestPattern),
+        DataMode::AbrBinary => Ok(ResolvedDataMode::AbrBinary),
+        DataMode::CustomData(data) => Ok(ResolvedDataMode::SharedBytes(Arc::new(data.clone()))),
+        DataMode::CustomDataPerVariant(data) => Ok(ResolvedDataMode::PerVariantBytes(
+            data.iter().cloned().map(Arc::new).collect(),
+        )),
+        DataMode::BlobRef(key) => resolve_blob(key).map(ResolvedDataMode::SharedBytes),
+        DataMode::BlobRefs(keys) => keys
+            .iter()
+            .map(|key| resolve_blob(key))
+            .collect::<Result<Vec<_>, _>>()
+            .map(ResolvedDataMode::PerVariantBytes),
+        DataMode::SawWav {
+            sample_rate,
+            channels,
+        } => {
+            validate_pcm_shape(*sample_rate, *channels)?;
+            Ok(ResolvedDataMode::SawWav {
+                sample_rate: *sample_rate,
+                channels: *channels,
+            })
+        }
+        DataMode::PerVariantPcm {
+            sample_rate,
+            channels,
+            patterns,
+        } => {
+            validate_pcm_shape(*sample_rate, *channels)?;
+            Ok(ResolvedDataMode::PerVariantPcm {
+                sample_rate: *sample_rate,
+                channels: *channels,
+                patterns: patterns.clone(),
+            })
+        }
+    }
+}
+
+fn normalize_init_mode(init_mode: &InitMode) -> Result<ResolvedInitMode, HlsSpecError> {
+    match init_mode {
+        InitMode::None => Ok(ResolvedInitMode::None),
+        InitMode::TestInit => Ok(ResolvedInitMode::TestInit),
+        InitMode::Custom(data) => Ok(ResolvedInitMode::PerVariantBytes(
+            data.iter().cloned().map(Arc::new).collect(),
+        )),
+        InitMode::BlobRefs(keys) => keys
+            .iter()
+            .map(|key| resolve_blob(key))
+            .collect::<Result<Vec<_>, _>>()
+            .map(ResolvedInitMode::PerVariantBytes),
+        InitMode::WavHeader {
+            sample_rate,
+            channels,
+        } => {
+            validate_pcm_shape(*sample_rate, *channels)?;
+            Ok(ResolvedInitMode::WavHeader {
+                sample_rate: *sample_rate,
+                channels: *channels,
+            })
+        }
+    }
+}
+
+fn validate_pcm_shape(sample_rate: u32, channels: u16) -> Result<(), HlsSpecError> {
+    if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&sample_rate) {
+        return Err(HlsSpecError::InvalidField {
+            field: "sample_rate",
+            message: "must be between 8000 and 192000 Hz",
+        });
+    }
+    if channels == 0 || channels > MAX_CHANNELS {
+        return Err(HlsSpecError::InvalidField {
+            field: "channels",
+            message: "must be between 1 and 8",
+        });
+    }
+    Ok(())
+}
+
+fn normalize_encryption(enc: &EncryptionRequest) -> Result<ResolvedEncryption, HlsSpecError> {
+    let key_bytes = hex::decode(&enc.key_hex).map_err(|_| HlsSpecError::InvalidEncryption)?;
+    let key: [u8; 16] = key_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| HlsSpecError::InvalidEncryption)?;
+    let iv = enc
+        .iv_hex
+        .as_ref()
+        .map(|value| {
+            let bytes = hex::decode(value).map_err(|_| HlsSpecError::InvalidEncryption)?;
+            let iv: [u8; 16] = bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| HlsSpecError::InvalidEncryption)?;
+            Ok(iv)
+        })
+        .transpose()?;
+
+    Ok(ResolvedEncryption {
+        key,
+        iv,
+        iv_hex: enc.iv_hex.clone(),
+    })
+}
+
+fn resolve_blob(key: &str) -> Result<Arc<Vec<u8>>, HlsSpecError> {
+    resolve_hls_blob(key).ok_or_else(|| HlsSpecError::MissingBlob(key.to_owned()))
+}
+
+fn build_cache_key(spec: &HlsSpec) -> String {
+    struct Stable<'a>(&'a HlsSpec);
+
+    impl fmt::Display for Stable<'_> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            let json = serde_json::to_string(self.0).map_err(|_| fmt::Error)?;
+            f.write_str(&json)
+        }
+    }
+
+    Stable(spec).to_string()
+}
+
+impl ResolvedEncryption {
+    pub(crate) fn iv_hex(&self) -> Option<&str> {
+        self.iv_hex.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+
+    use super::*;
+    use crate::{fixture_protocol::InitMode, hls_blob_store::register_hls_blob};
+
+    fn encode(spec: &HlsSpec) -> String {
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(spec).unwrap())
+    }
+
+    #[test]
+    fn parses_blob_backed_spec() {
+        let media = register_hls_blob(b"abcdef");
+        let init = register_hls_blob(b"init");
+        let key = register_hls_blob(b"key");
+        let spec = HlsSpec {
+            variant_count: 2,
+            data_mode: DataMode::BlobRef(media.clone()),
+            init_mode: InitMode::BlobRefs(vec![init.clone(), init]),
+            key_blob_ref: Some(key),
+            ..HlsSpec::default()
+        };
+
+        let resolved = parse_hls_spec(&encode(&spec)).unwrap();
+        assert_eq!(resolved.variant_count, 2);
+        assert_eq!(resolved.variant_bandwidths, vec![1_280_000, 2_560_000]);
+        match resolved.data_mode {
+            ResolvedDataMode::SharedBytes(bytes) => assert_eq!(bytes.as_slice(), b"abcdef"),
+            _ => panic!("expected shared bytes"),
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_variant_count() {
+        let spec = HlsSpec {
+            variant_count: 0,
+            ..HlsSpec::default()
+        };
+        let err = parse_hls_spec(&encode(&spec)).unwrap_err();
+        assert!(err.to_string().contains("variant_count"));
+    }
+}

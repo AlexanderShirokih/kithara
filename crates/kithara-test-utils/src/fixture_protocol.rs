@@ -1,8 +1,7 @@
-//! Serializable protocol types for fixture server sessions.
+//! Shared protocol types for synthetic HLS test fixtures.
 //!
-//! These types are shared between the fixture server (native binary) and
-//! fixture clients (both native and WASM). They contain no platform-specific
-//! dependencies — only `serde` for serialization.
+//! These types are transport-agnostic and contain no platform-specific
+//! dependencies beyond `serde`.
 //!
 //! # Data Generation
 //!
@@ -14,156 +13,57 @@ use serde::{Deserialize, Serialize};
 
 use crate::{signal_pcm::signal, wav::create_wav_header};
 
-/// Configuration for an HLS test session (maps to `HlsTestServer`).
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct HlsSessionConfig {
-    /// Number of HLS variants (bitrate levels). Default: 1.
-    pub variant_count: usize,
-    /// Number of segments per variant. Default: 3.
-    pub segments_per_variant: usize,
-    /// Segment size in bytes. Default: 200 000 (200 KB).
-    pub segment_size: usize,
-    /// Segment duration in seconds (for playlist `#EXTINF`). Default: 4.0.
-    pub segment_duration_secs: f64,
-    /// How media segment data is generated.
-    pub data_mode: DataMode,
-    /// How init segments are generated.
-    pub init_mode: InitMode,
-    /// Custom bandwidths for master playlist variants.
-    pub variant_bandwidths: Option<Vec<u64>>,
-    /// Delay rules applied when serving segments.
-    pub delay_rules: Vec<DelayRule>,
-    /// AES-128 encryption config.
-    pub encryption: Option<EncryptionRequest>,
-    /// Size reported by HEAD responses for segments (simulates compressed size).
-    /// When set, HEAD returns this value as Content-Length instead of `segment_size`.
-    /// Used to test HEAD/GET size mismatch (e.g. HTTP auto-decompression).
-    pub head_reported_segment_size: Option<usize>,
-}
-
-impl Default for HlsSessionConfig {
-    fn default() -> Self {
-        Self {
-            variant_count: 1,
-            segments_per_variant: 3,
-            segment_size: 200_000,
-            segment_duration_secs: 4.0,
-            data_mode: DataMode::TestPattern,
-            init_mode: InitMode::None,
-            variant_bandwidths: None,
-            delay_rules: Vec::new(),
-            encryption: None,
-            head_reported_segment_size: None,
-        }
-    }
-}
-
-/// Configuration for an ABR test session (maps to `AbrTestServer`).
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct AbrSessionConfig {
-    /// Master playlist content.
-    pub master_playlist: String,
-    /// Whether to include init segments (`#EXT-X-MAP`).
-    pub has_init: bool,
-    /// Delay in ms for segment `v2_0`.
-    pub segment0_delay_ms: u64,
-}
-
-/// Configuration for a fixed HLS test session (maps to `TestServer`).
-///
-/// No parameters — the server generates fixed content (3 variants × 3 segments).
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct FixedHlsSessionConfig;
-
-/// Configuration for an audio fixtures session.
-///
-/// Serves embedded audio files (silence.wav, test.mp3) for decode tests.
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct AudioFixturesSessionConfig;
-
-/// Configuration for a file download test session.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct FileSessionConfig {
-    /// Named files to serve, with their content.
-    pub files: Vec<FileEntry>,
-    /// If true, first sequential GET response closes after `close_after_bytes` bytes.
-    pub partial_close: Option<PartialCloseConfig>,
-}
-
-/// A file entry served by the file test session.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct FileEntry {
-    /// Filename (path component, e.g. "audio.mp3")
-    pub name: String,
-    /// File content as bytes.
-    pub data: Vec<u8>,
-    /// Content-Type header.
-    pub content_type: String,
-}
-
-/// Configuration for partial close behavior.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct PartialCloseConfig {
-    /// Close the initial sequential stream after this many bytes.
-    pub close_after_bytes: usize,
-    /// Total advertised size (Content-Length in HEAD).
-    pub total_size: usize,
-}
-
-/// Configuration for an HTTP test session (generic endpoint testing).
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct HttpTestSessionConfig {
-    /// Routes to register.
-    pub routes: Vec<HttpTestRoute>,
-}
-
-/// A single route in an HTTP test session.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct HttpTestRoute {
-    /// Path (e.g. "/test" -- served at /s/{id}/http/test).
-    pub path: String,
-    /// HTTP status code to return.
-    pub status: u16,
-    /// Response headers.
-    pub headers: Vec<(String, String)>,
-    /// Response body (empty if None).
-    pub body: Option<Vec<u8>>,
-    /// Delay before responding, in milliseconds.
-    pub delay_ms: Option<u64>,
-    /// Whether to support Range requests on this route.
-    pub support_range: bool,
-    /// Number of initial requests to fail with 500 before succeeding.
-    /// Used for retry testing.
-    pub fail_first_n: Option<usize>,
-}
-
 /// How media segment data is generated.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum DataMode {
     /// `"V{v}-SEG-{s}:TEST_SEGMENT_DATA"` prefix + `0xFF` padding.
+    #[serde(rename = "tp")]
     TestPattern,
     /// Saw-tooth WAV audio data.
-    SawWav { sample_rate: u32, channels: u16 },
-    /// Per-variant PCM data (no WAV header — init segment provides it).
-    PerVariantPcm {
+    #[serde(rename = "sw")]
+    SawWav {
+        #[serde(rename = "sr")]
         sample_rate: u32,
+        #[serde(rename = "ch")]
         channels: u16,
+    },
+    /// Per-variant PCM data (no WAV header — init segment provides it).
+    #[serde(rename = "pp")]
+    PerVariantPcm {
+        #[serde(rename = "sr")]
+        sample_rate: u32,
+        #[serde(rename = "ch")]
+        channels: u16,
+        #[serde(rename = "p")]
         patterns: Vec<PcmPattern>,
     },
     /// Exact custom segment bytes for all variants.
+    #[serde(rename = "cd")]
     CustomData(Vec<u8>),
     /// Exact custom segment bytes for each variant.
+    #[serde(rename = "cpv")]
     CustomDataPerVariant(Vec<Vec<u8>>),
+    /// Shared media payload stored out-of-band and referenced by key.
+    #[serde(rename = "br")]
+    BlobRef(String),
+    /// Per-variant media payloads stored out-of-band and referenced by keys.
+    #[serde(rename = "brv")]
+    BlobRefs(Vec<String>),
+    /// Legacy ABR binary payload format used by historical integration tests.
+    AbrBinary,
 }
 
 /// PCM saw-tooth pattern for a variant.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum PcmPattern {
     /// Ascending saw-tooth: frame 0 → -32768, frame 65535 → 32767.
+    #[serde(rename = "a")]
     Ascending,
     /// Descending saw-tooth: frame 0 → 32767, frame 65535 → -32768.
+    #[serde(rename = "d")]
     Descending,
     /// Ascending saw-tooth with half-period phase offset.
+    #[serde(rename = "sa")]
     ShiftedAscending,
 }
 
@@ -181,13 +81,26 @@ impl signal::SignalFn for PcmPattern {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum InitMode {
     /// No init segments.
+    #[serde(rename = "n")]
     None,
+    /// Legacy fixed-init payload: `V{variant}-INIT:TEST_INIT_DATA`.
+    TestInit,
     /// 44-byte WAV header (streaming mode: size = 0xFFFFFFFF).
-    WavHeader { sample_rate: u32, channels: u16 },
+    #[serde(rename = "wh")]
+    WavHeader {
+        #[serde(rename = "sr")]
+        sample_rate: u32,
+        #[serde(rename = "ch")]
+        channels: u16,
+    },
     /// Exact custom init bytes for each variant.
     ///
     /// Variant `v` uses `data[v]`; missing entries produce an empty init segment.
+    #[serde(rename = "c")]
     Custom(Vec<Vec<u8>>),
+    /// Per-variant init bytes stored out-of-band and referenced by keys.
+    #[serde(rename = "brv")]
+    BlobRefs(Vec<String>),
 }
 
 /// Declarative delay rule for segment serving.
@@ -197,12 +110,16 @@ pub enum InitMode {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct DelayRule {
     /// Match only this variant index. `None` = any variant.
+    #[serde(rename = "v")]
     pub variant: Option<usize>,
     /// Match only this exact segment index. `None` = any segment.
+    #[serde(rename = "eq")]
     pub segment_eq: Option<usize>,
     /// Match segments with index >= N. `None` = no lower bound.
+    #[serde(rename = "gte")]
     pub segment_gte: Option<usize>,
     /// Delay in milliseconds.
+    #[serde(rename = "ms")]
     pub delay_ms: u64,
 }
 
@@ -243,22 +160,11 @@ pub fn eval_delay(rules: &[DelayRule], variant: usize, segment: usize) -> u64 {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct EncryptionRequest {
     /// 16-byte AES key as hex string.
+    #[serde(rename = "k")]
     pub key_hex: String,
     /// Optional 16-byte IV as hex string. When `None`, derived from segment sequence.
+    #[serde(rename = "iv")]
     pub iv_hex: Option<String>,
-}
-
-/// Response returned after creating a session.
-#[derive(Serialize, Deserialize, Debug)]
-pub struct SessionResponse {
-    /// Unique session identifier.
-    pub session_id: String,
-    /// Base URL for this session's content (e.g. `http://127.0.0.1:3333/s/{id}`).
-    pub base_url: String,
-    /// Total bytes across all segments for one variant (including init).
-    pub total_bytes: u64,
-    /// Init segment length for variant 0 (0 if no init segments).
-    pub init_len: u64,
 }
 
 /// Generate test-pattern segment data: `V{v}-SEG-{s}:TEST_SEGMENT_DATA` + `0xFF` padding.
