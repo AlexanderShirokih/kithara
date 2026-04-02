@@ -9,8 +9,8 @@ use kithara::decode::{DecoderConfig, DecoderFactory};
 use kithara_integration_tests::audio_fixture::EmbeddedAudio;
 use kithara_platform::time::Duration;
 use kithara_test_utils::{
-    HlsFixtureBuilder, SignalFormat, SignalSpec, SignalSpecLength, TestServerHelper,
-    fixture_protocol::{DataMode, InitMode},
+    HlsFixtureBuilder, PackagedTestServer, SignalFormat, SignalSpec, SignalSpecLength,
+    TestServerHelper,
 };
 use reqwest::Client;
 
@@ -136,43 +136,81 @@ async fn test_signal_server_encoded_formats_are_decodable(
     timeout(Duration::from_secs(5)),
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
-async fn test_create_hls_returns_stable_typed_urls() {
+async fn test_create_packaged_hls_returns_stable_typed_urls() {
     let server = TestServerHelper::new().await;
     let created = server
         .create_hls(
             HlsFixtureBuilder::new()
                 .variant_count(1)
                 .segments_per_variant(4)
-                .segment_size(200_000)
-                .segment_duration_secs(200_000.0 / (44_100.0 * 2.0 * 2.0))
-                .data_mode(DataMode::SawWav {
-                    sample_rate: 44_100,
-                    channels: 2,
-                })
-                .init_mode(InitMode::WavHeader {
-                    sample_rate: 44_100,
-                    channels: 2,
-                }),
+                .segment_duration_secs(1.0)
+                .packaged_audio_aac_lc(44_100, 2),
         )
         .await
         .expect("create HLS fixture");
 
     let master_url = created.master_url();
     let media_url = created.media_url(0);
+    let init_url = created.init_url(0);
     let segment_url = created.segment_url(0, 0);
     let token = created.token().to_string();
 
     assert!(master_url.path().contains(&token));
     assert!(media_url.path().contains(&token));
+    assert!(init_url.path().contains(&token));
     assert!(segment_url.path().contains(&token));
 
     let client = Client::new();
     let master = client.get(master_url).send().await.unwrap();
+    let init = client.get(init_url).send().await.unwrap();
+    let segment = client.get(segment_url).send().await.unwrap();
+
     assert_eq!(master.status(), 200);
     assert_eq!(
         master.headers().get("content-type").unwrap(),
         "application/vnd.apple.mpegurl"
     );
+    assert_eq!(init.status(), 200);
+    assert_eq!(init.headers().get("content-type").unwrap(), "audio/mp4");
+    assert_eq!(segment.status(), 200);
+    assert_eq!(segment.headers().get("content-type").unwrap(), "audio/mp4");
+    assert!(!init.bytes().await.unwrap().is_empty());
+    assert!(!segment.bytes().await.unwrap().is_empty());
+}
+
+#[kithara::test(
+    native,
+    tokio,
+    timeout(Duration::from_secs(5)),
+    env(KITHARA_HANG_TIMEOUT_SECS = "1")
+)]
+async fn test_packaged_test_server_serves_audio_mp4_resources() {
+    let server = PackagedTestServer::new().await;
+    let client = Client::new();
+
+    let master = client.get(server.url("/master.m3u8")).send().await.unwrap();
+    let media = client.get(server.url("/v0.m3u8")).send().await.unwrap();
+    let init = client.get(server.url("/init/v0.mp4")).send().await.unwrap();
+    let segment = client
+        .get(server.url("/seg/v0_0.m4s"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(master.status(), 200);
+    assert_eq!(
+        master.headers().get("content-type").unwrap(),
+        "application/vnd.apple.mpegurl"
+    );
+    assert_eq!(media.status(), 200);
+    assert_eq!(
+        media.headers().get("content-type").unwrap(),
+        "application/vnd.apple.mpegurl"
+    );
+    assert_eq!(init.status(), 200);
+    assert_eq!(init.headers().get("content-type").unwrap(), "audio/mp4");
+    assert_eq!(segment.status(), 200);
+    assert_eq!(segment.headers().get("content-type").unwrap(), "audio/mp4");
 }
 
 #[kithara::test]

@@ -50,10 +50,11 @@ let url = server.url("/master.m3u8");
 
 The `fixture_protocol` module defines the transport-agnostic building blocks used by synthetic HLS fixtures:
 
-- **Data modes**: `DataMode::TestPattern`, custom/blob-backed payloads, and fixture-specific synthetic presets used by legacy-compatible tests
-- **Init modes**: `InitMode::None`, `InitMode::WavHeader`, custom/blob-backed init payloads
+- **Data modes**: `DataMode::TestPattern`, custom/blob-backed payloads, and compatibility-only presets such as `DataMode::AbrBinary`
+- **Init modes**: `InitMode::None`, `InitMode::WavHeader`, custom/blob-backed init payloads, plus compatibility-only `InitMode::TestInit`
 - **Delay rules**: `DelayRule` with `variant`, `segment_eq`, `segment_gte`, `delay_ms`
 - **Encryption**: `EncryptionRequest` for AES-128 HLS testing
+- **Packaged audio**: `PackagedAudioRequest` and `HlsFixtureBuilder::packaged_audio_*` for real fMP4 audio fixtures
 - **Data generation**: Pure functions for segment/WAV data — shared between server and client for byte-level verification
 
 The `hls_fixture` module is the canonical test-facing API for synthetic HLS scenarios. It builds URLs against unified `test_server` routes:
@@ -67,6 +68,11 @@ The `hls_fixture` module is the canonical test-facing API for synthetic HLS scen
 
 For custom synthetic HLS fixtures, prefer `TestServerHelper::create_hls(HlsFixtureBuilder::new()...)`.
 That DSL keeps the server core generic while returning a typed `CreatedHls` handle with stable `master_url()`, `media_url()`, `init_url()`, `segment_url()`, and `key_url()` accessors.
+
+For new audio HLS fixtures, prefer packaged fMP4 audio via `HlsFixtureBuilder::packaged_audio_*`
+or the canned `PackagedTestServer`. Keep `TestServer`, `HlsTestServer`, `AbrTestServer`,
+`DataMode::AbrBinary`, and `InitMode::TestInit` for compatibility tests that intentionally
+assert the historical byte-level contract.
 
 ## Integration
 

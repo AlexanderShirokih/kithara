@@ -9,8 +9,12 @@ use crate::{
     fixture_protocol::{DataMode, DelayRule, EncryptionRequest, InitMode},
 };
 
-/// Fixed the three-variant HLS fixture used by many integration tests.
+/// Compatibility fixture that preserves historical byte-exact HLS payloads.
+///
+/// Prefer [`PackagedTestServer`] or `HlsFixtureBuilder::packaged_audio_*` for new
+/// audio HLS tests.
 pub struct TestServer {
+    _helper: TestServerHelper,
     plain: CreatedHls,
     init: CreatedHls,
     encrypted: CreatedHls,
@@ -21,18 +25,19 @@ impl TestServer {
     pub async fn new() -> Self {
         let helper = TestServerHelper::new().await;
         let plain = helper
-            .create_hls(HlsFixtureBuilder::from_spec(fixed_plain_spec()))
+            .create_hls(HlsFixtureBuilder::from_spec(compat_fixed_plain_spec()))
             .await
             .expect("create fixed plain HLS fixture");
         let init = helper
-            .create_hls(HlsFixtureBuilder::from_spec(fixed_init_spec()))
+            .create_hls(HlsFixtureBuilder::from_spec(compat_fixed_init_spec()))
             .await
             .expect("create fixed init HLS fixture");
         let encrypted = helper
-            .create_hls(HlsFixtureBuilder::from_spec(fixed_encrypted_spec()))
+            .create_hls(HlsFixtureBuilder::from_spec(compat_fixed_encrypted_spec()))
             .await
             .expect("create fixed encrypted HLS fixture");
         Self {
+            _helper: helper,
             plain,
             init,
             encrypted,
@@ -218,8 +223,12 @@ impl Default for HlsTestServerConfig {
     }
 }
 
-/// Configurable HLS fixture backed by the unified synthetic stream routes.
+/// Configurable compatibility fixture for byte-exact synthetic HLS payloads.
+///
+/// This server keeps the historical test-pattern byte contract and therefore
+/// remains the right choice for `expected_byte_at()`-style assertions.
 pub struct HlsTestServer {
+    _helper: TestServerHelper,
     config: HlsTestServerConfig,
     created: CreatedHls,
 }
@@ -232,7 +241,11 @@ impl HlsTestServer {
             .create_hls(builder_from_config(&config))
             .await
             .expect("create configurable HLS fixture");
-        Self { config, created }
+        Self {
+            _helper: helper,
+            config,
+            created,
+        }
     }
 
     #[must_use]
@@ -325,13 +338,88 @@ impl HlsTestServer {
     }
 }
 
+/// Preferred packaged-audio fixture for new synthetic HLS audio tests.
+pub struct PackagedTestServer {
+    _helper: TestServerHelper,
+    plain: CreatedHls,
+    encrypted: CreatedHls,
+}
+
+impl PackagedTestServer {
+    #[must_use]
+    pub async fn new() -> Self {
+        let helper = TestServerHelper::new().await;
+        let plain = helper
+            .create_hls(packaged_plain_builder())
+            .await
+            .expect("create packaged plain HLS fixture");
+        let encrypted = helper
+            .create_hls(packaged_encrypted_builder())
+            .await
+            .expect("create packaged encrypted HLS fixture");
+        Self {
+            _helper: helper,
+            plain,
+            encrypted,
+        }
+    }
+
+    #[must_use]
+    pub fn url(&self, path: &str) -> Url {
+        match path {
+            "/master.m3u8" | "/master-init.m3u8" => self.plain.master_url(),
+            "/master-encrypted.m3u8" => self.encrypted.master_url(),
+            "/v0.m3u8" => self.plain.media_url(0),
+            "/v1.m3u8" | "/video/480p/playlist.m3u8" => self.plain.media_url(1),
+            "/v2.m3u8" => self.plain.media_url(2),
+            "/v0-encrypted.m3u8" => self.encrypted.media_url(0),
+            "/init/v0.mp4" => self.plain.init_url(0),
+            "/init/v1.mp4" => self.plain.init_url(1),
+            "/init/v2.mp4" => self.plain.init_url(2),
+            "/seg/v0_0.m4s" => self.plain.segment_url(0, 0),
+            "/seg/v0_1.m4s" => self.plain.segment_url(0, 1),
+            "/seg/v0_2.m4s" => self.plain.segment_url(0, 2),
+            "/seg/v1_0.m4s" => self.plain.segment_url(1, 0),
+            "/seg/v1_1.m4s" => self.plain.segment_url(1, 1),
+            "/seg/v1_2.m4s" => self.plain.segment_url(1, 2),
+            "/seg/v2_0.m4s" => self.plain.segment_url(2, 0),
+            "/seg/v2_1.m4s" => self.plain.segment_url(2, 1),
+            "/seg/v2_2.m4s" => self.plain.segment_url(2, 2),
+            "/key.bin" | "/aes/key.bin" => self.encrypted.key_url(),
+            "/aes/seg0.m4s" => self.encrypted.segment_url(0, 0),
+            other => panic!("unknown PackagedTestServer path `{other}`"),
+        }
+    }
+}
+
+#[crate::kithara::fixture]
+pub async fn packaged_test_server() -> PackagedTestServer {
+    PackagedTestServer::new().await
+}
+
 /// ABR-specific helpers preserved for existing tests.
 pub mod abr {
     pub use super::{AbrTestServer, master_playlist};
 }
 
-/// ABR fixture backed by the unified synthetic stream routes.
+/// Compatibility re-exports for legacy byte-exact fixtures.
+pub mod compat {
+    pub use super::{
+        AbrTestServer, HlsTestServer, TestServer, abr, master_playlist, test_master_playlist,
+        test_master_playlist_encrypted, test_master_playlist_with_init, test_media_playlist,
+        test_media_playlist_encrypted, test_media_playlist_with_init, test_segment_data,
+        test_server,
+    };
+}
+
+/// Re-exports for packaged fMP4 fixture presets.
+pub mod packaged {
+    pub use super::{PackagedTestServer, packaged_test_server};
+}
+
+/// Compatibility-only ABR fixture backed by the unified synthetic stream routes.
 pub struct AbrTestServer {
+    _helper: TestServerHelper,
     created: CreatedHls,
 }
 
@@ -340,14 +428,17 @@ impl AbrTestServer {
     pub async fn new(master_playlist: String, init: bool, segment0_delay: Duration) -> Self {
         let helper = TestServerHelper::new().await;
         let created = helper
-            .create_hls(HlsFixtureBuilder::from_spec(abr_spec(
+            .create_hls(HlsFixtureBuilder::from_spec(compat_abr_spec(
                 &master_playlist,
                 init,
                 segment0_delay,
             )))
             .await
             .expect("create ABR HLS fixture");
-        Self { created }
+        Self {
+            _helper: helper,
+            created,
+        }
     }
 
     #[must_use]
@@ -389,7 +480,7 @@ v2.m3u8
     )
 }
 
-fn fixed_plain_spec() -> HlsSpec {
+fn compat_fixed_plain_spec() -> HlsSpec {
     HlsSpec {
         variant_count: 3,
         key_hex: Some(hex::encode(test_key_data())),
@@ -397,15 +488,15 @@ fn fixed_plain_spec() -> HlsSpec {
     }
 }
 
-fn fixed_init_spec() -> HlsSpec {
+fn compat_fixed_init_spec() -> HlsSpec {
     HlsSpec {
         variant_count: 3,
         init_mode: InitMode::TestInit,
-        ..fixed_plain_spec()
+        ..compat_fixed_plain_spec()
     }
 }
 
-fn fixed_encrypted_spec() -> HlsSpec {
+fn compat_fixed_encrypted_spec() -> HlsSpec {
     HlsSpec {
         variant_count: 1,
         segments_per_variant: 1,
@@ -418,6 +509,25 @@ fn fixed_encrypted_spec() -> HlsSpec {
         head_reported_segment_size: Some(aes128_plaintext_segment().len()),
         ..HlsSpec::default()
     }
+}
+
+fn packaged_plain_builder() -> HlsFixtureBuilder {
+    HlsFixtureBuilder::new()
+        .variant_count(3)
+        .segments_per_variant(3)
+        .segment_duration_secs(4.0)
+        .variant_bandwidths(vec![1_280_000, 2_560_000, 5_120_000])
+        .packaged_audio_aac_lc(44_100, 2)
+}
+
+fn packaged_encrypted_builder() -> HlsFixtureBuilder {
+    packaged_plain_builder()
+        .variant_count(1)
+        .variant_bandwidths(vec![1_280_000])
+        .encryption(EncryptionRequest {
+            key_hex: hex::encode(aes128_key_bytes()),
+            iv_hex: Some(hex::encode(aes128_iv())),
+        })
 }
 
 fn builder_from_config(config: &HlsTestServerConfig) -> HlsFixtureBuilder {
@@ -465,10 +575,10 @@ fn builder_from_config(config: &HlsTestServerConfig) -> HlsFixtureBuilder {
     }
 }
 
-fn abr_spec(master_playlist: &str, init: bool, segment0_delay: Duration) -> HlsSpec {
+fn compat_abr_spec(master_playlist: &str, init: bool, segment0_delay: Duration) -> HlsSpec {
     let variant_bandwidths = parse_master_bandwidths(master_playlist);
     let init_mode = if init {
-        InitMode::Custom((0..3).map(abr_init_data).collect())
+        InitMode::Custom((0..3).map(compat_abr_init_data).collect())
     } else {
         InitMode::None
     };
@@ -511,7 +621,7 @@ fn parse_segment(path: &str) -> Option<(usize, usize)> {
     Some((variant.parse().ok()?, segment.parse().ok()?))
 }
 
-fn abr_init_data(variant: usize) -> Vec<u8> {
+fn compat_abr_init_data(variant: usize) -> Vec<u8> {
     format!("V{variant}-INIT:").into_bytes()
 }
 

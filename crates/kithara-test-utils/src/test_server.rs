@@ -17,7 +17,7 @@ use crate::token_store::{TokenRequest, TokenResponse};
 use crate::{
     fixture_protocol::{
         DataMode, DelayRule, EncryptionRequest, InitMode, PackagedAudioRequest,
-        PackagedAudioSource, PackagedSignal,
+        PackagedAudioSource, PackagedSignal, PcmPattern,
     },
     hls_spec::HlsSpecError,
     hls_url::{
@@ -169,6 +169,7 @@ impl HlsFixtureBuilder {
 
     #[must_use]
     pub fn data_mode(mut self, data_mode: DataMode) -> Self {
+        self.clear_packaged_audio();
         self.spec.data_mode = data_mode.clone();
         self.data = HlsFixtureData::Spec(data_mode);
         self
@@ -176,18 +177,21 @@ impl HlsFixtureBuilder {
 
     #[must_use]
     pub fn custom_data(mut self, data: Arc<Vec<u8>>) -> Self {
+        self.clear_packaged_audio();
         self.data = HlsFixtureData::SharedBytes(data);
         self
     }
 
     #[must_use]
     pub fn custom_data_per_variant(mut self, data: Vec<Arc<Vec<u8>>>) -> Self {
+        self.clear_packaged_audio();
         self.data = HlsFixtureData::PerVariantBytes(data);
         self
     }
 
     #[must_use]
     pub fn init_mode(mut self, init_mode: InitMode) -> Self {
+        self.clear_packaged_audio();
         self.spec.init_mode = init_mode.clone();
         self.init = HlsFixtureInit::Spec(init_mode);
         self
@@ -195,6 +199,7 @@ impl HlsFixtureBuilder {
 
     #[must_use]
     pub fn init_data_per_variant(mut self, data: Vec<Arc<Vec<u8>>>) -> Self {
+        self.clear_packaged_audio();
         self.init = HlsFixtureInit::PerVariantBytes(data);
         self
     }
@@ -238,19 +243,48 @@ impl HlsFixtureBuilder {
 
     #[must_use]
     pub fn packaged_audio(mut self, packaged_audio: PackagedAudioRequest) -> Self {
-        self.spec.packaged_audio = Some(packaged_audio);
+        self.set_packaged_audio(packaged_audio);
         self
     }
 
     #[must_use]
-    pub fn packaged_audio_aac_lc(mut self, sample_rate: u32, channels: u16) -> Self {
-        self.spec.packaged_audio = Some(PackagedAudioRequest {
+    pub fn packaged_audio_aac_lc(self, sample_rate: u32, channels: u16) -> Self {
+        self.packaged_audio_signal_aac_lc(sample_rate, channels, PackagedSignal::Sawtooth)
+    }
+
+    #[must_use]
+    pub fn packaged_audio_signal_aac_lc(
+        mut self,
+        sample_rate: u32,
+        channels: u16,
+        signal: PackagedSignal,
+    ) -> Self {
+        self.set_packaged_audio(PackagedAudioRequest {
             codec: kithara_stream::AudioCodec::AacLc,
             sample_rate,
             channels,
             timescale: Some(sample_rate),
             bit_rate: Some(128_000),
-            source: PackagedAudioSource::Signal(PackagedSignal::Sawtooth),
+            source: PackagedAudioSource::Signal(signal),
+            variant_overrides: Vec::new(),
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn packaged_audio_per_variant_pcm_aac_lc(
+        mut self,
+        sample_rate: u32,
+        channels: u16,
+        patterns: Vec<PcmPattern>,
+    ) -> Self {
+        self.set_packaged_audio(PackagedAudioRequest {
+            codec: kithara_stream::AudioCodec::AacLc,
+            sample_rate,
+            channels,
+            timescale: Some(sample_rate),
+            bit_rate: Some(128_000),
+            source: PackagedAudioSource::PerVariantPcm { patterns },
             variant_overrides: Vec::new(),
         });
         self
@@ -305,6 +339,18 @@ impl HlsFixtureBuilder {
         };
         self.spec
     }
+
+    fn clear_packaged_audio(&mut self) {
+        self.spec.packaged_audio = None;
+    }
+
+    fn set_packaged_audio(&mut self, packaged_audio: PackagedAudioRequest) {
+        self.spec.data_mode = DataMode::TestPattern;
+        self.spec.init_mode = InitMode::None;
+        self.data = HlsFixtureData::Spec(DataMode::TestPattern);
+        self.init = HlsFixtureInit::Spec(InitMode::None);
+        self.spec.packaged_audio = Some(packaged_audio);
+    }
 }
 
 impl Default for HlsFixtureBuilder {
@@ -342,7 +388,7 @@ pub(crate) async fn post_token(
 mod tests {
     use super::*;
     use crate::{
-        fixture_protocol::DataMode,
+        fixture_protocol::{DataMode, InitMode},
         signal_url::{SignalFormat, SignalSpec, SignalSpecLength},
     };
 
@@ -372,6 +418,36 @@ mod tests {
         assert_eq!(spec.variant_count, 2);
         assert_eq!(spec.segment_size, 512);
         assert!(matches!(spec.data_mode, DataMode::TestPattern));
+    }
+
+    #[test]
+    fn packaged_audio_builder_resets_legacy_inputs() {
+        let spec = HlsFixtureBuilder::new()
+            .data_mode(DataMode::SawWav {
+                sample_rate: 44_100,
+                channels: 2,
+            })
+            .init_mode(InitMode::WavHeader {
+                sample_rate: 44_100,
+                channels: 2,
+            })
+            .packaged_audio_aac_lc(44_100, 2)
+            .into_inline_spec();
+
+        assert!(matches!(spec.data_mode, DataMode::TestPattern));
+        assert!(matches!(spec.init_mode, InitMode::None));
+        assert!(spec.packaged_audio.is_some());
+    }
+
+    #[test]
+    fn legacy_data_overrides_clear_packaged_audio() {
+        let spec = HlsFixtureBuilder::new()
+            .packaged_audio_aac_lc(44_100, 2)
+            .custom_data(Arc::new(vec![1, 2, 3, 4]))
+            .into_inline_spec();
+
+        assert!(spec.packaged_audio.is_none());
+        assert!(matches!(spec.data_mode, DataMode::CustomData(_)));
     }
 
     #[tokio::test]

@@ -88,7 +88,9 @@ pub enum DataMode {
     BlobRef(String),
     /// Per-variant media payloads stored out-of-band and referenced by keys.
     BlobRefs(Vec<String>),
-    /// Legacy ABR binary payload format used by historical integration tests.
+    /// Compatibility-only ABR binary payload format used by historical integration tests.
+    ///
+    /// Prefer `PackagedAudioRequest` for new audio HLS fixtures.
     AbrBinary,
 }
 
@@ -118,7 +120,9 @@ impl signal::SignalFn for PcmPattern {
 pub enum InitMode {
     /// No init segments.
     None,
-    /// Legacy fixed-init payload: `V{variant}-INIT:TEST_INIT_DATA`.
+    /// Compatibility-only fixed-init payload: `V{variant}-INIT:TEST_INIT_DATA`.
+    ///
+    /// Prefer packaged init segments for new audio HLS fixtures.
     TestInit,
     /// 44-byte WAV header (streaming mode: size = 0xFFFFFFFF).
     WavHeader { sample_rate: u32, channels: u16 },
@@ -157,7 +161,7 @@ pub struct PackagedAudioVariantOverride {
     pub pattern: Option<PcmPattern>,
 }
 
-/// Opt-in description for real audio fMP4 packaging.
+/// Preferred description for real audio fMP4 packaging in new audio HLS fixtures.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PackagedAudioRequest {
     #[serde(with = "serde_audio_codec")]
