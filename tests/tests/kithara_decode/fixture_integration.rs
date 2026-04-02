@@ -8,7 +8,10 @@ use std::io::Cursor;
 use kithara::decode::{DecoderConfig, DecoderFactory};
 use kithara_integration_tests::audio_fixture::EmbeddedAudio;
 use kithara_platform::time::Duration;
-use kithara_test_utils::{SignalFormat, SignalSpec, SignalSpecLength, TestServerHelper};
+use kithara_test_utils::{
+    HlsFixtureBuilder, SignalFormat, SignalSpec, SignalSpecLength, TestServerHelper,
+    fixture_protocol::{DataMode, InitMode},
+};
 use reqwest::Client;
 
 #[kithara::test(
@@ -125,6 +128,51 @@ async fn test_signal_server_encoded_formats_are_decodable(
 
     let chunk = decoder.next_chunk().unwrap().unwrap();
     assert!(!chunk.pcm.is_empty());
+}
+
+#[kithara::test(
+    native,
+    tokio,
+    timeout(Duration::from_secs(5)),
+    env(KITHARA_HANG_TIMEOUT_SECS = "1")
+)]
+async fn test_create_hls_returns_stable_typed_urls() {
+    let server = TestServerHelper::new().await;
+    let created = server
+        .create_hls(
+            HlsFixtureBuilder::new()
+                .variant_count(1)
+                .segments_per_variant(4)
+                .segment_size(200_000)
+                .segment_duration_secs(200_000.0 / (44_100.0 * 2.0 * 2.0))
+                .data_mode(DataMode::SawWav {
+                    sample_rate: 44_100,
+                    channels: 2,
+                })
+                .init_mode(InitMode::WavHeader {
+                    sample_rate: 44_100,
+                    channels: 2,
+                }),
+        )
+        .await
+        .expect("create HLS fixture");
+
+    let master_url = created.master_url();
+    let media_url = created.media_url(0);
+    let segment_url = created.segment_url(0, 0);
+    let token = created.token().to_string();
+
+    assert!(master_url.path().contains(&token));
+    assert!(media_url.path().contains(&token));
+    assert!(segment_url.path().contains(&token));
+
+    let client = Client::new();
+    let master = client.get(master_url).send().await.unwrap();
+    assert_eq!(master.status(), 200);
+    assert_eq!(
+        master.headers().get("content-type").unwrap(),
+        "application/vnd.apple.mpegurl"
+    );
 }
 
 #[kithara::test]

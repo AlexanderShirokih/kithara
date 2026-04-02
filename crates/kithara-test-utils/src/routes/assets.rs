@@ -6,11 +6,14 @@
 //! `GET /assets/{path...}` — static test asset serving.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use axum::Router;
 use tower_http::services::ServeDir;
 
-pub(crate) fn router() -> Router {
+use crate::test_server_state::TestServerState;
+
+pub(crate) fn router() -> Router<Arc<TestServerState>> {
     Router::new().nest_service("/assets", ServeDir::new(assets_dir()))
 }
 

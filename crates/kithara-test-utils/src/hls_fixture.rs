@@ -5,114 +5,69 @@ use std::{sync::Arc, time::Duration};
 use url::Url;
 
 use crate::{
-    HlsSpec, TestServerHelper,
+    CreatedHls, HlsFixtureBuilder, HlsSpec, TestServerHelper,
     fixture_protocol::{DataMode, DelayRule, EncryptionRequest, InitMode},
-    hls_url::{
-        hls_init_path_from_ref, hls_key_path_from_ref, hls_master_path_from_ref,
-        hls_media_path_from_ref, hls_segment_path_from_ref,
-    },
-    register_hls_blob,
 };
 
 /// Fixed the three-variant HLS fixture used by many integration tests.
 pub struct TestServer {
-    helper: TestServerHelper,
-    plain_token: String,
-    init_token: String,
-    encrypted_token: String,
+    plain: CreatedHls,
+    init: CreatedHls,
+    encrypted: CreatedHls,
 }
 
 impl TestServer {
     #[must_use]
     pub async fn new() -> Self {
         let helper = TestServerHelper::new().await;
-        let plain_token = helper.register_hls_token(&fixed_plain_spec()).await;
-        let init_token = helper.register_hls_token(&fixed_init_spec()).await;
-        let encrypted_token = helper.register_hls_token(&fixed_encrypted_spec()).await;
+        let plain = helper
+            .create_hls(HlsFixtureBuilder::from_spec(fixed_plain_spec()))
+            .await
+            .expect("create fixed plain HLS fixture");
+        let init = helper
+            .create_hls(HlsFixtureBuilder::from_spec(fixed_init_spec()))
+            .await
+            .expect("create fixed init HLS fixture");
+        let encrypted = helper
+            .create_hls(HlsFixtureBuilder::from_spec(fixed_encrypted_spec()))
+            .await
+            .expect("create fixed encrypted HLS fixture");
         Self {
-            helper,
-            plain_token,
-            init_token,
-            encrypted_token,
+            plain,
+            init,
+            encrypted,
         }
     }
 
     #[must_use]
     pub fn url(&self, path: &str) -> Url {
         match path {
-            "/master.m3u8" => self
-                .helper
-                .url(&hls_master_path_from_ref(&self.plain_token)),
-            "/master-init.m3u8" => self.helper.url(&hls_master_path_from_ref(&self.init_token)),
-            "/master-encrypted.m3u8" => self
-                .helper
-                .url(&hls_master_path_from_ref(&self.encrypted_token)),
-            "/v0.m3u8" => self
-                .helper
-                .url(&hls_media_path_from_ref(&self.plain_token, 0)),
-            "/v1.m3u8" | "/video/480p/playlist.m3u8" => self
-                .helper
-                .url(&hls_media_path_from_ref(&self.plain_token, 1)),
-            "/v2.m3u8" => self
-                .helper
-                .url(&hls_media_path_from_ref(&self.plain_token, 2)),
-            "/v0-init.m3u8" => self
-                .helper
-                .url(&hls_media_path_from_ref(&self.init_token, 0)),
-            "/v1-init.m3u8" => self
-                .helper
-                .url(&hls_media_path_from_ref(&self.init_token, 1)),
-            "/v2-init.m3u8" => self
-                .helper
-                .url(&hls_media_path_from_ref(&self.init_token, 2)),
-            "/v0-encrypted.m3u8" => self
-                .helper
-                .url(&hls_media_path_from_ref(&self.encrypted_token, 0)),
-            "/seg/v0_0.bin" => self
-                .helper
-                .url(&hls_segment_path_from_ref(&self.plain_token, 0, 0)),
-            "/seg/v0_1.bin" => self
-                .helper
-                .url(&hls_segment_path_from_ref(&self.plain_token, 0, 1)),
-            "/seg/v0_2.bin" => self
-                .helper
-                .url(&hls_segment_path_from_ref(&self.plain_token, 0, 2)),
-            "/seg/v1_0.bin" => self
-                .helper
-                .url(&hls_segment_path_from_ref(&self.plain_token, 1, 0)),
-            "/seg/v1_1.bin" => self
-                .helper
-                .url(&hls_segment_path_from_ref(&self.plain_token, 1, 1)),
-            "/seg/v1_2.bin" => self
-                .helper
-                .url(&hls_segment_path_from_ref(&self.plain_token, 1, 2)),
-            "/seg/v2_0.bin" => self
-                .helper
-                .url(&hls_segment_path_from_ref(&self.plain_token, 2, 0)),
-            "/seg/v2_1.bin" => self
-                .helper
-                .url(&hls_segment_path_from_ref(&self.plain_token, 2, 1)),
-            "/seg/v2_2.bin" => self
-                .helper
-                .url(&hls_segment_path_from_ref(&self.plain_token, 2, 2)),
-            "/init/v0.bin" => self
-                .helper
-                .url(&hls_init_path_from_ref(&self.init_token, 0)),
-            "/init/v1.bin" => self
-                .helper
-                .url(&hls_init_path_from_ref(&self.init_token, 1)),
-            "/init/v2.bin" => self
-                .helper
-                .url(&hls_init_path_from_ref(&self.init_token, 2)),
-            "/key.bin" => self.helper.url(&hls_key_path_from_ref(&self.plain_token)),
-            "/aes/key.bin" => self
-                .helper
-                .url(&hls_key_path_from_ref(&self.encrypted_token)),
-            "/aes/seg0.bin" => {
-                self.helper
-                    .url(&hls_segment_path_from_ref(&self.encrypted_token, 0, 0))
-            }
-            other => self.helper.url(other),
+            "/master.m3u8" => self.plain.master_url(),
+            "/master-init.m3u8" => self.init.master_url(),
+            "/master-encrypted.m3u8" => self.encrypted.master_url(),
+            "/v0.m3u8" => self.plain.media_url(0),
+            "/v1.m3u8" | "/video/480p/playlist.m3u8" => self.plain.media_url(1),
+            "/v2.m3u8" => self.plain.media_url(2),
+            "/v0-init.m3u8" => self.init.media_url(0),
+            "/v1-init.m3u8" => self.init.media_url(1),
+            "/v2-init.m3u8" => self.init.media_url(2),
+            "/v0-encrypted.m3u8" => self.encrypted.media_url(0),
+            "/seg/v0_0.bin" => self.plain.segment_url(0, 0),
+            "/seg/v0_1.bin" => self.plain.segment_url(0, 1),
+            "/seg/v0_2.bin" => self.plain.segment_url(0, 2),
+            "/seg/v1_0.bin" => self.plain.segment_url(1, 0),
+            "/seg/v1_1.bin" => self.plain.segment_url(1, 1),
+            "/seg/v1_2.bin" => self.plain.segment_url(1, 2),
+            "/seg/v2_0.bin" => self.plain.segment_url(2, 0),
+            "/seg/v2_1.bin" => self.plain.segment_url(2, 1),
+            "/seg/v2_2.bin" => self.plain.segment_url(2, 2),
+            "/init/v0.bin" => self.init.init_url(0),
+            "/init/v1.bin" => self.init.init_url(1),
+            "/init/v2.bin" => self.init.init_url(2),
+            "/key.bin" => self.plain.key_url(),
+            "/aes/key.bin" => self.encrypted.key_url(),
+            "/aes/seg0.bin" => self.encrypted.segment_url(0, 0),
+            other => panic!("unknown TestServer compatibility path `{other}`"),
         }
     }
 }
@@ -266,44 +221,41 @@ impl Default for HlsTestServerConfig {
 /// Configurable HLS fixture backed by the unified synthetic stream routes.
 pub struct HlsTestServer {
     config: HlsTestServerConfig,
-    helper: TestServerHelper,
-    token: String,
+    created: CreatedHls,
 }
 
 impl HlsTestServer {
     #[must_use]
     pub async fn new(config: HlsTestServerConfig) -> Self {
         let helper = TestServerHelper::new().await;
-        let spec = spec_from_config(&config);
-        let token = helper.register_hls_token(&spec).await;
-        Self {
-            config,
-            helper,
-            token,
-        }
+        let created = helper
+            .create_hls(builder_from_config(&config))
+            .await
+            .expect("create configurable HLS fixture");
+        Self { config, created }
     }
 
     #[must_use]
     pub fn url(&self, path: &str) -> Url {
         match path {
-            "/master.m3u8" => self.helper.url(&hls_master_path_from_ref(&self.token)),
-            "/key.bin" => self.helper.url(&hls_key_path_from_ref(&self.token)),
+            "/master.m3u8" => self.created.master_url(),
+            "/key.bin" => self.created.key_url(),
             other if other.starts_with("/playlist/v") && other.ends_with(".m3u8") => {
-                let variant = parse_variant(other, "/playlist/v", ".m3u8").unwrap_or(0);
-                self.helper
-                    .url(&hls_media_path_from_ref(&self.token, variant))
+                let variant = parse_variant(other, "/playlist/v", ".m3u8")
+                    .unwrap_or_else(|| panic!("invalid HlsTestServer playlist path `{other}`"));
+                self.created.media_url(variant)
             }
             other if other.starts_with("/seg/v") && other.ends_with(".bin") => {
-                let (variant, segment) = parse_segment(other).unwrap_or((0, 0));
-                self.helper
-                    .url(&hls_segment_path_from_ref(&self.token, variant, segment))
+                let (variant, segment) = parse_segment(other)
+                    .unwrap_or_else(|| panic!("invalid HlsTestServer segment path `{other}`"));
+                self.created.segment_url(variant, segment)
             }
             other if other.starts_with("/init/v") && other.ends_with("_init.bin") => {
-                let variant = parse_variant(other, "/init/v", "_init.bin").unwrap_or(0);
-                self.helper
-                    .url(&hls_init_path_from_ref(&self.token, variant))
+                let variant = parse_variant(other, "/init/v", "_init.bin")
+                    .unwrap_or_else(|| panic!("invalid HlsTestServer init path `{other}`"));
+                self.created.init_url(variant)
             }
-            other => self.helper.url(other),
+            other => panic!("unknown HlsTestServer path `{other}`"),
         }
     }
 
@@ -380,57 +332,44 @@ pub mod abr {
 
 /// ABR fixture backed by the unified synthetic stream routes.
 pub struct AbrTestServer {
-    helper: TestServerHelper,
-    token: String,
+    created: CreatedHls,
 }
 
 impl AbrTestServer {
     #[must_use]
     pub async fn new(master_playlist: String, init: bool, segment0_delay: Duration) -> Self {
         let helper = TestServerHelper::new().await;
-        let spec = abr_spec(&master_playlist, init, segment0_delay);
-        let token = helper.register_hls_token(&spec).await;
-        Self { helper, token }
+        let created = helper
+            .create_hls(HlsFixtureBuilder::from_spec(abr_spec(
+                &master_playlist,
+                init,
+                segment0_delay,
+            )))
+            .await
+            .expect("create ABR HLS fixture");
+        Self { created }
     }
 
     #[must_use]
     pub fn url(&self, path: &str) -> Url {
         match path {
-            "/master.m3u8" => self.helper.url(&hls_master_path_from_ref(&self.token)),
-            "/v0.m3u8" => self.helper.url(&hls_media_path_from_ref(&self.token, 0)),
-            "/v1.m3u8" => self.helper.url(&hls_media_path_from_ref(&self.token, 1)),
-            "/v2.m3u8" => self.helper.url(&hls_media_path_from_ref(&self.token, 2)),
-            "/seg/v0_0.bin" => self
-                .helper
-                .url(&hls_segment_path_from_ref(&self.token, 0, 0)),
-            "/seg/v0_1.bin" => self
-                .helper
-                .url(&hls_segment_path_from_ref(&self.token, 0, 1)),
-            "/seg/v0_2.bin" => self
-                .helper
-                .url(&hls_segment_path_from_ref(&self.token, 0, 2)),
-            "/seg/v1_0.bin" => self
-                .helper
-                .url(&hls_segment_path_from_ref(&self.token, 1, 0)),
-            "/seg/v1_1.bin" => self
-                .helper
-                .url(&hls_segment_path_from_ref(&self.token, 1, 1)),
-            "/seg/v1_2.bin" => self
-                .helper
-                .url(&hls_segment_path_from_ref(&self.token, 1, 2)),
-            "/seg/v2_0.bin" => self
-                .helper
-                .url(&hls_segment_path_from_ref(&self.token, 2, 0)),
-            "/seg/v2_1.bin" => self
-                .helper
-                .url(&hls_segment_path_from_ref(&self.token, 2, 1)),
-            "/seg/v2_2.bin" => self
-                .helper
-                .url(&hls_segment_path_from_ref(&self.token, 2, 2)),
-            "/init/v0.bin" => self.helper.url(&hls_init_path_from_ref(&self.token, 0)),
-            "/init/v1.bin" => self.helper.url(&hls_init_path_from_ref(&self.token, 1)),
-            "/init/v2.bin" => self.helper.url(&hls_init_path_from_ref(&self.token, 2)),
-            other => self.helper.url(other),
+            "/master.m3u8" => self.created.master_url(),
+            "/v0.m3u8" => self.created.media_url(0),
+            "/v1.m3u8" => self.created.media_url(1),
+            "/v2.m3u8" => self.created.media_url(2),
+            "/seg/v0_0.bin" => self.created.segment_url(0, 0),
+            "/seg/v0_1.bin" => self.created.segment_url(0, 1),
+            "/seg/v0_2.bin" => self.created.segment_url(0, 2),
+            "/seg/v1_0.bin" => self.created.segment_url(1, 0),
+            "/seg/v1_1.bin" => self.created.segment_url(1, 1),
+            "/seg/v1_2.bin" => self.created.segment_url(1, 2),
+            "/seg/v2_0.bin" => self.created.segment_url(2, 0),
+            "/seg/v2_1.bin" => self.created.segment_url(2, 1),
+            "/seg/v2_2.bin" => self.created.segment_url(2, 2),
+            "/init/v0.bin" => self.created.init_url(0),
+            "/init/v1.bin" => self.created.init_url(1),
+            "/init/v2.bin" => self.created.init_url(2),
+            other => panic!("unknown AbrTestServer path `{other}`"),
         }
     }
 }
@@ -481,51 +420,48 @@ fn fixed_encrypted_spec() -> HlsSpec {
     }
 }
 
-fn spec_from_config(config: &HlsTestServerConfig) -> HlsSpec {
-    let data_mode = config.custom_data_per_variant.as_ref().map_or_else(
-        || {
-            config
-                .custom_data
-                .as_ref()
-                .map_or(DataMode::TestPattern, |data| {
-                    DataMode::BlobRef(register_hls_blob(data))
-                })
-        },
-        |per_variant| {
-            DataMode::BlobRefs(
-                per_variant
-                    .iter()
-                    .map(|bytes| register_hls_blob(bytes))
-                    .collect(),
-            )
-        },
-    );
-
-    let init_mode = config
-        .init_data_per_variant
-        .as_ref()
-        .map_or(InitMode::None, |data| {
-            InitMode::BlobRefs(data.iter().map(|bytes| register_hls_blob(bytes)).collect())
-        });
-
-    HlsSpec {
-        variant_count: config.variant_count,
-        segments_per_variant: config.segments_per_variant,
-        segment_size: config.segment_size,
-        segment_duration_secs: config.segment_duration_secs,
-        data_mode,
-        init_mode,
-        variant_bandwidths: config.variant_bandwidths.clone(),
-        delay_rules: config.delay_rules.clone(),
-        encryption: config.encryption.as_ref().map(|enc| EncryptionRequest {
-            key_hex: hex::encode(enc.key),
-            iv_hex: enc.iv.map(hex::encode),
-        }),
-        head_reported_segment_size: config
-            .head_reported_segment_size
-            .or_else(|| config.encryption.as_ref().map(|_| config.segment_size)),
-        key_hex: None,
-        key_blob_ref: None,
+fn builder_from_config(config: &HlsTestServerConfig) -> HlsFixtureBuilder {
+    let builder = HlsFixtureBuilder::new()
+        .variant_count(config.variant_count)
+        .segments_per_variant(config.segments_per_variant)
+        .segment_size(config.segment_size)
+        .segment_duration_secs(config.segment_duration_secs)
+        .delay_rules(config.delay_rules.clone());
+    let builder = if let Some(variant_bandwidths) = config.variant_bandwidths.clone() {
+        builder.variant_bandwidths(variant_bandwidths)
+    } else {
+        builder
+    };
+    let builder = if let Some(encryption) = config.encryption.as_ref() {
+        builder.encryption(EncryptionRequest {
+            key_hex: hex::encode(encryption.key),
+            iv_hex: encryption.iv.map(hex::encode),
+        })
+    } else {
+        builder
+    };
+    let builder = if let Some(head_reported_segment_size) = config
+        .head_reported_segment_size
+        .or_else(|| config.encryption.as_ref().map(|_| config.segment_size))
+    {
+        builder.head_reported_segment_size(head_reported_segment_size)
+    } else {
+        builder
+    };
+    let builder = if let Some(data) = config.custom_data.as_ref() {
+        builder.custom_data(Arc::clone(data))
+    } else {
+        builder
+    };
+    let builder = if let Some(data) = config.custom_data_per_variant.as_ref() {
+        builder.custom_data_per_variant(data.clone())
+    } else {
+        builder
+    };
+    if let Some(data) = config.init_data_per_variant.as_ref() {
+        builder.init_data_per_variant(data.clone())
+    } else {
+        builder
     }
 }
 

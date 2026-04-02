@@ -65,6 +65,9 @@ The `hls_fixture` module is the canonical test-facing API for synthetic HLS scen
 
 `TestServerHelper` hides token registration from callers. Tests still request ordinary `Url`s, while the helper first posts the JSON spec, receives a UUID, and then returns the corresponding `/signal/{token}` or `/stream/{token}` URL.
 
+For custom synthetic HLS fixtures, prefer `TestServerHelper::create_hls(HlsFixtureBuilder::new()...)`.
+That DSL keeps the server core generic while returning a typed `CreatedHls` handle with stable `master_url()`, `media_url()`, `init_url()`, `segment_url()`, and `key_url()` accessors.
+
 ## Integration
 
 Used by the `tests/` integration crate and benchmark targets to keep fixtures centralized and deterministic. On both native and WASM, synthetic HLS now goes through the same unified `test_server` contract.

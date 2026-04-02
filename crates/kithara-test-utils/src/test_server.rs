@@ -4,288 +4,321 @@
 //! - `GET /health` — readiness probe for external runners
 //! - `POST /token` — register spec payloads and return UUID tokens
 //! - `GET /assets/{path...}` — static test assets
-//! - `GET /signal/{form}/{spec_with_ext}` — procedural signal generation (sawtooth, sine, silence, …)
+//! - `GET /signal/{form}/{spec_with_ext}` — procedural signal generation
 //! - `GET /stream/{hls_spec}` — HLS stream generation
 
-use reqwest::Client;
+use std::sync::Arc;
+
+use thiserror::Error;
 use url::Url;
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::env;
-
-#[cfg(not(target_arch = "wasm32"))]
-use axum::{Router, routing::get};
-#[cfg(not(target_arch = "wasm32"))]
-use tower_http::cors::CorsLayer;
-
-#[cfg(not(target_arch = "wasm32"))]
-use crate::http_server::TestHttpServer;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::routes::{assets, signal, stream};
 #[cfg(target_arch = "wasm32")]
-use crate::server_url::join_server_url;
+use crate::token_store::{TokenRequest, TokenResponse};
 use crate::{
+    fixture_protocol::{DataMode, DelayRule, EncryptionRequest, InitMode},
+    hls_spec::HlsSpecError,
     hls_url::{
         HlsSpec, hls_init_path_from_ref, hls_key_path_from_ref, hls_master_path_from_ref,
         hls_media_path_from_ref, hls_segment_path_from_ref,
     },
-    signal_url::{SignalKind, SignalSpec, signal_path},
-    token_store::{TokenRequest, TokenResponse, TokenRoute},
 };
+#[cfg(target_arch = "wasm32")]
+use reqwest::Client;
 
-/// In-process unified test server with RAII shutdown.
-pub struct TestServerHelper {
-    #[cfg(not(target_arch = "wasm32"))]
-    server: TestHttpServer,
-    #[cfg(target_arch = "wasm32")]
-    base_url: Url,
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
+#[cfg(target_arch = "wasm32")]
+mod wasm;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use native::{TestServerHelper, run_test_server};
+#[cfg(target_arch = "wasm32")]
+pub use wasm::TestServerHelper;
+
+#[derive(Debug, Error)]
+pub enum CreateHlsError {
+    #[error("invalid HLS fixture spec: {0}")]
+    InvalidSpec(String),
+    #[error("token registration request failed")]
+    Request(#[source] reqwest::Error),
+    #[error("token registration response failed")]
+    Response(#[source] reqwest::Error),
+    #[error("token registration response must parse")]
+    Parse(#[source] serde_json::Error),
 }
 
-impl TestServerHelper {
-    /// Spawn the unified server on a random localhost port.
-    pub async fn new() -> Self {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let server = TestHttpServer::new(router()).await;
-            Self { server }
-        }
+impl From<HlsSpecError> for CreateHlsError {
+    fn from(error: HlsSpecError) -> Self {
+        Self::InvalidSpec(error.to_string())
+    }
+}
 
-        #[cfg(target_arch = "wasm32")]
-        {
-            Self {
-                base_url: external_test_server_url(),
+#[derive(Clone, Debug)]
+pub struct CreatedHls {
+    base_url: Url,
+    token: String,
+}
+
+impl CreatedHls {
+    pub(crate) fn new(base_url: Url, token: String) -> Self {
+        Self { base_url, token }
+    }
+
+    #[must_use]
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    #[must_use]
+    pub fn master_url(&self) -> Url {
+        self.base_url
+            .join(&hls_master_path_from_ref(&self.token))
+            .expect("join HLS master URL")
+    }
+
+    #[must_use]
+    pub fn media_url(&self, variant: usize) -> Url {
+        self.base_url
+            .join(&hls_media_path_from_ref(&self.token, variant))
+            .expect("join HLS media URL")
+    }
+
+    #[must_use]
+    pub fn init_url(&self, variant: usize) -> Url {
+        self.base_url
+            .join(&hls_init_path_from_ref(&self.token, variant))
+            .expect("join HLS init URL")
+    }
+
+    #[must_use]
+    pub fn segment_url(&self, variant: usize, segment: usize) -> Url {
+        self.base_url
+            .join(&hls_segment_path_from_ref(&self.token, variant, segment))
+            .expect("join HLS segment URL")
+    }
+
+    #[must_use]
+    pub fn key_url(&self) -> Url {
+        self.base_url
+            .join(&hls_key_path_from_ref(&self.token))
+            .expect("join HLS key URL")
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct HlsFixtureBuilder {
+    spec: HlsSpec,
+    data: HlsFixtureData,
+    init: HlsFixtureInit,
+}
+
+#[derive(Debug, Clone)]
+enum HlsFixtureData {
+    Spec(DataMode),
+    SharedBytes(Arc<Vec<u8>>),
+    PerVariantBytes(Vec<Arc<Vec<u8>>>),
+}
+
+#[derive(Debug, Clone)]
+enum HlsFixtureInit {
+    Spec(InitMode),
+    PerVariantBytes(Vec<Arc<Vec<u8>>>),
+}
+
+impl HlsFixtureBuilder {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::from_spec(HlsSpec::default())
+    }
+
+    #[must_use]
+    pub fn from_spec(spec: HlsSpec) -> Self {
+        Self {
+            data: HlsFixtureData::Spec(spec.data_mode.clone()),
+            init: HlsFixtureInit::Spec(spec.init_mode.clone()),
+            spec,
+        }
+    }
+
+    #[must_use]
+    pub fn variant_count(mut self, variant_count: usize) -> Self {
+        self.spec.variant_count = variant_count;
+        self
+    }
+
+    #[must_use]
+    pub fn segments_per_variant(mut self, segments_per_variant: usize) -> Self {
+        self.spec.segments_per_variant = segments_per_variant;
+        self
+    }
+
+    #[must_use]
+    pub fn segment_size(mut self, segment_size: usize) -> Self {
+        self.spec.segment_size = segment_size;
+        self
+    }
+
+    #[must_use]
+    pub fn segment_duration_secs(mut self, segment_duration_secs: f64) -> Self {
+        self.spec.segment_duration_secs = segment_duration_secs;
+        self
+    }
+
+    #[must_use]
+    pub fn data_mode(mut self, data_mode: DataMode) -> Self {
+        self.spec.data_mode = data_mode.clone();
+        self.data = HlsFixtureData::Spec(data_mode);
+        self
+    }
+
+    #[must_use]
+    pub fn custom_data(mut self, data: Arc<Vec<u8>>) -> Self {
+        self.data = HlsFixtureData::SharedBytes(data);
+        self
+    }
+
+    #[must_use]
+    pub fn custom_data_per_variant(mut self, data: Vec<Arc<Vec<u8>>>) -> Self {
+        self.data = HlsFixtureData::PerVariantBytes(data);
+        self
+    }
+
+    #[must_use]
+    pub fn init_mode(mut self, init_mode: InitMode) -> Self {
+        self.spec.init_mode = init_mode.clone();
+        self.init = HlsFixtureInit::Spec(init_mode);
+        self
+    }
+
+    #[must_use]
+    pub fn init_data_per_variant(mut self, data: Vec<Arc<Vec<u8>>>) -> Self {
+        self.init = HlsFixtureInit::PerVariantBytes(data);
+        self
+    }
+
+    #[must_use]
+    pub fn variant_bandwidths(mut self, variant_bandwidths: Vec<u64>) -> Self {
+        self.spec.variant_bandwidths = Some(variant_bandwidths);
+        self
+    }
+
+    #[must_use]
+    pub fn delay_rules(mut self, delay_rules: Vec<DelayRule>) -> Self {
+        self.spec.delay_rules = delay_rules;
+        self
+    }
+
+    #[must_use]
+    pub fn push_delay_rule(mut self, delay_rule: DelayRule) -> Self {
+        self.spec.delay_rules.push(delay_rule);
+        self
+    }
+
+    #[must_use]
+    pub fn encryption(mut self, encryption: EncryptionRequest) -> Self {
+        self.spec.encryption = Some(encryption);
+        self
+    }
+
+    #[must_use]
+    pub fn head_reported_segment_size(mut self, head_reported_segment_size: usize) -> Self {
+        self.spec.head_reported_segment_size = Some(head_reported_segment_size);
+        self
+    }
+
+    #[must_use]
+    pub fn key_hex(mut self, key_hex: String) -> Self {
+        self.spec.key_hex = Some(key_hex);
+        self.spec.key_blob_ref = None;
+        self
+    }
+
+    pub(crate) fn into_spec_with_blob_registrar<F>(self, register_blob: F) -> HlsSpec
+    where
+        F: Fn(&[u8]) -> String,
+    {
+        self.into_spec_inner(Some(&register_blob))
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), expect(dead_code))]
+    pub(crate) fn into_inline_spec(self) -> HlsSpec {
+        self.into_spec_inner::<fn(&[u8]) -> String>(None)
+    }
+
+    fn into_spec_inner<F>(mut self, register_blob: Option<&F>) -> HlsSpec
+    where
+        F: Fn(&[u8]) -> String,
+    {
+        self.spec.data_mode = match (self.data, register_blob) {
+            (HlsFixtureData::Spec(data_mode), _) => data_mode,
+            (HlsFixtureData::SharedBytes(data), Some(register_blob)) => {
+                DataMode::BlobRef(register_blob(data.as_slice()))
             }
-        }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn join(&self, path: &str) -> Url {
-        join_server_url(&self.base_url, path)
-    }
-
-    /// Build an arbitrary URL on this server.
-    #[must_use]
-    pub fn url(&self, path: &str) -> Url {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.server.url(path)
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        {
-            self.join(path)
-        }
-    }
-
-    /// Base URL of this server.
-    #[must_use]
-    pub fn base_url(&self) -> &Url {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.server.base_url()
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        {
-            &self.base_url
-        }
-    }
-
-    async fn register_signal_token(&self, kind: SignalKind, spec: &SignalSpec) -> String {
-        let path = signal_path(kind, spec);
-        let prefix = format!("/signal/{}/", kind.path_segment());
-        let spec_with_ext = path
-            .strip_prefix(&prefix)
-            .expect("signal path must match kind prefix");
-        let request = TokenRequest {
-            route: TokenRoute::Signal,
-            signal_kind: Some(kind.path_segment().to_string()),
-            signal_spec_with_ext: Some(spec_with_ext.to_string()),
-            hls_spec: None,
+            (HlsFixtureData::SharedBytes(data), None) => {
+                DataMode::CustomData(data.as_slice().to_vec())
+            }
+            (HlsFixtureData::PerVariantBytes(data), Some(register_blob)) => DataMode::BlobRefs(
+                data.iter()
+                    .map(|bytes| register_blob(bytes.as_slice()))
+                    .collect(),
+            ),
+            (HlsFixtureData::PerVariantBytes(data), None) => DataMode::CustomDataPerVariant(
+                data.into_iter().map(|bytes| (*bytes).clone()).collect(),
+            ),
         };
-        self.post_token(&request).await
-    }
-
-    pub(crate) async fn register_hls_token(&self, spec: &HlsSpec) -> String {
-        let request = TokenRequest {
-            route: TokenRoute::Hls,
-            signal_kind: None,
-            signal_spec_with_ext: None,
-            hls_spec: Some(spec.clone()),
+        self.spec.init_mode = match (self.init, register_blob) {
+            (HlsFixtureInit::Spec(init_mode), _) => init_mode,
+            (HlsFixtureInit::PerVariantBytes(data), Some(register_blob)) => InitMode::BlobRefs(
+                data.iter()
+                    .map(|bytes| register_blob(bytes.as_slice()))
+                    .collect(),
+            ),
+            (HlsFixtureInit::PerVariantBytes(data), None) => {
+                InitMode::Custom(data.into_iter().map(|bytes| (*bytes).clone()).collect())
+            }
         };
-        self.post_token(&request).await
+        self.spec
     }
+}
 
-    async fn post_token(&self, request: &TokenRequest) -> String {
-        let body = serde_json::to_vec(request).expect("token request must serialize");
-        let response = Client::new()
-            .post(self.url("/token"))
-            .header("content-type", "application/json")
-            .body(body)
-            .send()
-            .await
-            .expect("token registration request must succeed")
-            .error_for_status()
-            .expect("token registration must return success");
-        let text = response
-            .text()
-            .await
-            .expect("token registration response must be readable");
-        serde_json::from_str::<TokenResponse>(&text)
-            .expect("token registration response must parse")
-            .token
+impl Default for HlsFixtureBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 #[cfg(target_arch = "wasm32")]
-fn external_test_server_url() -> Url {
-    let base = option_env!("TEST_SERVER_URL").unwrap_or("http://127.0.0.1:3444");
-    Url::parse(base).expect("valid TEST_SERVER_URL")
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-async fn health() -> &'static str {
-    "ok"
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-/// Start the server as a standalone process (used by the `test_server` binary).
-pub async fn run_test_server() {
-    let port: u16 = env::var("TEST_SERVER_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(3444);
-
-    let mut server = TestHttpServer::bind(&format!("0.0.0.0:{port}"), router()).await;
-    println!("test server listening on {}", server.base_url());
-    server.completion().await;
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn router() -> Router {
-    Router::new()
-        .route("/health", get(health))
-        .merge(assets::router())
-        .merge(signal::router())
-        .merge(stream::router())
-        .merge(crate::routes::token::router())
-        .layer(CorsLayer::permissive())
-}
-
-impl TestServerHelper {
-    /// Build a URL for a static test asset.
-    ///
-    /// ```ignore
-    /// let url = helper.asset("hls/master.m3u8");
-    /// // → http://127.0.0.1:{port}/assets/hls/master.m3u8
-    /// ```
-    #[must_use]
-    pub fn asset(&self, name: &str) -> Url {
-        let trimmed = name.trim_start_matches('/');
-
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.server.url(&format!("/assets/{trimmed}"))
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        {
-            self.join(&format!("/assets/{trimmed}"))
-        }
-    }
-
-    /// Build a URL for `/signal/sawtooth/...`.
-    #[must_use]
-    pub async fn sawtooth(&self, spec: &SignalSpec) -> Url {
-        let token = self.register_signal_token(SignalKind::Sawtooth, spec).await;
-        self.url(&format!(
-            "/signal/{}/{}.{}",
-            SignalKind::Sawtooth.path_segment(),
-            token,
-            spec.format.path_ext()
-        ))
-    }
-
-    /// Build a URL for `/signal/sawtooth-desc/...`.
-    #[must_use]
-    pub async fn sawtooth_descending(&self, spec: &SignalSpec) -> Url {
-        let token = self
-            .register_signal_token(SignalKind::SawtoothDescending, spec)
-            .await;
-        self.url(&format!(
-            "/signal/{}/{}.{}",
-            SignalKind::SawtoothDescending.path_segment(),
-            token,
-            spec.format.path_ext()
-        ))
-    }
-
-    /// Build a URL for `/signal/sine/...`.
-    #[must_use]
-    pub async fn sine(&self, spec: &SignalSpec, freq_hz: f64) -> Url {
-        let token = self
-            .register_signal_token(SignalKind::Sine { freq_hz }, spec)
-            .await;
-        self.url(&format!(
-            "/signal/{}/{}.{}",
-            SignalKind::Sine { freq_hz }.path_segment(),
-            token,
-            spec.format.path_ext()
-        ))
-    }
-
-    /// Build a URL for `/signal/silence/...`.
-    #[must_use]
-    pub async fn silence(&self, spec: &SignalSpec) -> Url {
-        let token = self.register_signal_token(SignalKind::Silence, spec).await;
-        self.url(&format!(
-            "/signal/{}/{}.{}",
-            SignalKind::Silence.path_segment(),
-            token,
-            spec.format.path_ext()
-        ))
-    }
-
-    /// Build a URL for the canonical synthetic HLS master playlist.
-    #[must_use]
-    pub async fn hls(&self, spec: &HlsSpec) -> Url {
-        let token = self.register_hls_token(spec).await;
-        self.url(&hls_master_path_from_ref(&token))
-    }
-
-    /// Build a URL for a synthetic HLS media playlist.
-    #[must_use]
-    pub async fn hls_media(&self, spec: &HlsSpec, variant: usize) -> Url {
-        let token = self.register_hls_token(spec).await;
-        self.url(&hls_media_path_from_ref(&token, variant))
-    }
-
-    /// Build a URL for a synthetic HLS init segment.
-    #[must_use]
-    pub async fn hls_init(&self, spec: &HlsSpec, variant: usize) -> Url {
-        let token = self.register_hls_token(spec).await;
-        self.url(&hls_init_path_from_ref(&token, variant))
-    }
-
-    /// Build a URL for a synthetic HLS media segment.
-    #[must_use]
-    pub async fn hls_segment(&self, spec: &HlsSpec, variant: usize, segment: usize) -> Url {
-        let token = self.register_hls_token(spec).await;
-        self.url(&hls_segment_path_from_ref(&token, variant, segment))
-    }
-
-    /// Build a URL for a synthetic HLS key payload.
-    #[must_use]
-    pub async fn hls_key(&self, spec: &HlsSpec) -> Url {
-        let token = self.register_hls_token(spec).await;
-        self.url(&hls_key_path_from_ref(&token))
-    }
+pub(crate) async fn post_token(
+    base_url: &Url,
+    request: &TokenRequest,
+) -> Result<String, CreateHlsError> {
+    let body = serde_json::to_vec(request).expect("token request must serialize");
+    let response = Client::new()
+        .post(
+            base_url
+                .join("/token")
+                .expect("join token registration URL"),
+        )
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .map_err(CreateHlsError::Request)?
+        .error_for_status()
+        .map_err(CreateHlsError::Response)?;
+    let text = response.text().await.map_err(CreateHlsError::Response)?;
+    serde_json::from_str::<TokenResponse>(&text)
+        .map(|response| response.token)
+        .map_err(CreateHlsError::Parse)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-    use crate::signal_url::{SignalFormat, SignalSpecLength};
+    use crate::{
+        fixture_protocol::DataMode,
+        signal_url::{SignalFormat, SignalSpec, SignalSpecLength},
+    };
 
     #[tokio::test]
     async fn signal_helper_builds_expected_url() {
@@ -300,5 +333,33 @@ mod tests {
 
         assert!(url.path().starts_with("/signal/sine/"));
         assert!(url.path().ends_with(".wav"));
+    }
+
+    #[test]
+    fn create_hls_builder_preserves_inline_spec() {
+        let spec = HlsFixtureBuilder::new()
+            .variant_count(2)
+            .segment_size(512)
+            .data_mode(DataMode::TestPattern)
+            .into_inline_spec();
+
+        assert_eq!(spec.variant_count, 2);
+        assert_eq!(spec.segment_size, 512);
+        assert!(matches!(spec.data_mode, DataMode::TestPattern));
+    }
+
+    #[tokio::test]
+    async fn created_hls_reuses_single_token_across_urls() {
+        let helper = TestServerHelper::new().await;
+        let created = helper
+            .create_hls(HlsFixtureBuilder::new().variant_count(2))
+            .await
+            .expect("create HLS fixture");
+
+        let token = created.token().to_string();
+        assert!(created.master_url().path().contains(&token));
+        assert!(created.media_url(1).path().contains(&token));
+        assert!(created.segment_url(1, 2).path().contains(&token));
+        assert!(created.key_url().path().contains(&token));
     }
 }

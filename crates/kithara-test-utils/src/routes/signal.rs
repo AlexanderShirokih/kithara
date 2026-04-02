@@ -30,11 +30,12 @@
 //! - `freq` is required for `/signal/sine/...` and rejected for sawtooth and silence routes
 
 use std::convert::Infallible;
+use std::sync::Arc;
 
 use axum::{
     Router,
     body::{Body, Bytes},
-    extract::Path,
+    extract::{Path, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
@@ -47,13 +48,14 @@ use crate::{
     signal_spec::{
         ResolvedSignalSpec, SignalFormat, SignalKind, SignalRequest, parse_signal_request,
     },
-    token_store::{get_signal, is_token},
+    test_server_state::TestServerState,
+    token_store::is_token,
     wav::{WavHeader, create_wav_from_signal},
 };
 
 const PCM_STREAM_CHUNK_BYTES: usize = 16 * 1024;
 
-pub(crate) fn router() -> Router {
+pub(crate) fn router() -> Router<Arc<TestServerState>> {
     Router::new()
         .route("/signal/sawtooth/{spec_with_ext}", get(sawtooth))
         .route(
@@ -64,36 +66,49 @@ pub(crate) fn router() -> Router {
         .route("/signal/silence/{spec_with_ext}", get(silence))
 }
 
-async fn sawtooth(Path(spec_with_ext): Path<String>) -> Response {
-    handle_signal(SignalKind::Sawtooth, &spec_with_ext)
+async fn sawtooth(
+    State(state): State<Arc<TestServerState>>,
+    Path(spec_with_ext): Path<String>,
+) -> Response {
+    handle_signal(&state, SignalKind::Sawtooth, &spec_with_ext)
 }
 
-async fn sawtooth_descending(Path(spec_with_ext): Path<String>) -> Response {
-    handle_signal(SignalKind::SawtoothDescending, &spec_with_ext)
+async fn sawtooth_descending(
+    State(state): State<Arc<TestServerState>>,
+    Path(spec_with_ext): Path<String>,
+) -> Response {
+    handle_signal(&state, SignalKind::SawtoothDescending, &spec_with_ext)
 }
 
-async fn sine(Path(spec_with_ext): Path<String>) -> Response {
-    handle_signal(SignalKind::Sine, &spec_with_ext)
+async fn sine(
+    State(state): State<Arc<TestServerState>>,
+    Path(spec_with_ext): Path<String>,
+) -> Response {
+    handle_signal(&state, SignalKind::Sine, &spec_with_ext)
 }
 
-async fn silence(Path(spec_with_ext): Path<String>) -> Response {
-    handle_signal(SignalKind::Silence, &spec_with_ext)
+async fn silence(
+    State(state): State<Arc<TestServerState>>,
+    Path(spec_with_ext): Path<String>,
+) -> Response {
+    handle_signal(&state, SignalKind::Silence, &spec_with_ext)
 }
 
-fn handle_signal(kind: SignalKind, spec_with_ext: &str) -> Response {
-    match resolve_signal_request(kind, spec_with_ext) {
+fn handle_signal(state: &Arc<TestServerState>, kind: SignalKind, spec_with_ext: &str) -> Response {
+    match resolve_signal_request(state, kind, spec_with_ext) {
         Ok(request) => build_signal_response(&request),
         Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
     }
 }
 
 fn resolve_signal_request(
+    state: &Arc<TestServerState>,
     kind: SignalKind,
     spec_with_ext: &str,
 ) -> Result<SignalRequest, crate::signal_spec::SignalRequestError> {
     let (candidate, path_ext) = split_token_candidate(spec_with_ext);
     if is_token(candidate) {
-        let Some(request) = get_signal(candidate) else {
+        let Some(request) = state.get_signal(candidate) else {
             return Err(crate::signal_spec::SignalRequestError::InvalidField {
                 field: "token",
                 message: "was not found",
@@ -286,7 +301,7 @@ mod tests {
 
     #[tokio::test]
     async fn signal_routes_smoke_test() {
-        let server = TestHttpServer::new(router()).await;
+        let server = TestHttpServer::new(router().with_state(TestServerState::new())).await;
         let saw = encode(r#"{"seconds":1,"sample_rate":44100,"channels":2}"#);
         let sine = encode(r#"{"seconds":1,"sample_rate":44100,"channels":2,"freq":440}"#);
         let saw_json_ext = encode(r#"{"ext":"wav","seconds":1,"sample_rate":44100,"channels":2}"#);

@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, LazyLock, RwLock},
+    sync::{Arc, RwLock},
 };
 
 use aes::Aes128;
@@ -16,20 +16,19 @@ use crate::{
     wav::create_wav_from_signal,
 };
 
-static HLS_CACHE: LazyLock<RwLock<HashMap<String, Arc<GeneratedHls>>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
+pub(crate) type GeneratedHlsCache = RwLock<HashMap<String, Arc<GeneratedHls>>>;
 
-pub(crate) fn load_hls(spec: ResolvedHlsSpec) -> Arc<GeneratedHls> {
+pub(crate) fn load_hls(cache: &GeneratedHlsCache, spec: ResolvedHlsSpec) -> Arc<GeneratedHls> {
     let cache_key = spec.cache_key().to_owned();
     {
-        let cache = HLS_CACHE.read().expect("hls cache poisoned");
+        let cache = cache.read().expect("hls cache poisoned");
         if let Some(existing) = cache.get(&cache_key) {
             return Arc::clone(existing);
         }
     }
 
     let generated = Arc::new(GeneratedHls::new(spec));
-    let mut cache = HLS_CACHE.write().expect("hls cache poisoned");
+    let mut cache = cache.write().expect("hls cache poisoned");
     Arc::clone(
         cache
             .entry(cache_key)
@@ -334,7 +333,7 @@ fn encrypt_aes128_cbc(data: &[u8], key: &[u8; 16], iv: &[u8; 16]) -> Vec<u8> {
 mod tests {
     use crate::{
         fixture_protocol::{DataMode, EncryptionRequest},
-        hls_spec::parse_hls_spec,
+        hls_spec::parse_hls_spec_with,
         hls_url::{HlsSpec, encode_hls_spec},
     };
 
@@ -342,7 +341,8 @@ mod tests {
 
     #[test]
     fn builds_master_and_media_playlist() {
-        let spec = parse_hls_spec(&encode_hls_spec(&HlsSpec::default())).unwrap();
+        let spec =
+            parse_hls_spec_with(&encode_hls_spec(&HlsSpec::default()), |_| unreachable!()).unwrap();
         let generated = GeneratedHls::new(spec);
         assert!(
             generated
@@ -359,16 +359,19 @@ mod tests {
 
     #[test]
     fn encrypts_segment_payload() {
-        let spec = parse_hls_spec(&encode_hls_spec(&HlsSpec {
-            segments_per_variant: 1,
-            segment_size: 32,
-            data_mode: DataMode::TestPattern,
-            encryption: Some(EncryptionRequest {
-                key_hex: "30313233343536373839616263646566".to_string(),
-                iv_hex: Some("00000000000000000000000000000000".to_string()),
+        let spec = parse_hls_spec_with(
+            &encode_hls_spec(&HlsSpec {
+                segments_per_variant: 1,
+                segment_size: 32,
+                data_mode: DataMode::TestPattern,
+                encryption: Some(EncryptionRequest {
+                    key_hex: "30313233343536373839616263646566".to_string(),
+                    iv_hex: Some("00000000000000000000000000000000".to_string()),
+                }),
+                ..HlsSpec::default()
             }),
-            ..HlsSpec::default()
-        }))
+            |_| unreachable!(),
+        )
         .unwrap();
         let generated = GeneratedHls::new(spec);
         let bytes = generated.segment_bytes(0, 0).unwrap();

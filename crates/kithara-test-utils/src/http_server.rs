@@ -27,7 +27,7 @@ impl TestHttpServer {
         Self::bind("127.0.0.1:0", router).await
     }
 
-    /// Spawn `router` on the given address (e.g. `"0.0.0.0:3444"`).
+    /// Spawn `router` on the given address (e.g. `"127.0.0.1:3444"`).
     ///
     /// # Panics
     ///

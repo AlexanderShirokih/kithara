@@ -8,7 +8,6 @@ use thiserror::Error;
 
 use crate::{
     fixture_protocol::{DataMode, DelayRule, EncryptionRequest, InitMode, PcmPattern},
-    hls_blob_store::resolve_hls_blob,
     hls_url::HlsSpec,
 };
 
@@ -94,7 +93,13 @@ impl ResolvedHlsSpec {
     }
 }
 
-pub(crate) fn parse_hls_spec(encoded: &str) -> Result<ResolvedHlsSpec, HlsSpecError> {
+pub(crate) fn parse_hls_spec_with<F>(
+    encoded: &str,
+    resolve_blob: F,
+) -> Result<ResolvedHlsSpec, HlsSpecError>
+where
+    F: Fn(&str) -> Result<Arc<Vec<u8>>, HlsSpecError>,
+{
     if encoded.len() > MAX_SPEC_BYTES {
         return Err(HlsSpecError::SpecTooLarge);
     }
@@ -104,10 +109,16 @@ pub(crate) fn parse_hls_spec(encoded: &str) -> Result<ResolvedHlsSpec, HlsSpecEr
         .or_else(|_| URL_SAFE.decode(encoded))
         .map_err(|_| HlsSpecError::InvalidBase64)?;
     let spec: HlsSpec = serde_json::from_slice(&bytes).map_err(|_| HlsSpecError::InvalidJson)?;
-    resolve_hls_spec(spec)
+    resolve_hls_spec_with(spec, resolve_blob)
 }
 
-pub(crate) fn resolve_hls_spec(spec: HlsSpec) -> Result<ResolvedHlsSpec, HlsSpecError> {
+pub(crate) fn resolve_hls_spec_with<F>(
+    spec: HlsSpec,
+    resolve_blob: F,
+) -> Result<ResolvedHlsSpec, HlsSpecError>
+where
+    F: Fn(&str) -> Result<Arc<Vec<u8>>, HlsSpecError>,
+{
     validate_hls_shape(&spec)?;
 
     let variant_count = spec.variant_count;
@@ -121,8 +132,8 @@ pub(crate) fn resolve_hls_spec(spec: HlsSpec) -> Result<ResolvedHlsSpec, HlsSpec
         variant_bandwidths.push(bandwidth);
     }
 
-    let data_mode = normalize_data_mode(&spec.data_mode)?;
-    let init_mode = normalize_init_mode(&spec.init_mode)?;
+    let data_mode = normalize_data_mode(&spec.data_mode, &resolve_blob)?;
+    let init_mode = normalize_init_mode(&spec.init_mode, &resolve_blob)?;
     let encryption = spec
         .encryption
         .as_ref()
@@ -198,7 +209,13 @@ fn validate_hls_shape(spec: &HlsSpec) -> Result<(), HlsSpecError> {
     Ok(())
 }
 
-fn normalize_data_mode(data_mode: &DataMode) -> Result<ResolvedDataMode, HlsSpecError> {
+fn normalize_data_mode<F>(
+    data_mode: &DataMode,
+    resolve_blob: &F,
+) -> Result<ResolvedDataMode, HlsSpecError>
+where
+    F: Fn(&str) -> Result<Arc<Vec<u8>>, HlsSpecError>,
+{
     match data_mode {
         DataMode::TestPattern => Ok(ResolvedDataMode::TestPattern),
         DataMode::AbrBinary => Ok(ResolvedDataMode::AbrBinary),
@@ -237,7 +254,13 @@ fn normalize_data_mode(data_mode: &DataMode) -> Result<ResolvedDataMode, HlsSpec
     }
 }
 
-fn normalize_init_mode(init_mode: &InitMode) -> Result<ResolvedInitMode, HlsSpecError> {
+fn normalize_init_mode<F>(
+    init_mode: &InitMode,
+    resolve_blob: &F,
+) -> Result<ResolvedInitMode, HlsSpecError>
+where
+    F: Fn(&str) -> Result<Arc<Vec<u8>>, HlsSpecError>,
+{
     match init_mode {
         InitMode::None => Ok(ResolvedInitMode::None),
         InitMode::TestInit => Ok(ResolvedInitMode::TestInit),
@@ -304,10 +327,6 @@ fn normalize_encryption(enc: &EncryptionRequest) -> Result<ResolvedEncryption, H
     })
 }
 
-fn resolve_blob(key: &str) -> Result<Arc<Vec<u8>>, HlsSpecError> {
-    resolve_hls_blob(key).ok_or_else(|| HlsSpecError::MissingBlob(key.to_owned()))
-}
-
 fn build_cache_key(spec: &HlsSpec) -> String {
     struct Stable<'a>(&'a HlsSpec);
 
@@ -330,19 +349,33 @@ impl ResolvedEncryption {
 #[cfg(test)]
 mod tests {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use std::collections::HashMap;
 
     use super::*;
-    use crate::{fixture_protocol::InitMode, hls_blob_store::register_hls_blob};
+    use crate::{fixture_protocol::InitMode, hls_blob_store::blob_key};
 
     fn encode(spec: &HlsSpec) -> String {
         URL_SAFE_NO_PAD.encode(serde_json::to_vec(spec).unwrap())
     }
 
+    fn resolve_from(
+        map: &HashMap<String, Arc<Vec<u8>>>,
+        key: &str,
+    ) -> Result<Arc<Vec<u8>>, HlsSpecError> {
+        map.get(key)
+            .cloned()
+            .ok_or_else(|| HlsSpecError::MissingBlob(key.to_owned()))
+    }
+
     #[test]
     fn parses_blob_backed_spec() {
-        let media = register_hls_blob(b"abcdef");
-        let init = register_hls_blob(b"init");
-        let key = register_hls_blob(b"key");
+        let media = blob_key(b"abcdef");
+        let init = blob_key(b"init");
+        let key = blob_key(b"key");
+        let mut blobs = HashMap::new();
+        blobs.insert(media.clone(), Arc::new(b"abcdef".to_vec()));
+        blobs.insert(init.clone(), Arc::new(b"init".to_vec()));
+        blobs.insert(key.clone(), Arc::new(b"key".to_vec()));
         let spec = HlsSpec {
             variant_count: 2,
             data_mode: DataMode::BlobRef(media.clone()),
@@ -351,7 +384,8 @@ mod tests {
             ..HlsSpec::default()
         };
 
-        let resolved = parse_hls_spec(&encode(&spec)).unwrap();
+        let resolved =
+            parse_hls_spec_with(&encode(&spec), |blob| resolve_from(&blobs, blob)).unwrap();
         assert_eq!(resolved.variant_count, 2);
         assert_eq!(resolved.variant_bandwidths, vec![1_280_000, 2_560_000]);
         match resolved.data_mode {
@@ -366,7 +400,7 @@ mod tests {
             variant_count: 0,
             ..HlsSpec::default()
         };
-        let err = parse_hls_spec(&encode(&spec)).unwrap_err();
+        let err = parse_hls_spec_with(&encode(&spec), |_| unreachable!()).unwrap_err();
         assert!(err.to_string().contains("variant_count"));
     }
 }

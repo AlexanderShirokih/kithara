@@ -5,7 +5,7 @@ use std::sync::Arc;
 use axum::{
     Router,
     body::Body,
-    extract::Path,
+    extract::{Path, State},
     http::{HeaderMap, Response, StatusCode, header},
     response::IntoResponse,
     routing::get,
@@ -13,12 +13,11 @@ use axum::{
 use kithara_platform::time::{Duration, sleep};
 
 use crate::{
-    hls_spec::{HlsSpecError, parse_hls_spec},
-    hls_stream::{GeneratedHls, load_hls},
-    token_store::{get_hls, is_token},
+    hls_spec::HlsSpecError, hls_stream::GeneratedHls, test_server_state::TestServerState,
+    token_store::is_token,
 };
 
-pub(crate) fn router() -> Router {
+pub(crate) fn router() -> Router<Arc<TestServerState>> {
     Router::new()
         .route("/stream/{hls_spec}", get(master_playlist))
         .route("/stream/{hls_spec}/{media_playlist}", get(media_playlist))
@@ -30,12 +29,15 @@ pub(crate) fn router() -> Router {
         )
 }
 
-async fn master_playlist(Path(hls_spec): Path<String>) -> impl IntoResponse {
+async fn master_playlist(
+    State(state): State<Arc<TestServerState>>,
+    Path(hls_spec): Path<String>,
+) -> impl IntoResponse {
     let Some(spec_b64) = hls_spec.strip_suffix(".m3u8") else {
         return (StatusCode::NOT_FOUND, "master playlist must end with .m3u8").into_response();
     };
 
-    match resolve_hls_spec(spec_b64) {
+    match resolve_hls_spec(&state, spec_b64) {
         Ok((fixture, spec_ref)) => {
             let playlist = fixture.master_playlist(spec_ref);
             response_with_type(StatusCode::OK, "application/vnd.apple.mpegurl", playlist)
@@ -45,13 +47,14 @@ async fn master_playlist(Path(hls_spec): Path<String>) -> impl IntoResponse {
 }
 
 async fn media_playlist(
+    State(state): State<Arc<TestServerState>>,
     Path((hls_spec, media_playlist)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let Some(variant) = parse_variant_path(&media_playlist, ".m3u8") else {
         return (StatusCode::NOT_FOUND, "invalid media playlist path").into_response();
     };
 
-    match resolve_hls_spec(&hls_spec) {
+    match resolve_hls_spec(&state, &hls_spec) {
         Ok((fixture, _)) => fixture.media_playlist(variant).map_or_else(
             || StatusCode::NOT_FOUND.into_response(),
             |playlist| {
@@ -67,6 +70,7 @@ async fn media_playlist(
 }
 
 async fn init_segment(
+    State(state): State<Arc<TestServerState>>,
     Path((hls_spec, init_segment)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
@@ -74,7 +78,7 @@ async fn init_segment(
         return (StatusCode::NOT_FOUND, "invalid init segment path").into_response();
     };
 
-    match resolve_hls_spec(&hls_spec) {
+    match resolve_hls_spec(&state, &hls_spec) {
         Ok((fixture, _)) => fixture.init_bytes(variant).map_or_else(
             || StatusCode::NOT_FOUND.into_response(),
             |bytes| build_range_response(&bytes, &headers, true, false),
@@ -84,6 +88,7 @@ async fn init_segment(
 }
 
 async fn media_segment(
+    State(state): State<Arc<TestServerState>>,
     Path((hls_spec, media_segment)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
@@ -91,7 +96,7 @@ async fn media_segment(
         return (StatusCode::NOT_FOUND, "invalid media segment path").into_response();
     };
 
-    match resolve_hls_spec(&hls_spec) {
+    match resolve_hls_spec(&state, &hls_spec) {
         Ok((fixture, _)) => {
             let delay_ms = fixture.segment_delay_ms(variant, segment);
             if delay_ms > 0 {
@@ -107,6 +112,7 @@ async fn media_segment(
 }
 
 async fn media_segment_head(
+    State(state): State<Arc<TestServerState>>,
     Path((hls_spec, media_segment)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
@@ -114,7 +120,7 @@ async fn media_segment_head(
         return (StatusCode::NOT_FOUND, "invalid media segment path").into_response();
     };
 
-    match resolve_hls_spec(&hls_spec) {
+    match resolve_hls_spec(&state, &hls_spec) {
         Ok((fixture, _)) => fixture.segment_bytes(variant, segment).map_or_else(
             || StatusCode::NOT_FOUND.into_response(),
             |bytes| {
@@ -128,8 +134,12 @@ async fn media_segment_head(
     }
 }
 
-async fn key(Path(hls_spec): Path<String>, headers: HeaderMap) -> impl IntoResponse {
-    match resolve_hls_spec(&hls_spec) {
+async fn key(
+    State(state): State<Arc<TestServerState>>,
+    Path(hls_spec): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    match resolve_hls_spec(&state, &hls_spec) {
         Ok((fixture, _)) => fixture.key_bytes().map_or_else(
             || StatusCode::NOT_FOUND.into_response(),
             |bytes| build_range_response(&bytes, &headers, true, false),
@@ -150,9 +160,12 @@ fn response_with_type(
         .expect("stream response")
 }
 
-fn resolve_hls_spec(spec_ref: &str) -> Result<(Arc<GeneratedHls>, &str), HlsSpecError> {
+fn resolve_hls_spec<'a>(
+    state: &Arc<TestServerState>,
+    spec_ref: &'a str,
+) -> Result<(Arc<GeneratedHls>, &'a str), HlsSpecError> {
     if is_token(spec_ref) {
-        let Some(fixture) = get_hls(spec_ref) else {
+        let Some(fixture) = state.get_hls(spec_ref) else {
             return Err(HlsSpecError::InvalidField {
                 field: "token",
                 message: "was not found",
@@ -161,7 +174,9 @@ fn resolve_hls_spec(spec_ref: &str) -> Result<(Arc<GeneratedHls>, &str), HlsSpec
         return Ok((fixture, spec_ref));
     }
 
-    parse_hls_spec(spec_ref).map(|spec| (load_hls(spec), spec_ref))
+    state
+        .parse_hls_spec(spec_ref)
+        .map(|spec| (state.load_hls(spec), spec_ref))
 }
 
 fn parse_variant_path(path: &str, suffix: &str) -> Option<usize> {
