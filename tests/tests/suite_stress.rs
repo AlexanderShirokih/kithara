@@ -12,6 +12,10 @@
 
 mod common;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "common/continuity.rs"]
+pub(crate) mod continuity;
+
 mod kithara_hls {
     mod abr_auto_switch;
     mod abr_switch_playback;

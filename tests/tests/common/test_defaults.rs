@@ -12,23 +12,19 @@ pub(crate) struct SawWav {
     pub sample_rate: u32,
     pub channels: u16,
     pub segment_size: usize,
-    pub saw_period: usize,
 }
 
 impl SawWav {
+    /// Saw period in PCM frames (matches generated saw-tooth cycle length).
+    pub(crate) const SAW_PERIOD: usize = 65536;
+
     /// Standard defaults: 44.1 kHz stereo, 200 KB segments (native) / 32 KB (wasm).
-    pub const DEFAULT: Self = Self {
+    pub(crate) const DEFAULT: Self = Self {
         sample_rate: 44100,
         channels: 2,
         #[cfg(not(target_arch = "wasm32"))]
         segment_size: 200_000,
         #[cfg(target_arch = "wasm32")]
         segment_size: 32_000,
-        saw_period: 65536,
     };
-
-    /// Total bytes for a given segment count.
-    pub const fn total_bytes(&self, segment_count: usize) -> usize {
-        segment_count * self.segment_size
-    }
 }

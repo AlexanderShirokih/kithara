@@ -128,6 +128,8 @@ Use it for repo-wide coding conventions, path routing, and stable coordination s
 - Respect workspace-wide config such as `rustfmt.toml`, `clippy.toml`, `deny.toml`, and `sgconfig.yml`.
 - Change lint policy in the shared config files instead of creating per-crate drift unless there is a strong reason.
 - The pre-commit hook expects clean formatting, linting, and tests. If they fail after your change, assume your change caused it until proven otherwise.
+- Treat **`rustc` warnings** (for example `unused-imports`, `dead_code`, `deprecated`, unfulfilled `#[expect]`, `unreachable_pub`) the same as Clippy: fix the cause in code you touch—remove dead code, update imports and APIs, replace deprecated items—rather than leaving warnings to accumulate.
+- Prefer fixing the cause of a compiler or Clippy warning (correct types, control flow, dependency or API change) over silencing it. Do not add `#[allow(...)]`, file-level `#![allow(...)]`, or other lint suppressions unless there is no reasonable code-side fix; if you must suppress, document why in the owning crate `README.md` or in a short comment on the same item.
 
 ### Style rules enforced by tooling
 

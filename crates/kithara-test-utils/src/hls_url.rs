@@ -71,56 +71,51 @@ fn is_default_init_mode(value: &InitMode) -> bool {
 
 /// Public request shape for `/stream/*` URL construction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HlsSpec {
     #[serde(
-        rename = "vc",
         default = "default_variant_count",
         skip_serializing_if = "is_default_variant_count"
     )]
     pub variant_count: usize,
     #[serde(
-        rename = "spv",
         default = "default_segments_per_variant",
         skip_serializing_if = "is_default_segments_per_variant"
     )]
     pub segments_per_variant: usize,
     #[serde(
-        rename = "ss",
         default = "default_segment_size",
         skip_serializing_if = "is_default_segment_size"
     )]
     pub segment_size: usize,
     #[serde(
-        rename = "sd",
         default = "default_segment_duration_secs",
         skip_serializing_if = "is_default_segment_duration_secs"
     )]
     pub segment_duration_secs: f64,
     #[serde(
-        rename = "dm",
         default = "default_data_mode",
         skip_serializing_if = "is_default_data_mode"
     )]
     pub data_mode: DataMode,
     #[serde(
-        rename = "im",
         default = "default_init_mode",
         skip_serializing_if = "is_default_init_mode"
     )]
     pub init_mode: InitMode,
-    #[serde(rename = "vb", default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant_bandwidths: Option<Vec<u64>>,
-    #[serde(rename = "dr", default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delay_rules: Vec<DelayRule>,
-    #[serde(rename = "enc", default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encryption: Option<EncryptionRequest>,
-    #[serde(rename = "hrs", default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_reported_segment_size: Option<usize>,
-    #[serde(rename = "kh", default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_hex: Option<String>,
-    #[serde(rename = "kbr", default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_blob_ref: Option<String>,
-    #[serde(rename = "pa", default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub packaged_audio: Option<PackagedAudioRequest>,
 }
 

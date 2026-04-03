@@ -72,6 +72,7 @@ impl TestServer {
             "/key.bin" => self.plain.key_url(),
             "/aes/key.bin" => self.encrypted.key_url(),
             "/aes/seg0.bin" => self.encrypted.segment_url(0, 0),
+            "/custom/base/" | "/base/" => self._helper.url(path),
             other => panic!("unknown TestServer compatibility path `{other}`"),
         }
     }

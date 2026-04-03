@@ -8,14 +8,119 @@
 use kithara::{
     assets::StoreOptions,
     audio::{Audio, AudioConfig},
+    events::{Event, EventBus, HlsEvent},
     file::{File, FileConfig},
     hls::{AbrMode, AbrOptions, Hls, HlsConfig},
-    stream::Stream,
+    play::internal::offline::{OfflinePlayer, resource_from_reader},
+    stream::{AudioCodec, Stream},
 };
 use kithara_platform::time::{Duration, Instant, sleep};
-use kithara_test_utils::{TestServerHelper, TestTempDir, temp_dir};
+use kithara_test_utils::{
+    HlsFixtureBuilder, TestServerHelper, TestTempDir, temp_dir,
+    fixture_protocol::{DelayRule, PcmPattern},
+};
+use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
+
+use crate::continuity::{
+    CONTINUITY_BLOCK_FRAMES, CONTINUITY_SAMPLE_RATE, PlaybackProgressProbe, render_offline_window,
+};
+
+fn forced_downswitch_abr_options() -> AbrOptions {
+    AbrOptions {
+        down_switch_buffer_secs: 0.0,
+        min_buffer_for_up_switch_secs: 0.0,
+        min_switch_interval: Duration::from_secs(120),
+        mode: AbrMode::Auto(Some(0)),
+        throughput_safety_factor: 1.0,
+        ..AbrOptions::default()
+    }
+}
+
+fn packaged_identical_content_abr_builder(codec: AudioCodec) -> HlsFixtureBuilder {
+    let builder = HlsFixtureBuilder::new()
+        .variant_count(2)
+        .segments_per_variant(6)
+        .segment_duration_secs(2.0)
+        .variant_bandwidths(vec![5_000_000, 1_000_000])
+        .delay_rules(vec![DelayRule {
+            variant: Some(0),
+            segment_gte: Some(2),
+            delay_ms: 500,
+            ..Default::default()
+        }]);
+    match codec {
+        AudioCodec::AacLc => builder.packaged_audio_per_variant_pcm_aac_lc(
+            CONTINUITY_SAMPLE_RATE,
+            2,
+            vec![PcmPattern::Ascending, PcmPattern::Ascending],
+        ),
+        AudioCodec::Flac => builder.packaged_audio_per_variant_pcm_flac(
+            CONTINUITY_SAMPLE_RATE,
+            2,
+            vec![PcmPattern::Ascending, PcmPattern::Ascending],
+        ),
+        other => panic!("unsupported packaged ABR codec: {other:?}"),
+    }
+}
+
+async fn create_packaged_abr_fixture() -> (TestServerHelper, url::Url) {
+    let server = TestServerHelper::new().await;
+    let created = server
+        .create_hls(packaged_identical_content_abr_builder(AudioCodec::AacLc))
+        .await
+        .unwrap_or_else(|error| panic!("create packaged ABR fixture: {error}"));
+    (server, created.master_url())
+}
+
+async fn open_packaged_hls_audio(
+    url: &url::Url,
+    store: StoreOptions,
+    abr: AbrOptions,
+    bus: Option<EventBus>,
+) -> Audio<Stream<Hls>> {
+    let mut hls_config = HlsConfig::new(url.clone())
+        .with_store(store)
+        .with_abr(abr)
+        .with_download_batch_size(1);
+    if let Some(bus) = bus.clone() {
+        hls_config = hls_config.with_events(bus);
+    }
+
+    let mut config = AudioConfig::<Hls>::new(hls_config);
+    if let Some(bus) = bus {
+        config = config.with_events(bus);
+    }
+
+    let mut audio = Audio::<Stream<Hls>>::new(config)
+        .await
+        .unwrap_or_else(|err| panic!("packaged ABR audio should open for {url}: {err}"));
+    audio.preload();
+    audio
+}
+
+async fn read_audio_some(audio: &mut Audio<Stream<Hls>>, stage: &str) -> usize {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut buf = [0.0f32; 4096];
+
+    loop {
+        audio.preload();
+        let read = audio.read(&mut buf);
+        if read > 0 {
+            return read;
+        }
+        assert!(
+            !audio.is_eof(),
+            "unexpected EOF while waiting for packaged ABR audio at stage={stage}"
+        );
+        assert!(
+            Instant::now() <= deadline,
+            "timed out waiting for packaged ABR audio at stage={stage}"
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+}
 
 /// Real fMP4/AAC HLS stream with ABR auto-switch must play without hanging.
 ///
@@ -69,6 +174,140 @@ async fn abr_switch_real_assets_does_not_hang(temp_dir: TestTempDir) {
     assert!(
         total_samples > 1000,
         "expected sustained playback, got only {total_samples} samples"
+    );
+}
+
+/// Packaged ABR HLS must switch variants without losing continuity.
+///
+/// Acceptance is split deliberately:
+/// - direct `Audio::read()` proves the packaged fixture really switches and that
+///   `PlaybackProgress` stays monotonic through the switch;
+/// - post-switch `PcmChunk` reads give root-cause diagnostics;
+/// - `OfflinePlayer::render()` is the player-level continuity oracle.
+#[kithara::test(
+    tokio,
+    native,
+    serial,
+    timeout(Duration::from_secs(30)),
+    env(KITHARA_HANG_TIMEOUT_SECS = "3")
+)]
+async fn packaged_abr_switch_keeps_player_continuity(temp_dir: TestTempDir) {
+    let (_server, url) = create_packaged_abr_fixture().await;
+    let store = StoreOptions::new(temp_dir.path());
+
+    let bus = EventBus::new(64);
+    let mut hls_rx = bus.subscribe();
+    let mut progress_audio = open_packaged_hls_audio(
+        &url,
+        store.clone(),
+        forced_downswitch_abr_options(),
+        Some(bus.clone()),
+    )
+    .await;
+    let mut progress_rx = progress_audio.decode_events();
+    let mut progress_probe = PlaybackProgressProbe::default();
+    let mut switch_count = 0usize;
+    let mut switch_seen = false;
+    let mut total_samples = 0u64;
+    let mut post_switch_samples = 0u64;
+    let mut buf = vec![0.0f32; 4096];
+    total_samples += read_audio_some(&mut progress_audio, "packaged_abr_warmup").await as u64;
+    progress_probe.drain(&mut progress_rx);
+    let deadline = Instant::now() + Duration::from_secs(8);
+
+    while Instant::now() < deadline {
+        progress_audio.preload();
+        let read = progress_audio.read(&mut buf);
+        progress_probe.drain(&mut progress_rx);
+        loop {
+            match hls_rx.try_recv() {
+                Ok(Event::Hls(HlsEvent::VariantApplied { .. })) => {
+                    switch_count += 1;
+                    switch_seen = true;
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+
+        if read == 0 {
+            if progress_audio.is_eof() {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+            progress_probe.observe_idle();
+            continue;
+        }
+
+        total_samples += read as u64;
+        if switch_seen {
+            post_switch_samples += read as u64;
+        }
+        if switch_seen && progress_probe.progress_events >= 8 && post_switch_samples >= 16_384 {
+            break;
+        }
+    }
+    progress_probe.drain(&mut progress_rx);
+    progress_probe.observe_idle();
+
+    assert!(
+        switch_count > 0,
+        "packaged ABR fixture must switch variants"
+    );
+    assert!(
+        total_samples > 0,
+        "packaged ABR fixture must produce decoded output"
+    );
+    assert!(
+        post_switch_samples > 0,
+        "packaged ABR fixture produced no decoded output after the switch"
+    );
+    assert!(
+        progress_probe.progress_events >= 4,
+        "expected PlaybackProgress events during packaged ABR playback, got {}",
+        progress_probe.progress_events
+    );
+    assert_eq!(
+        progress_probe.regressions, 0,
+        "PlaybackProgress moved backward during packaged ABR playback"
+    );
+    assert!(
+        progress_probe.max_gap_between_events < Duration::from_millis(1_500),
+        "PlaybackProgress stalled for {:?} during packaged ABR playback",
+        progress_probe.max_gap_between_events
+    );
+
+    let decode_audio =
+        open_packaged_hls_audio(&url, store, forced_downswitch_abr_options(), None).await;
+    let mut resource = resource_from_reader(decode_audio);
+    timeout(Duration::from_secs(5), resource.preload())
+        .await
+        .expect("packaged ABR preload must complete");
+    let mut player = OfflinePlayer::new(CONTINUITY_SAMPLE_RATE);
+    player.load_and_fadein(resource, "packaged_abr");
+    let _warmup = render_offline_window(
+        &mut player,
+        24,
+        "packaged abr warmup",
+        CONTINUITY_BLOCK_FRAMES,
+        CONTINUITY_SAMPLE_RATE,
+    );
+    let seam = render_offline_window(
+        &mut player,
+        220,
+        "packaged abr seam window",
+        CONTINUITY_BLOCK_FRAMES,
+        CONTINUITY_SAMPLE_RATE,
+    );
+    assert!(
+        seam.max_silence_run <= 2,
+        "packaged ABR switch produced {} silent blocks ({seam})",
+        seam.max_silence_run
+    );
+    assert!(
+        seam.slow_renders <= 1,
+        "packaged ABR switch exceeded render budget {} times ({seam})",
+        seam.slow_renders
     );
 }
 

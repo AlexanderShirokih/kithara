@@ -6,6 +6,10 @@
 
 mod common;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "common/continuity.rs"]
+pub(crate) mod continuity;
+
 mod browser_runner_smoke;
 mod env_guard;
 mod events;

@@ -96,6 +96,9 @@ pub(crate) enum ResolvedPackagedSignal {
     Sawtooth,
     SawtoothDescending,
     Silence,
+    Sine {
+        freq_hz: f64,
+    },
     Pattern(PcmPattern),
 }
 
@@ -375,7 +378,9 @@ fn resolve_packaged_audio(
     }
 
     let base_signal = match &packaged.source {
-        PackagedAudioSource::Signal(signal) => resolved_signal(*signal),
+        PackagedAudioSource::Signal(signal) => {
+            resolved_signal(*signal, packaged.sample_rate)?
+        }
         PackagedAudioSource::PerVariantPcm { .. } => {
             ResolvedPackagedSignal::Pattern(PcmPattern::Ascending)
         }
@@ -427,12 +432,36 @@ fn apply_variant_override(
     }
 }
 
-fn resolved_signal(signal: PackagedSignal) -> ResolvedPackagedSignal {
+fn resolved_signal(
+    signal: PackagedSignal,
+    sample_rate: u32,
+) -> Result<ResolvedPackagedSignal, HlsSpecError> {
     match signal {
-        PackagedSignal::Sawtooth => ResolvedPackagedSignal::Sawtooth,
-        PackagedSignal::SawtoothDescending => ResolvedPackagedSignal::SawtoothDescending,
-        PackagedSignal::Silence => ResolvedPackagedSignal::Silence,
+        PackagedSignal::Sawtooth => Ok(ResolvedPackagedSignal::Sawtooth),
+        PackagedSignal::SawtoothDescending => Ok(ResolvedPackagedSignal::SawtoothDescending),
+        PackagedSignal::Silence => Ok(ResolvedPackagedSignal::Silence),
+        PackagedSignal::Sine { freq_hz } => {
+            validate_packaged_sine_freq_hz(freq_hz, sample_rate)?;
+            Ok(ResolvedPackagedSignal::Sine { freq_hz })
+        }
     }
+}
+
+fn validate_packaged_sine_freq_hz(freq_hz: f64, sample_rate: u32) -> Result<(), HlsSpecError> {
+    if !freq_hz.is_finite() || freq_hz <= 0.0 {
+        return Err(HlsSpecError::InvalidField {
+            field: "packaged_audio.source",
+            message: "sine freq_hz must be finite and > 0",
+        });
+    }
+    let nyquist = f64::from(sample_rate) / 2.0;
+    if freq_hz > nyquist {
+        return Err(HlsSpecError::InvalidField {
+            field: "packaged_audio.source",
+            message: "sine freq_hz must be <= half the sample rate (Nyquist)",
+        });
+    }
+    Ok(())
 }
 
 fn normalize_encryption(enc: &EncryptionRequest) -> Result<ResolvedEncryption, HlsSpecError> {
@@ -485,8 +514,15 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use std::collections::HashMap;
 
+    use kithara_stream::AudioCodec;
+
     use super::*;
-    use crate::{fixture_protocol::InitMode, hls_blob_store::blob_key};
+    use crate::{
+        fixture_protocol::{
+            InitMode, PackagedAudioRequest, PackagedAudioSource, PackagedSignal,
+        },
+        hls_blob_store::blob_key,
+    };
 
     fn encode(spec: &HlsSpec) -> String {
         URL_SAFE_NO_PAD.encode(serde_json::to_vec(spec).unwrap())
@@ -536,5 +572,25 @@ mod tests {
         };
         let err = parse_hls_spec_with(&encode(&spec), |_| unreachable!()).unwrap_err();
         assert!(err.to_string().contains("variant_count"));
+    }
+
+    #[test]
+    fn rejects_packaged_sine_freq_above_nyquist() {
+        let spec = HlsSpec {
+            packaged_audio: Some(PackagedAudioRequest {
+                codec: AudioCodec::AacLc,
+                sample_rate: 44_100,
+                channels: 2,
+                timescale: None,
+                bit_rate: None,
+                source: PackagedAudioSource::Signal(PackagedSignal::Sine {
+                    freq_hz: 50_000.0,
+                }),
+                variant_overrides: Vec::new(),
+            }),
+            ..HlsSpec::default()
+        };
+        let err = parse_hls_spec_with(&encode(&spec), |_| unreachable!()).unwrap_err();
+        assert!(err.to_string().contains("Nyquist"));
     }
 }

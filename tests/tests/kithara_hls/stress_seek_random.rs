@@ -48,7 +48,6 @@ use tracing::info;
     } else {
         Duration::from_secs(120)
     }),
-    env(KITHARA_HANG_TIMEOUT_SECS = "1"),
     tracing("kithara_hls=debug,kithara_stream=debug")
 )]
 #[case::small(50_000, 20, 200, false, false)]

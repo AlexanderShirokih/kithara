@@ -80,6 +80,9 @@ use crate::common::test_defaults::SawWav;
 
 #[cfg(not(target_arch = "wasm32"))]
 const D: SawWav = SawWav::DEFAULT;
+/// Keeps `SAW_PERIOD` referenced when this suite is built without stress modules.
+#[cfg(not(target_arch = "wasm32"))]
+const _: usize = SawWav::SAW_PERIOD;
 /// Keep within default LRU cache capacity (5) to avoid auto-eviction of
 /// MemResources which would make `wait_range()` block forever.
 #[cfg(not(target_arch = "wasm32"))]

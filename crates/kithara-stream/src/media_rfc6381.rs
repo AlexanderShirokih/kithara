@@ -73,8 +73,10 @@ mod tests {
 
     #[test]
     fn aac_lc_defaults_container_to_fmp4_mapping() {
-        let mut info = MediaInfo::default();
-        info.codec = Some(AudioCodec::AacLc);
+        let info = MediaInfo {
+            codec: Some(AudioCodec::AacLc),
+            ..Default::default()
+        };
         assert_eq!(info.rfc6381_codec().as_deref(), Some("mp4a.40.2"));
     }
 

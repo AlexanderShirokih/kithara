@@ -385,8 +385,8 @@ async fn stress_seek_lifecycle_with_zero_reset(#[case] ephemeral: bool) {
             if let Some(pp) = prev_phase {
                 // After seek to 0, we're reading the post-ABR-switch variant
                 // (ascending or descending). Check both directions.
-                let next_asc = (pp + 1) % D.saw_period;
-                let next_desc = (pp + D.saw_period - 1) % D.saw_period;
+                let next_asc = (pp + 1) % SawWav::SAW_PERIOD;
+                let next_desc = (pp + SawWav::SAW_PERIOD - 1) % SawWav::SAW_PERIOD;
                 if first_phase != next_asc && first_phase != next_desc {
                     continuity_breaks += 1;
                     if continuity_breaks <= 5 {
@@ -406,8 +406,8 @@ async fn stress_seek_lifecycle_with_zero_reset(#[case] ephemeral: bool) {
             for f in 1..frames {
                 let p0 = phase_from_f32(buf[(f - 1) * channels]);
                 let p1 = phase_from_f32(buf[f * channels]);
-                let next_asc = (p0 + 1) % D.saw_period;
-                let next_desc = (p0 + D.saw_period - 1) % D.saw_period;
+                let next_asc = (p0 + 1) % SawWav::SAW_PERIOD;
+                let next_desc = (p0 + SawWav::SAW_PERIOD - 1) % SawWav::SAW_PERIOD;
                 if p1 != next_asc && p1 != next_desc {
                     continuity_breaks += 1;
                     if continuity_breaks <= 5 {

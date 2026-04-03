@@ -6,6 +6,7 @@
 use std::{fs, io::Cursor, process::Command};
 
 use kithara::decode::{DecoderConfig, DecoderFactory};
+use kithara::stream::{AudioCodec, ContainerFormat, MediaInfo};
 use kithara_integration_tests::audio_fixture::EmbeddedAudio;
 use kithara_platform::time::Duration;
 use kithara_test_utils::{
@@ -297,24 +298,130 @@ async fn test_packaged_test_server_serves_audio_mp4_resources() {
     timeout(Duration::from_secs(10)),
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
-#[case::aac("aac", kithara::stream::AudioCodec::AacLc)]
-#[case::flac("flac", kithara::stream::AudioCodec::Flac)]
+#[case::aac("aac", AudioCodec::AacLc)]
+#[case::flac("flac", AudioCodec::Flac)]
 async fn test_packaged_hls_aac_and_flac_roundtrip_decode_descending_saw(
     #[case] label: &str,
-    #[case] codec: kithara::stream::AudioCodec,
+    #[case] codec: AudioCodec,
 ) {
     let server = TestServerHelper::new().await;
     let builder = match codec {
-        kithara::stream::AudioCodec::AacLc => HlsFixtureBuilder::new()
+        AudioCodec::AacLc => HlsFixtureBuilder::new()
             .variant_count(1)
             .segments_per_variant(4)
             .segment_duration_secs(1.0)
             .packaged_audio_signal_aac_lc(44_100, 2, PackagedSignal::SawtoothDescending),
-        kithara::stream::AudioCodec::Flac => HlsFixtureBuilder::new()
+        AudioCodec::Flac => HlsFixtureBuilder::new()
             .variant_count(1)
             .segments_per_variant(4)
             .segment_duration_secs(1.0)
             .packaged_audio_signal_flac(44_100, 2, PackagedSignal::SawtoothDescending),
+        other => panic!("unsupported packaged codec case: {other:?}"),
+    };
+    let created = server
+        .create_hls(builder)
+        .await
+        .unwrap_or_else(|error| panic!("create packaged {label} fixture: {error}"));
+
+    let client = Client::new();
+    let init = client
+        .get(created.init_url(0))
+        .send()
+        .await
+        .unwrap_or_else(|error| panic!("fetch packaged {label} init: {error}"))
+        .bytes()
+        .await
+        .unwrap();
+    let media_playlist = client
+        .get(created.media_url(0))
+        .send()
+        .await
+        .unwrap_or_else(|error| panic!("fetch packaged {label} media playlist: {error}"))
+        .text()
+        .await
+        .unwrap();
+    let segment_paths = media_playlist
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect::<Vec<_>>();
+    assert!(
+        !segment_paths.is_empty(),
+        "packaged {label} media playlist must list at least one segment"
+    );
+    assert!(
+        segment_paths.len() > 1,
+        "packaged {label} media playlist should expose multiple segments, got {segment_paths:?}"
+    );
+
+    let mut segment_lengths = Vec::with_capacity(segment_paths.len());
+    let mut mp4_bytes = Vec::with_capacity(init.len() + 16_384 * segment_paths.len());
+    mp4_bytes.extend_from_slice(&init);
+    for segment_path in segment_paths {
+        let segment_url = created
+            .media_url(0)
+            .join(segment_path)
+            .unwrap_or_else(|error| {
+                panic!("join packaged {label} segment url {segment_path}: {error}")
+            });
+        let segment_response = client
+            .get(segment_url)
+            .send()
+            .await
+            .unwrap_or_else(|error| {
+                panic!("fetch packaged {label} segment {segment_path}: {error}")
+            });
+        assert_eq!(
+            segment_response.status(),
+            200,
+            "packaged {label} segment {segment_path} should return 200"
+        );
+        let segment = segment_response.bytes().await.unwrap();
+        assert!(
+            !segment.is_empty(),
+            "packaged {label} segment {segment_path} must not be empty"
+        );
+        segment_lengths.push((segment_path.to_string(), segment.len()));
+        mp4_bytes.extend_from_slice(&segment);
+    }
+
+    let samples = decode_fragment_with_ffmpeg(&mp4_bytes, &format!("packaged {label}"));
+    assert_valid_pcm_samples(&samples, &format!("packaged {label} decoded PCM"));
+
+    assert!(
+        samples.len() >= 4096,
+        "packaged {label} fragment should decode a meaningful amount of PCM, got {} samples",
+        samples.len()
+    );
+    assert!(
+        contains_direction_window(&samples, 2, SignalDirection::Descending),
+        "packaged {label} fragment should preserve descending sawtooth PCM after round-trip"
+    );
+}
+
+#[kithara::test(
+    native,
+    tokio,
+    timeout(Duration::from_secs(10)),
+    env(KITHARA_HANG_TIMEOUT_SECS = "1")
+)]
+#[case::aac("aac", AudioCodec::AacLc)]
+#[case::flac("flac", AudioCodec::Flac)]
+async fn test_packaged_hls_concat_bytes_work_with_decoder_factory_direct_fmp4(
+    #[case] label: &str,
+    #[case] codec: AudioCodec,
+) {
+    let server = TestServerHelper::new().await;
+    let builder = match codec {
+        AudioCodec::AacLc => HlsFixtureBuilder::new()
+            .variant_count(1)
+            .segments_per_variant(8)
+            .segment_duration_secs(0.5)
+            .packaged_audio_aac_lc(44_100, 2),
+        AudioCodec::Flac => HlsFixtureBuilder::new()
+            .variant_count(1)
+            .segments_per_variant(8)
+            .segment_duration_secs(0.5)
+            .packaged_audio_flac(44_100, 2),
         other => panic!("unsupported packaged codec case: {other:?}"),
     };
     let created = server
@@ -344,18 +451,63 @@ async fn test_packaged_hls_aac_and_flac_roundtrip_decode_descending_saw(
     mp4_bytes.extend_from_slice(&init);
     mp4_bytes.extend_from_slice(&segment);
 
-    let samples = decode_fragment_with_ffmpeg(&mp4_bytes, &format!("packaged {label}"));
-    assert_valid_pcm_samples(&samples, &format!("packaged {label} decoded PCM"));
+    let media_info = MediaInfo::new(Some(codec), Some(ContainerFormat::Fmp4))
+        .with_sample_rate(44_100)
+        .with_channels(2);
+    let box_tags = scan_top_level_box_tags(&mp4_bytes);
+    let box_summaries = scan_top_level_box_summaries(&mp4_bytes);
+    assert!(
+        box_tags.starts_with(&["ftyp".to_string(), "moov".to_string()]),
+        "packaged {label} bytes must start with ftyp/moov, got {box_summaries:?}"
+    );
+    assert!(
+        box_tags.iter().any(|tag| tag == "moof"),
+        "packaged {label} bytes must contain moof, got {box_summaries:?}"
+    );
+    assert!(
+        box_tags.iter().any(|tag| tag == "mdat"),
+        "packaged {label} bytes must contain mdat, got {box_summaries:?}"
+    );
+    let mut direct_decoder = DecoderFactory::create_from_media_info(
+        Cursor::new(mp4_bytes.clone()),
+        &media_info,
+        DecoderConfig::default(),
+    )
+    .unwrap_or_else(|error| panic!("create decoder from packaged {label} fmp4: {error}"));
+
+    let direct_chunk = direct_decoder
+        .next_chunk()
+        .unwrap_or_else(|error| panic!("decode first direct chunk for packaged {label}: {error}"));
+    let total_len = mp4_bytes.len();
+    let mut probe_decoder = DecoderFactory::create_with_probe(
+        Cursor::new(mp4_bytes.clone()),
+        Some("m4a"),
+        DecoderConfig::default(),
+    )
+    .unwrap_or_else(|error| panic!("probe packaged {label} fmp4 decode failed: {error}"));
+    let probe_chunk = probe_decoder
+        .next_chunk()
+        .unwrap_or_else(|error| panic!("decode first probe chunk for packaged {label}: {error}"));
+
+    let chunk = direct_chunk.unwrap_or_else(|| {
+        if probe_chunk.is_some() {
+            panic!(
+                "packaged {label} direct fmp4 decoder returned EOF, but probe-based decoder produced PCM; total_len={}, boxes={box_summaries:?}",
+                total_len
+            );
+        }
+        panic!(
+            "packaged {label} decoder returned EOF on concat init+segment in both direct and probe modes; total_len={}, boxes={box_summaries:?}",
+            total_len
+        );
+    });
 
     assert!(
-        samples.len() >= 4096,
-        "packaged {label} fragment should decode a meaningful amount of PCM, got {} samples",
-        samples.len()
+        !chunk.pcm.is_empty(),
+        "packaged {label} decoder must produce PCM on concat init+segment"
     );
-    assert!(
-        contains_direction_window(&samples, 2, SignalDirection::Descending),
-        "packaged {label} fragment should preserve descending sawtooth PCM after round-trip"
-    );
+    assert_eq!(chunk.spec().sample_rate, 44_100);
+    assert_eq!(chunk.spec().channels, 2);
 }
 
 #[kithara::test]
@@ -461,6 +613,29 @@ fn contains_direction_window(samples: &[f32], channels: usize, expected: SignalD
     false
 }
 
-// Note: More comprehensive decode tests will be added when the actual
-// decode functionality is implemented. These tests just verify the
-// fixture infrastructure works correctly.
+fn scan_top_level_box_tags(bytes: &[u8]) -> Vec<String> {
+    scan_top_level_box_summaries(bytes)
+        .into_iter()
+        .map(|summary| summary.tag)
+        .collect()
+}
+
+#[derive(Debug)]
+struct BoxSummary {
+    tag: String,
+}
+
+fn scan_top_level_box_summaries(bytes: &[u8]) -> Vec<BoxSummary> {
+    let mut summaries = Vec::new();
+    let mut offset = 0usize;
+    while offset + 8 <= bytes.len() {
+        let size = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+        let tag = String::from_utf8_lossy(&bytes[offset + 4..offset + 8]).to_string();
+        summaries.push(BoxSummary { tag });
+        if size < 8 {
+            break;
+        }
+        offset = offset.saturating_add(size);
+    }
+    summaries
+}

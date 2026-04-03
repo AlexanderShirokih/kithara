@@ -168,12 +168,15 @@ impl GeneratedHls {
     }
 
     fn segment_plaintext(&self, variant: usize, segment: usize) -> Option<Vec<u8>> {
-        if variant >= self.spec.variant_count || segment >= self.spec.segments_per_variant {
+        if variant >= self.spec.variant_count {
             return None;
         }
 
         match &self.body {
             MaterializedHlsBody::Legacy { data_mode, .. } => {
+                if segment >= self.spec.segments_per_variant {
+                    return None;
+                }
                 let start = segment.checked_mul(self.spec.segment_size)?;
                 match data_mode {
                     MaterializedDataMode::TestPattern => {
@@ -285,6 +288,15 @@ fn encode_packaged_variant(
         ResolvedPackagedSignal::Silence => {
             let pcm = SignalPcm::new(
                 signal::Silence,
+                packaged.sample_rate,
+                packaged.channels,
+                length,
+            );
+            encode(&pcm)
+        }
+        ResolvedPackagedSignal::Sine { freq_hz } => {
+            let pcm = SignalPcm::new(
+                signal::SineWave(freq_hz),
                 packaged.sample_rate,
                 packaged.channels,
                 length,
@@ -556,5 +568,27 @@ mod tests {
         let generated = GeneratedHls::new(spec).unwrap();
         let bytes = generated.segment_bytes(0, 0).unwrap();
         assert_ne!(bytes, generate_segment(0, 0, 32));
+    }
+
+    #[test]
+    fn packaged_segments_can_exceed_requested_segment_count() {
+        let spec = crate::test_server::HlsFixtureBuilder::new()
+            .variant_count(1)
+            .segments_per_variant(8)
+            .segment_duration_secs(0.5)
+            .packaged_audio_aac_lc(44_100, 2)
+            .into_inline_spec();
+        let resolved = crate::hls_spec::resolve_hls_spec_with(spec, |_| unreachable!()).unwrap();
+        let generated = GeneratedHls::new(resolved).unwrap();
+        let playlist = generated.media_playlist(0).unwrap();
+
+        assert!(
+            playlist.contains("seg/v0_8.m4s"),
+            "packaged playlist should expose the muxed tail segment"
+        );
+        assert!(
+            generated.segment_bytes(0, 8).is_some(),
+            "packaged fixture must serve every segment listed in the playlist"
+        );
     }
 }

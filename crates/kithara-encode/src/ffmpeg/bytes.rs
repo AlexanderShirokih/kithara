@@ -231,70 +231,17 @@ fn write_encoded_packets(
 
 #[cfg(test)]
 mod tests {
-    use std::mem::size_of;
-
-    use crate::{BytesEncodeRequest, BytesEncodeTarget, EncoderFactory, PcmSource};
+    use crate::{
+        test_pcm::SawtoothPcmFixture, BytesEncodeRequest, BytesEncodeTarget, EncoderFactory,
+    };
 
     const SAMPLE_RATE: u32 = 48_000;
     const CHANNELS: u16 = 2;
     const AAC_FRAME_SAMPLES: usize = 1024;
 
-    struct DeterministicPcm {
-        sample_rate: u32,
-        channels: u16,
-        bytes: Vec<u8>,
-    }
-
-    impl DeterministicPcm {
-        fn sawtooth(total_frames: usize, sample_rate: u32, channels: u16) -> Self {
-            let mut bytes =
-                Vec::with_capacity(total_frames * usize::from(channels) * size_of_i16());
-            for frame in 0..total_frames {
-                let sample = ((frame % 65_536) as i32 - 32_768) as i16;
-                let sample_bytes = sample.to_le_bytes();
-                for _ in 0..channels {
-                    bytes.extend_from_slice(&sample_bytes);
-                }
-            }
-
-            Self {
-                sample_rate,
-                channels,
-                bytes,
-            }
-        }
-    }
-
-    impl PcmSource for DeterministicPcm {
-        fn sample_rate(&self) -> u32 {
-            self.sample_rate
-        }
-
-        fn channels(&self) -> u16 {
-            self.channels
-        }
-
-        fn total_byte_len(&self) -> Option<usize> {
-            Some(self.bytes.len())
-        }
-
-        fn read_pcm_at(&self, offset: usize, buf: &mut [u8]) -> usize {
-            let Some(remaining) = self.bytes.get(offset..) else {
-                return 0;
-            };
-            let read = remaining.len().min(buf.len());
-            buf[..read].copy_from_slice(&remaining[..read]);
-            read
-        }
-    }
-
-    const fn size_of_i16() -> usize {
-        size_of::<i16>()
-    }
-
     #[test]
     fn encode_bytes_happy_paths_return_expected_metadata_and_container_markers() {
-        let pcm = DeterministicPcm::sawtooth(4 * AAC_FRAME_SAMPLES, SAMPLE_RATE, CHANNELS);
+        let pcm = SawtoothPcmFixture::new(4 * AAC_FRAME_SAMPLES, SAMPLE_RATE, CHANNELS);
         let cases = [
             BytesEncodeTarget::Mp3,
             BytesEncodeTarget::Flac,

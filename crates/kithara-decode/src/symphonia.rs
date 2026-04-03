@@ -470,8 +470,9 @@ impl SymphoniaInner {
             // Decode packet
             let decoded = match self.decoder.decode(&packet) {
                 Ok(d) => d,
-                Err(SymphoniaError::DecodeError(_)) => {
+                Err(SymphoniaError::DecodeError(err)) => {
                     // Skip bad packets
+                    tracing::debug!(error = %err, "Skipping undecodable packet");
                     continue;
                 }
                 Err(SymphoniaError::ResetRequired) => {

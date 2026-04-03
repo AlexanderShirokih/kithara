@@ -149,6 +149,7 @@ pub enum PackagedSignal {
     Sawtooth,
     SawtoothDescending,
     Silence,
+    Sine { freq_hz: f64 },
 }
 
 /// Per-variant override for packaged audio fixtures.
@@ -298,6 +299,22 @@ mod tests {
         assert_eq!(req.codec, AudioCodec::AacLc);
         assert_eq!(req.sample_rate, 44100);
         assert_eq!(req.channels, 2);
+    }
+
+    #[test]
+    fn packaged_audio_sine_signal_json_roundtrips() {
+        let value = serde_json::json!({
+            "codec": "aac_lc",
+            "sample_rate": 44100,
+            "channels": 2,
+            "source": { "Signal": { "Sine": { "freq_hz": 440.0 } } }
+        });
+        let req: PackagedAudioRequest = serde_json::from_value(value).unwrap();
+        assert_eq!(req.codec, AudioCodec::AacLc);
+        assert!(matches!(
+            req.source,
+            PackagedAudioSource::Signal(PackagedSignal::Sine { freq_hz: 440.0 })
+        ));
     }
 
     #[test]

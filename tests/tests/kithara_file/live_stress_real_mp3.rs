@@ -1,5 +1,7 @@
 use std::{
+    fs,
     num::NonZeroUsize,
+    path::Path,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -56,7 +58,30 @@ impl LiveStats {
     }
 }
 
-use crate::common::stress_helpers::file_count_and_size;
+fn file_count_and_size(path: &Path) -> (u64, u64) {
+    fn walk(path: &Path, files: &mut u64, bytes: &mut u64) {
+        let Ok(entries) = fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.is_dir() {
+                walk(&path, files, bytes);
+            } else if meta.is_file() {
+                *files += 1;
+                *bytes = bytes.saturating_add(meta.len());
+            }
+        }
+    }
+
+    let mut files = 0;
+    let mut bytes = 0;
+    walk(path, &mut files, &mut bytes);
+    (files, bytes)
+}
 
 fn snapshot(stats: &Arc<Mutex<LiveStats>>) -> LiveSnapshot {
     stats.lock().expect("stats lock poisoned").snapshot()

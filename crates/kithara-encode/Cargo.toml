@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Synchronous audio encoding with packaged and byte outputs"
+publish = false
 
 [lints]
 workspace = true

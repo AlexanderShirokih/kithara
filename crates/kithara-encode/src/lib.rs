@@ -21,6 +21,9 @@ mod factory;
 mod traits;
 mod types;
 
+#[cfg(test)]
+mod test_pcm;
+
 #[cfg(not(target_arch = "wasm32"))]
 mod ffmpeg;
 

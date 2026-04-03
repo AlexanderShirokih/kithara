@@ -1,4 +1,9 @@
-//! Entry point for a spec-driven test server.
+//! Spec-driven HTTP server for integration tests.
+//!
+//! Serves static repo assets, synthetic HLS (`/stream`), and procedural audio (`/signal`).
+//! [`TestServerHelper`] (native) registers specs and returns ready-to-use URLs; callers
+//! do not assemble tokens by hand. For a plain-language overview and run instructions,
+//! see the crate `README.md`.
 //!
 //! Route families:
 //! - `GET /health` — readiness probe for external runners
@@ -253,6 +258,20 @@ impl HlsFixtureBuilder {
     }
 
     #[must_use]
+    pub fn packaged_audio_sine_aac_lc(
+        self,
+        sample_rate: u32,
+        channels: u16,
+        freq_hz: f64,
+    ) -> Self {
+        self.packaged_audio_signal_aac_lc(
+            sample_rate,
+            channels,
+            PackagedSignal::Sine { freq_hz },
+        )
+    }
+
+    #[must_use]
     pub fn packaged_audio_signal_aac_lc(
         mut self,
         sample_rate: u32,
@@ -293,6 +312,20 @@ impl HlsFixtureBuilder {
     #[must_use]
     pub fn packaged_audio_flac(self, sample_rate: u32, channels: u16) -> Self {
         self.packaged_audio_signal_flac(sample_rate, channels, PackagedSignal::Sawtooth)
+    }
+
+    #[must_use]
+    pub fn packaged_audio_sine_flac(
+        self,
+        sample_rate: u32,
+        channels: u16,
+        freq_hz: f64,
+    ) -> Self {
+        self.packaged_audio_signal_flac(
+            sample_rate,
+            channels,
+            PackagedSignal::Sine { freq_hz },
+        )
     }
 
     #[must_use]

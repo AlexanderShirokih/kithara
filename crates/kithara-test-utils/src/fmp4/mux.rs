@@ -52,7 +52,13 @@ pub(crate) fn mux_audio_track(
         .media_info
         .channels
         .ok_or(PackagedMuxError::InvalidMediaInfo)?;
-    let init_segment = Arc::new(build_init_segment(track, &descriptor));
+
+    let total_duration: u64 = track
+        .access_units
+        .iter()
+        .map(|au| u64::from(au.duration))
+        .sum();
+    let init_segment = Arc::new(build_init_segment(track, &descriptor, total_duration));
 
     let mut media_segments = Vec::new();
     let mut segment_durations_secs = Vec::new();
@@ -79,10 +85,14 @@ pub(crate) fn mux_audio_track(
     })
 }
 
-fn build_init_segment(track: &EncodedTrack, descriptor: &CodecDescriptor) -> Vec<u8> {
+fn build_init_segment(
+    track: &EncodedTrack,
+    descriptor: &CodecDescriptor,
+    total_duration: u64,
+) -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.extend(ftyp_box());
-    bytes.extend(moov_box(track, descriptor));
+    bytes.extend(moov_box(track, descriptor, total_duration));
     bytes
 }
 
@@ -109,20 +119,25 @@ fn ftyp_box() -> Vec<u8> {
     })
 }
 
-fn moov_box(track: &EncodedTrack, descriptor: &CodecDescriptor) -> Vec<u8> {
+fn moov_box(
+    track: &EncodedTrack,
+    descriptor: &CodecDescriptor,
+    total_duration: u64,
+) -> Vec<u8> {
     mp4_box(*b"moov", |buf| {
-        buf.push_bytes(&mvhd_box(track.timescale));
-        buf.push_bytes(&trak_box(track, descriptor));
+        buf.push_bytes(&mvhd_box(track.timescale, total_duration));
+        buf.push_bytes(&trak_box(track, descriptor, total_duration));
         buf.push_bytes(&mvex_box());
     })
 }
 
-fn mvhd_box(timescale: u32) -> Vec<u8> {
+fn mvhd_box(timescale: u32, total_duration: u64) -> Vec<u8> {
+    let duration = u32::try_from(total_duration).unwrap_or(u32::MAX);
     full_box(*b"mvhd", 0, 0, |buf| {
         buf.push_u32(0);
         buf.push_u32(0);
         buf.push_u32(timescale);
-        buf.push_u32(0);
+        buf.push_u32(duration);
         buf.push_u32(0x0001_0000);
         buf.push_u16(0x0100);
         buf.push_zeroes(10);
@@ -132,20 +147,21 @@ fn mvhd_box(timescale: u32) -> Vec<u8> {
     })
 }
 
-fn trak_box(track: &EncodedTrack, descriptor: &CodecDescriptor) -> Vec<u8> {
+fn trak_box(track: &EncodedTrack, descriptor: &CodecDescriptor, total_duration: u64) -> Vec<u8> {
     mp4_box(*b"trak", |buf| {
-        buf.push_bytes(&tkhd_box());
+        buf.push_bytes(&tkhd_box(total_duration));
         buf.push_bytes(&mdia_box(track, descriptor));
     })
 }
 
-fn tkhd_box() -> Vec<u8> {
+fn tkhd_box(total_duration: u64) -> Vec<u8> {
+    let duration = u32::try_from(total_duration).unwrap_or(u32::MAX);
     full_box(*b"tkhd", 0, 0x000007, |buf| {
         buf.push_u32(0);
         buf.push_u32(0);
         buf.push_u32(1);
         buf.push_u32(0);
-        buf.push_u32(0);
+        buf.push_u32(duration);
         buf.push_zeroes(8);
         buf.push_u16(0);
         buf.push_u16(0);

@@ -281,64 +281,15 @@ fn normalize_timestamp(value: i64, origin: i64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::mem::size_of;
-
     use kithara_stream::{AudioCodec, ContainerFormat, MediaInfo};
 
     use super::{FlacFFmpegEncoder, normalize_flac_codec_config};
-    use crate::{EncoderFactory, PackagedEncodeRequest, PcmSource};
+    use crate::{
+        test_pcm::SawtoothPcmFixture, EncoderFactory, PackagedEncodeRequest,
+    };
 
     const SAMPLE_RATE: u32 = 48_000;
     const CHANNELS: u16 = 2;
-
-    struct DeterministicPcm {
-        sample_rate: u32,
-        channels: u16,
-        bytes: Vec<u8>,
-    }
-
-    impl DeterministicPcm {
-        fn sawtooth(total_frames: usize, sample_rate: u32, channels: u16) -> Self {
-            let mut bytes =
-                Vec::with_capacity(total_frames * usize::from(channels) * size_of::<i16>());
-            for frame in 0..total_frames {
-                let sample = ((frame % 65_536) as i32 - 32_768) as i16;
-                let sample_bytes = sample.to_le_bytes();
-                for _ in 0..channels {
-                    bytes.extend_from_slice(&sample_bytes);
-                }
-            }
-
-            Self {
-                sample_rate,
-                channels,
-                bytes,
-            }
-        }
-    }
-
-    impl PcmSource for DeterministicPcm {
-        fn sample_rate(&self) -> u32 {
-            self.sample_rate
-        }
-
-        fn channels(&self) -> u16 {
-            self.channels
-        }
-
-        fn total_byte_len(&self) -> Option<usize> {
-            Some(self.bytes.len())
-        }
-
-        fn read_pcm_at(&self, offset: usize, buf: &mut [u8]) -> usize {
-            let Some(remaining) = self.bytes.get(offset..) else {
-                return 0;
-            };
-            let read = remaining.len().min(buf.len());
-            buf[..read].copy_from_slice(&remaining[..read]);
-            read
-        }
-    }
 
     #[test]
     fn normalize_flac_codec_config_accepts_mp4_metadata_block() {
@@ -355,7 +306,7 @@ mod tests {
     #[test]
     fn encode_packaged_flac_happy_path_emits_monotonic_access_units() {
         let total_frames = 4 * FlacFFmpegEncoder::frame_samples();
-        let pcm = DeterministicPcm::sawtooth(total_frames, SAMPLE_RATE, CHANNELS);
+        let pcm = SawtoothPcmFixture::new(total_frames, SAMPLE_RATE, CHANNELS);
         let media_info = MediaInfo::default()
             .with_codec(AudioCodec::Flac)
             .with_container(ContainerFormat::Fmp4);
