@@ -12,8 +12,6 @@ mod kithara_audio {
 }
 
 mod kithara_decode {
-    pub(crate) mod fixture;
-
     mod fixture_integration;
     mod hls_abr_variant_switch;
     mod stress_timeline;
@@ -23,14 +21,10 @@ mod kithara_decode {
 }
 
 mod kithara_file {
-    pub(crate) mod fixture;
-
     mod live_stress_real_mp3;
 }
 
 mod kithara_hls {
-    pub(crate) mod fixture;
-
     mod deferred_abr_debug;
     mod drm_stream_integrity;
     mod source_internal_cases;

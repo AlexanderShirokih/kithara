@@ -1,8 +1,7 @@
-//! Serializable protocol types for fixture server sessions.
+//! Shared protocol types for synthetic HLS test fixtures.
 //!
-//! These types are shared between the fixture server (native binary) and
-//! fixture clients (both native and WASM). They contain no platform-specific
-//! dependencies — only `serde` for serialization.
+//! These types are transport-agnostic and contain no platform-specific
+//! dependencies beyond `serde`.
 //!
 //! # Data Generation
 //!
@@ -12,129 +11,60 @@
 
 use serde::{Deserialize, Serialize};
 
+use kithara_stream::AudioCodec;
+
 use crate::{signal_pcm::signal, wav::create_wav_header};
 
-/// Configuration for an HLS test session (maps to `HlsTestServer`).
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct HlsSessionConfig {
-    /// Number of HLS variants (bitrate levels). Default: 1.
-    pub variant_count: usize,
-    /// Number of segments per variant. Default: 3.
-    pub segments_per_variant: usize,
-    /// Segment size in bytes. Default: 200 000 (200 KB).
-    pub segment_size: usize,
-    /// Segment duration in seconds (for playlist `#EXTINF`). Default: 4.0.
-    pub segment_duration_secs: f64,
-    /// How media segment data is generated.
-    pub data_mode: DataMode,
-    /// How init segments are generated.
-    pub init_mode: InitMode,
-    /// Custom bandwidths for master playlist variants.
-    pub variant_bandwidths: Option<Vec<u64>>,
-    /// Delay rules applied when serving segments.
-    pub delay_rules: Vec<DelayRule>,
-    /// AES-128 encryption config.
-    pub encryption: Option<EncryptionRequest>,
-    /// Size reported by HEAD responses for segments (simulates compressed size).
-    /// When set, HEAD returns this value as Content-Length instead of `segment_size`.
-    /// Used to test HEAD/GET size mismatch (e.g. HTTP auto-decompression).
-    pub head_reported_segment_size: Option<usize>,
-}
+/// Serde for [`AudioCodec`] as `snake_case` strings (matches the former
+/// `derive(Serialize)` on the enum).
+mod serde_audio_codec {
+    use kithara_stream::AudioCodec;
+    use serde::{Deserialize, Deserializer, Serializer};
 
-impl Default for HlsSessionConfig {
-    fn default() -> Self {
-        Self {
-            variant_count: 1,
-            segments_per_variant: 3,
-            segment_size: 200_000,
-            segment_duration_secs: 4.0,
-            data_mode: DataMode::TestPattern,
-            init_mode: InitMode::None,
-            variant_bandwidths: None,
-            delay_rules: Vec::new(),
-            encryption: None,
-            head_reported_segment_size: None,
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde with = module requires fn(&T, serializer)"
+    )]
+    pub(super) fn serialize<S>(codec: &AudioCodec, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let s: &'static str = match codec {
+            AudioCodec::AacLc => "aac_lc",
+            AudioCodec::AacHe => "aac_he",
+            AudioCodec::AacHeV2 => "aac_he_v2",
+            AudioCodec::Mp3 => "mp3",
+            AudioCodec::Flac => "flac",
+            AudioCodec::Vorbis => "vorbis",
+            AudioCodec::Opus => "opus",
+            AudioCodec::Alac => "alac",
+            AudioCodec::Pcm => "pcm",
+            AudioCodec::Adpcm => "adpcm",
+        };
+        serializer.serialize_str(s)
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<AudioCodec, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.as_str() {
+            "aac_lc" => Ok(AudioCodec::AacLc),
+            "aac_he" => Ok(AudioCodec::AacHe),
+            "aac_he_v2" => Ok(AudioCodec::AacHeV2),
+            "mp3" => Ok(AudioCodec::Mp3),
+            "flac" => Ok(AudioCodec::Flac),
+            "vorbis" => Ok(AudioCodec::Vorbis),
+            "opus" => Ok(AudioCodec::Opus),
+            "alac" => Ok(AudioCodec::Alac),
+            "pcm" => Ok(AudioCodec::Pcm),
+            "adpcm" => Ok(AudioCodec::Adpcm),
+            _ => Err(serde::de::Error::custom(format!(
+                "unknown audio codec string: {s}"
+            ))),
         }
     }
-}
-
-/// Configuration for an ABR test session (maps to `AbrTestServer`).
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct AbrSessionConfig {
-    /// Master playlist content.
-    pub master_playlist: String,
-    /// Whether to include init segments (`#EXT-X-MAP`).
-    pub has_init: bool,
-    /// Delay in ms for segment `v2_0`.
-    pub segment0_delay_ms: u64,
-}
-
-/// Configuration for a fixed HLS test session (maps to `TestServer`).
-///
-/// No parameters — the server generates fixed content (3 variants × 3 segments).
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct FixedHlsSessionConfig;
-
-/// Configuration for an audio fixtures session.
-///
-/// Serves embedded audio files (silence.wav, test.mp3) for decode tests.
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct AudioFixturesSessionConfig;
-
-/// Configuration for a file download test session.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct FileSessionConfig {
-    /// Named files to serve, with their content.
-    pub files: Vec<FileEntry>,
-    /// If true, first sequential GET response closes after `close_after_bytes` bytes.
-    pub partial_close: Option<PartialCloseConfig>,
-}
-
-/// A file entry served by the file test session.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct FileEntry {
-    /// Filename (path component, e.g. "audio.mp3")
-    pub name: String,
-    /// File content as bytes.
-    pub data: Vec<u8>,
-    /// Content-Type header.
-    pub content_type: String,
-}
-
-/// Configuration for partial close behavior.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct PartialCloseConfig {
-    /// Close the initial sequential stream after this many bytes.
-    pub close_after_bytes: usize,
-    /// Total advertised size (Content-Length in HEAD).
-    pub total_size: usize,
-}
-
-/// Configuration for an HTTP test session (generic endpoint testing).
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct HttpTestSessionConfig {
-    /// Routes to register.
-    pub routes: Vec<HttpTestRoute>,
-}
-
-/// A single route in an HTTP test session.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct HttpTestRoute {
-    /// Path (e.g. "/test" -- served at /s/{id}/http/test).
-    pub path: String,
-    /// HTTP status code to return.
-    pub status: u16,
-    /// Response headers.
-    pub headers: Vec<(String, String)>,
-    /// Response body (empty if None).
-    pub body: Option<Vec<u8>>,
-    /// Delay before responding, in milliseconds.
-    pub delay_ms: Option<u64>,
-    /// Whether to support Range requests on this route.
-    pub support_range: bool,
-    /// Number of initial requests to fail with 500 before succeeding.
-    /// Used for retry testing.
-    pub fail_first_n: Option<usize>,
 }
 
 /// How media segment data is generated.
@@ -154,10 +84,18 @@ pub enum DataMode {
     CustomData(Vec<u8>),
     /// Exact custom segment bytes for each variant.
     CustomDataPerVariant(Vec<Vec<u8>>),
+    /// Shared media payload stored out-of-band and referenced by key.
+    BlobRef(String),
+    /// Per-variant media payloads stored out-of-band and referenced by keys.
+    BlobRefs(Vec<String>),
+    /// Compatibility-only ABR binary payload format used by historical integration tests.
+    ///
+    /// Prefer `PackagedAudioRequest` for new audio HLS fixtures.
+    AbrBinary,
 }
 
 /// PCM saw-tooth pattern for a variant.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub enum PcmPattern {
     /// Ascending saw-tooth: frame 0 → -32768, frame 65535 → 32767.
     Ascending,
@@ -182,12 +120,62 @@ impl signal::SignalFn for PcmPattern {
 pub enum InitMode {
     /// No init segments.
     None,
+    /// Compatibility-only fixed-init payload: `V{variant}-INIT:TEST_INIT_DATA`.
+    ///
+    /// Prefer packaged init segments for new audio HLS fixtures.
+    TestInit,
     /// 44-byte WAV header (streaming mode: size = 0xFFFFFFFF).
     WavHeader { sample_rate: u32, channels: u16 },
     /// Exact custom init bytes for each variant.
     ///
     /// Variant `v` uses `data[v]`; missing entries produce an empty init segment.
     Custom(Vec<Vec<u8>>),
+    /// Per-variant init bytes stored out-of-band and referenced by keys.
+    BlobRefs(Vec<String>),
+}
+
+/// Audio source description for packaged fMP4 HLS fixtures.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum PackagedAudioSource {
+    /// Single procedural signal used for every variant unless overridden.
+    Signal(PackagedSignal),
+    /// Direct per-variant PCM patterns.
+    PerVariantPcm { patterns: Vec<PcmPattern> },
+}
+
+/// Base procedural signal for packaged audio fixtures.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
+pub enum PackagedSignal {
+    Sawtooth,
+    SawtoothDescending,
+    Silence,
+    Sine { freq_hz: f64 },
+}
+
+/// Per-variant override for packaged audio fixtures.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct PackagedAudioVariantOverride {
+    pub variant: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bit_rate: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<PcmPattern>,
+}
+
+/// Preferred description for real audio fMP4 packaging in new audio HLS fixtures.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PackagedAudioRequest {
+    #[serde(with = "serde_audio_codec")]
+    pub codec: AudioCodec,
+    pub sample_rate: u32,
+    pub channels: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timescale: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bit_rate: Option<u64>,
+    pub source: PackagedAudioSource,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variant_overrides: Vec<PackagedAudioVariantOverride>,
 }
 
 /// Declarative delay rule for segment serving.
@@ -248,19 +236,6 @@ pub struct EncryptionRequest {
     pub iv_hex: Option<String>,
 }
 
-/// Response returned after creating a session.
-#[derive(Serialize, Deserialize, Debug)]
-pub struct SessionResponse {
-    /// Unique session identifier.
-    pub session_id: String,
-    /// Base URL for this session's content (e.g. `http://127.0.0.1:3333/s/{id}`).
-    pub base_url: String,
-    /// Total bytes across all segments for one variant (including init).
-    pub total_bytes: u64,
-    /// Init segment length for variant 0 (0 if no init segments).
-    pub init_len: u64,
-}
-
 /// Generate test-pattern segment data: `V{v}-SEG-{s}:TEST_SEGMENT_DATA` + `0xFF` padding.
 #[must_use]
 pub fn generate_segment(variant: usize, segment: usize, size: usize) -> Vec<u8> {
@@ -311,6 +286,36 @@ pub fn create_wav_init_header(sample_rate: u32, channels: u16) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packaged_audio_codec_json_uses_snake_case_strings() {
+        let value = serde_json::json!({
+            "codec": "aac_lc",
+            "sample_rate": 44100,
+            "channels": 2,
+            "source": { "Signal": "Sawtooth" }
+        });
+        let req: PackagedAudioRequest = serde_json::from_value(value).unwrap();
+        assert_eq!(req.codec, AudioCodec::AacLc);
+        assert_eq!(req.sample_rate, 44100);
+        assert_eq!(req.channels, 2);
+    }
+
+    #[test]
+    fn packaged_audio_sine_signal_json_roundtrips() {
+        let value = serde_json::json!({
+            "codec": "aac_lc",
+            "sample_rate": 44100,
+            "channels": 2,
+            "source": { "Signal": { "Sine": { "freq_hz": 440.0 } } }
+        });
+        let req: PackagedAudioRequest = serde_json::from_value(value).unwrap();
+        assert_eq!(req.codec, AudioCodec::AacLc);
+        assert!(matches!(
+            req.source,
+            PackagedAudioSource::Signal(PackagedSignal::Sine { freq_hz: 440.0 })
+        ));
+    }
 
     #[test]
     fn delay_rule_matches_variant_and_segment_gte() {

@@ -89,7 +89,7 @@ async fn stress_seek_audio_hls_wav(#[case] ephemeral: bool) {
     })
     .await;
 
-    let url = server.url("/master.m3u8").expect("url");
+    let url = server.url("/master.m3u8");
     info!(%url, segments = SEGMENT_COUNT, "HLS server ready");
 
     // Step 3: Create Audio<Stream<Hls>>
@@ -215,7 +215,7 @@ async fn stress_seek_audio_hls_wav(#[case] ephemeral: bool) {
                 for f in 1..frames {
                     let prev_phase = phase_from_f32(buf[(f - 1) * channels]);
                     let curr_phase = phase_from_f32(buf[f * channels]);
-                    let expected_next = (prev_phase + 1) % D.saw_period;
+                    let expected_next = (prev_phase + 1) % SawWav::SAW_PERIOD;
                     if curr_phase != expected_next {
                         continuity_errors += 1;
                         if continuity_errors <= 3 {
@@ -242,7 +242,7 @@ async fn stress_seek_audio_hls_wav(#[case] ephemeral: bool) {
             // up to 1151 frames earlier. Tolerance of 1200 covers this
             // while still detecting gross seek errors (>27ms at 44.1 kHz).
             let expected_frame_idx = (pos_secs * spec.sample_rate as f64).round() as usize;
-            let expected_phase = expected_frame_idx % D.saw_period;
+            let expected_phase = expected_frame_idx % SawWav::SAW_PERIOD;
             let actual_phase = phase_from_f32(buf[0]);
             let dist = phase_distance(actual_phase, expected_phase);
             if dist > 1200 {

@@ -177,6 +177,13 @@ impl<T: StreamType> Stream<T> {
 /// tracks and still refill the ringbuf before the audio callback drains it.
 const WAIT_RANGE_TIMEOUT: Duration = Duration::from_millis(10);
 
+/// Maximum `wait_range` retries before returning `Interrupted` to the caller.
+/// Each retry takes `WAIT_RANGE_TIMEOUT` (10ms), so 50 iterations ≈ 500ms.
+/// This prevents the hang detector (typically 1–10s) from firing when data
+/// is legitimately not yet available (e.g. encrypted HLS startup). Symphonia
+/// retries `Interrupted` automatically, resetting the per-call detector.
+const MAX_WAIT_SPINS: u32 = 50;
+
 impl<T: StreamType> Read for Stream<T> {
     #[cfg_attr(feature = "perf", hotpath::measure)]
     #[kithara_hang_detector::hang_watchdog]
@@ -185,30 +192,30 @@ impl<T: StreamType> Read for Stream<T> {
             return Ok(0);
         }
 
-        // Retry loop: ReadOutcome::Retry means a resource was evicted between
-        // wait_range (metadata ready) and read_at (actual I/O). Go back to
-        // wait_range so the downloader can re-fetch.
+        let mut wait_spins = 0u32;
+
         loop {
             let timeline = self.source.timeline();
             let read_epoch = timeline.seek_epoch();
             let pos = timeline.byte_position();
             let range = pos..pos.saturating_add(buf.len() as u64);
 
-            // Wait for data to be available.
-            // In cooperative mode (short timeout), a timeout is not fatal —
-            // it means "data not ready yet, try again later". We convert it
-            // to an interrupted signal so the decode loop yields to the worker.
             let wait_result = self.source.wait_range(range, WAIT_RANGE_TIMEOUT);
             let wait_outcome = match wait_result {
                 Ok(outcome) => outcome,
                 Err(e) => {
                     let msg = e.to_string();
                     if msg.contains("budget exceeded") {
-                        // Seek in progress — surface to the audio worker.
                         if timeline.is_flushing() || timeline.seek_epoch() != read_epoch {
                             return Err(IoError::other("seek pending"));
                         }
-                        // No seek — data simply isn't ready yet, spin.
+                        wait_spins += 1;
+                        if wait_spins >= MAX_WAIT_SPINS {
+                            return Err(IoError::new(
+                                ErrorKind::Interrupted,
+                                "data not ready",
+                            ));
+                        }
                         hang_tick!();
                         yield_now();
                         continue;
@@ -221,28 +228,27 @@ impl<T: StreamType> Read for Stream<T> {
                 WaitOutcome::Eof => return Ok(0),
                 WaitOutcome::Interrupted => {
                     if !timeline.is_flushing() {
-                        // Some sources use Interrupted as a recoverable
-                        // "retry wait_range" signal when seek is not active.
+                        wait_spins += 1;
+                        if wait_spins >= MAX_WAIT_SPINS {
+                            return Err(IoError::new(
+                                ErrorKind::Interrupted,
+                                "data not ready",
+                            ));
+                        }
                         hang_tick!();
                         yield_now();
                         continue;
                     }
-                    // Use `Other` instead of `Interrupted` because Symphonia
-                    // silently retries `Interrupted` errors (standard Rust I/O
-                    // convention).  `Other` propagates through the decoder and
-                    // becomes `DecodeError::Io`, which `handle_decode_error`
-                    // can recover from by exiting to the worker loop.
                     return Err(IoError::other("seek pending"));
                 }
             }
+
+            wait_spins = 0;
 
             if timeline.seek_epoch() != read_epoch {
                 return Err(IoError::other("seek pending"));
             }
 
-            // Read data directly from source.
-            // No flushing check here: wait_range already handles interruption,
-            // and the decoder must be able to read during apply_pending_seek().
             match self
                 .source
                 .read_at(pos, buf)
@@ -260,7 +266,6 @@ impl<T: StreamType> Read for Stream<T> {
                     return Err(IoError::other(VariantChangeError));
                 }
                 ReadOutcome::Retry => {
-                    // Resource evicted — go back to wait_range.
                     hang_tick!();
                     yield_now();
                     continue;
@@ -407,7 +412,9 @@ mod tests {
         ) -> crate::StreamResult<ReadOutcome, Self::Error> {
             let outcome = self.reads.pop_front().unwrap_or(ReadOutcome::Data(0));
             if let ReadOutcome::Data(n) = outcome {
-                let start = offset as usize;
+                let Ok(start) = usize::try_from(offset) else {
+                    return Ok(ReadOutcome::Data(0));
+                };
                 let end = (start + n).min(self.data.len());
                 let bytes = end.saturating_sub(start).min(buf.len());
                 if bytes > 0 {

@@ -28,7 +28,7 @@ async fn fetch_and_cache_key(
     let server = test_server.await;
     let fetch_manager = test_fetch_manager_shared(&assets_fixture, net_fixture);
     let key_manager = KeyManager::new(fetch_manager.clone(), None, None, None);
-    let key_url = server.url("/key.bin")?;
+    let key_url = server.url("/key.bin");
 
     let key = key_manager.get_raw_key(&key_url, None).await?;
     assert!(!key.is_empty(), "fetched key must not be empty");
@@ -59,7 +59,7 @@ async fn key_processor_applied(
 
     let fetch_manager = test_fetch_manager_shared(&assets_fixture, net_fixture);
     let key_manager = KeyManager::new(fetch_manager.clone(), Some(processor), None, None);
-    let key_url = server.url("/key.bin")?;
+    let key_url = server.url("/key.bin");
 
     let key: Bytes = key_manager.get_raw_key(&key_url, None).await?;
     assert!(key.starts_with(b"processed:"));
@@ -88,7 +88,7 @@ async fn key_manager_with_different_processors(
 
     let fetch_manager = test_fetch_manager_shared(&assets_fixture, net_fixture);
     let key_manager = KeyManager::new(fetch_manager.clone(), Some(uppercase_processor), None, None);
-    let key_url = server.url("/key.bin")?;
+    let key_url = server.url("/key.bin");
 
     let key: Bytes = key_manager.get_raw_key(&key_url, None).await?;
     assert!(key.is_ascii());
@@ -133,7 +133,7 @@ async fn key_manager_caching_behavior(
     let server = test_server.await;
     let fetch_manager = test_fetch_manager_shared(&assets_fixture, net_fixture);
     let key_manager = KeyManager::new(fetch_manager.clone(), None, None, None);
-    let key_url = server.url("/key.bin")?;
+    let key_url = server.url("/key.bin");
 
     // First fetch
     let key1: Bytes = key_manager.get_raw_key(&key_url, None).await?;
@@ -174,7 +174,7 @@ async fn key_manager_with_context(
 
     let fetch_manager = test_fetch_manager_shared(&assets_fixture, net_fixture);
     let key_manager = KeyManager::new(fetch_manager.clone(), Some(processor), None, None);
-    let key_url = server.url("/key.bin")?;
+    let key_url = server.url("/key.bin");
 
     // Test without IV
     let key1 = key_manager.get_raw_key(&key_url, None).await?;
@@ -205,8 +205,8 @@ async fn aes128_key_decrypts_ciphertext(
     let fetch_manager = test_fetch_manager_shared(&assets_fixture, net.clone());
     let key_manager = KeyManager::new(fetch_manager.clone(), None, None, None);
 
-    let key_url = server.url("/aes/key.bin")?;
-    let cipher_url = server.url("/aes/seg0.bin")?;
+    let key_url = server.url("/aes/key.bin");
+    let cipher_url = server.url("/aes/seg0.bin");
     let iv = aes128_iv();
 
     // Fetch key through KeyManager (the production path)

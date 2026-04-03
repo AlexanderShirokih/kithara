@@ -41,6 +41,7 @@ use crate::{
 ///
 /// Each backend (Apple `AudioToolbox`, Android `MediaCodec`, etc.) implements
 /// this trait so the factory can query codec/container support uniformly.
+#[cfg(all(feature = "apple", any(target_os = "macos", target_os = "ios")))]
 pub(crate) trait HardwareBackend {
     /// Whether this backend can decode `codec`.
     fn supports_codec(codec: AudioCodec) -> bool;
@@ -203,6 +204,7 @@ impl DecoderFactory {
     /// Returns the resolved container (possibly inferred from codec) when the
     /// backend can handle it.  Returns `None` when the backend should be
     /// skipped — the caller keeps `source` and falls through to Symphonia.
+    #[cfg(all(feature = "apple", any(target_os = "macos", target_os = "ios")))]
     fn hardware_accepts<B: HardwareBackend>(
         codec: AudioCodec,
         container: Option<ContainerFormat>,

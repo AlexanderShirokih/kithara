@@ -9,13 +9,12 @@ use kithara::{
     file::{File, FileConfig},
     stream::Stream,
 };
-use kithara_integration_tests::audio_fixture::AudioTestServer;
 use kithara_platform::time::{Duration, Instant, sleep};
-use kithara_test_utils::{TestTempDir, temp_dir};
+use kithara_test_utils::{TestServerHelper, TestTempDir, temp_dir};
 
 #[kithara::fixture]
-async fn server() -> AudioTestServer {
-    AudioTestServer::new().await
+async fn server() -> TestServerHelper {
+    TestServerHelper::new().await
 }
 
 async fn next_chunk(audio: &mut Audio<Stream<File>>, stage: &str) {
@@ -45,11 +44,11 @@ async fn next_chunk(audio: &mut Audio<Stream<File>>, stage: &str) {
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
 async fn decoder_file_creates_successfully(
-    #[future] server: AudioTestServer,
+    #[future] server: TestServerHelper,
     temp_dir: TestTempDir,
 ) {
     let server = server.await;
-    let url = server.mp3_url();
+    let url = server.asset("test.mp3");
 
     let file_config = FileConfig::new(url.into()).with_store(StoreOptions::new(temp_dir.path()));
     let config = AudioConfig::<File>::new(file_config).with_hint("mp3");
@@ -68,9 +67,9 @@ async fn decoder_file_creates_successfully(
     timeout(Duration::from_secs(10)),
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
-async fn decoder_file_reads_samples(#[future] server: AudioTestServer, temp_dir: TestTempDir) {
+async fn decoder_file_reads_samples(#[future] server: TestServerHelper, temp_dir: TestTempDir) {
     let server = server.await;
-    let url = server.mp3_url();
+    let url = server.asset("test.mp3");
 
     let file_config = FileConfig::new(url.into()).with_store(StoreOptions::new(temp_dir.path()));
     let config = AudioConfig::<File>::new(file_config).with_hint("mp3");
@@ -86,9 +85,9 @@ async fn decoder_file_reads_samples(#[future] server: AudioTestServer, temp_dir:
     timeout(Duration::from_secs(10)),
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
-async fn decoder_file_seek_to_zero(#[future] server: AudioTestServer, temp_dir: TestTempDir) {
+async fn decoder_file_seek_to_zero(#[future] server: TestServerHelper, temp_dir: TestTempDir) {
     let server = server.await;
-    let url = server.mp3_url();
+    let url = server.asset("test.mp3");
 
     let file_config = FileConfig::new(url.into()).with_store(StoreOptions::new(temp_dir.path()));
     let config = AudioConfig::<File>::new(file_config).with_hint("mp3");
@@ -106,9 +105,9 @@ async fn decoder_file_seek_to_zero(#[future] server: AudioTestServer, temp_dir: 
     timeout(Duration::from_secs(10)),
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
-async fn decoder_file_seek_forward(#[future] server: AudioTestServer, temp_dir: TestTempDir) {
+async fn decoder_file_seek_forward(#[future] server: TestServerHelper, temp_dir: TestTempDir) {
     let server = server.await;
-    let url = server.mp3_url();
+    let url = server.asset("test.mp3");
 
     let file_config = FileConfig::new(url.into()).with_store(StoreOptions::new(temp_dir.path()));
     let config = AudioConfig::<File>::new(file_config).with_hint("mp3");
@@ -138,9 +137,9 @@ async fn decoder_file_seek_forward(#[future] server: AudioTestServer, temp_dir: 
     timeout(Duration::from_secs(10)),
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
-async fn decoder_file_seek_backward(#[future] server: AudioTestServer, temp_dir: TestTempDir) {
+async fn decoder_file_seek_backward(#[future] server: TestServerHelper, temp_dir: TestTempDir) {
     let server = server.await;
-    let url = server.mp3_url();
+    let url = server.asset("test.mp3");
 
     let file_config = FileConfig::new(url.into()).with_store(StoreOptions::new(temp_dir.path()));
     let config = AudioConfig::<File>::new(file_config).with_hint("mp3");
@@ -168,12 +167,12 @@ async fn decoder_file_seek_backward(#[future] server: AudioTestServer, temp_dir:
 #[case::sw(false)]
 #[case::hw(true)]
 async fn decoder_file_seek_multiple(
-    #[future] server: AudioTestServer,
+    #[future] server: TestServerHelper,
     temp_dir: TestTempDir,
     #[case] prefer_hardware: bool,
 ) {
     let server = server.await;
-    let url = server.mp3_url();
+    let url = server.asset("test.mp3");
 
     let file_config = FileConfig::new(url.into()).with_store(StoreOptions::new(temp_dir.path()));
     let config = AudioConfig::<File>::new(file_config)
@@ -203,9 +202,9 @@ async fn decoder_file_seek_multiple(
     timeout(Duration::from_secs(10)),
     env(KITHARA_HANG_TIMEOUT_SECS = "1")
 )]
-async fn decoder_file_seek_emits_events(#[future] server: AudioTestServer, temp_dir: TestTempDir) {
+async fn decoder_file_seek_emits_events(#[future] server: TestServerHelper, temp_dir: TestTempDir) {
     let server = server.await;
-    let url = server.mp3_url();
+    let url = server.asset("test.mp3");
 
     let bus = EventBus::new(64);
     let mut events_rx = bus.subscribe();

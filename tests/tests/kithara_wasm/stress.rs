@@ -3,7 +3,10 @@
 //! Runs in a dedicated Web Worker via `wasm-bindgen-test-runner` + headless Chrome.
 //! Requires the fixture server to be running (see `just wasm-test`).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
 
 use gloo_timers::future::TimeoutFuture;
 use kithara_assets::StoreOptions;
@@ -12,7 +15,11 @@ use kithara_events::{AudioEvent, Event, EventBus, SeekLifecycleStage};
 use kithara_hls::{AbrMode, AbrOptions, Hls, HlsConfig};
 use kithara_platform::time::{Duration, Instant};
 use kithara_stream::{AudioCodec, ContainerFormat, MediaInfo, Stream};
-use kithara_test_utils::{SAW_PERIOD, phase_distance, phase_from_f32};
+use kithara_test_utils::{
+    HlsFixtureBuilder, SAW_PERIOD, TestServerHelper,
+    fixture_protocol::{DataMode, InitMode},
+    phase_distance, phase_from_f32,
+};
 use tracing::{info, warn};
 use url::Url;
 mod kithara {
@@ -23,17 +30,21 @@ const EVENT_BUS_CAPACITY: usize = 4096;
 
 /// Guard: init must only run once per page.
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
+static FIXTURE_URL: OnceLock<String> = OnceLock::new();
+static FIXTURE_JITTER_URL: OnceLock<String> = OnceLock::new();
 
-/// Get HLS test URL from compile-time env or fall back to default.
 fn fixture_url() -> Url {
-    let url_str = option_env!("HLS_TEST_URL").unwrap_or("http://127.0.0.1:3333/master.m3u8");
+    let url_str = FIXTURE_URL
+        .get()
+        .expect("fixture URL must be initialized in init()");
     url_str.parse().unwrap()
 }
 
 fn fixture_jitter_url() -> Url {
-    let mut url = fixture_url();
-    url.set_path("/master-jitter.m3u8");
-    url
+    let url_str = FIXTURE_JITTER_URL
+        .get()
+        .expect("jitter fixture URL must be initialized in init()");
+    url_str.parse().unwrap()
 }
 
 /// Minimal xorshift64 PRNG for deterministic seek positions.
@@ -70,6 +81,35 @@ async fn init() {
     }
     console_error_panic_hook::set_once();
     tracing_wasm::set_as_global_default();
+    let helper = TestServerHelper::new().await;
+    let bytes_per_second = 44_100.0 * 2.0 * 2.0;
+    let base_builder = HlsFixtureBuilder::new()
+        .variant_count(1)
+        .segments_per_variant(48)
+        .segment_size(200_000)
+        .segment_duration_secs(200_000.0 / bytes_per_second)
+        .data_mode(DataMode::SawWav {
+            sample_rate: 44_100,
+            channels: 2,
+        })
+        .init_mode(InitMode::WavHeader {
+            sample_rate: 44_100,
+            channels: 2,
+        });
+    let fixture = helper
+        .create_hls(base_builder.clone())
+        .await
+        .expect("create WASM stress HLS fixture");
+    let jitter_fixture = helper
+        .create_hls(
+            base_builder
+                .segment_size(180_000)
+                .segment_duration_secs(180_000.0 / bytes_per_second),
+        )
+        .await
+        .expect("create WASM jitter HLS fixture");
+    let _ = FIXTURE_URL.set(fixture.master_url().to_string());
+    let _ = FIXTURE_JITTER_URL.set(jitter_fixture.master_url().to_string());
     info!("WASM test environment initialized");
 }
 

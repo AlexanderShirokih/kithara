@@ -17,6 +17,7 @@ kithara-platform = { workspace = true }
 kithara-test-macros = { workspace = true }
 tokio-util = { workspace = true }
 tracing-subscriber = { workspace = true }
+base64 = { workspace = true }
 thiserror = { workspace = true }
 futures = { workspace = true }
 tempfile = { workspace = true }
@@ -25,12 +26,18 @@ url = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
+uuid = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tracing-wasm = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+kithara-encode = { workspace = true }
 kithara-workspace-hack = { version = "0.1", path = "../kithara-workspace-hack" }
 axum = { workspace = true }
 tower-http = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt"] }
+aes = { workspace = true }
+cbc = { workspace = true }

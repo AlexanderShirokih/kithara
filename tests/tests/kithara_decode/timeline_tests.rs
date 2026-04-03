@@ -131,7 +131,7 @@ mod hls_timeline {
         })
         .await;
 
-        let url = server.url("/master.m3u8").unwrap();
+        let url = server.url("/master.m3u8");
         let temp_dir = TestTempDir::new();
         let cancel = CancellationToken::new();
 

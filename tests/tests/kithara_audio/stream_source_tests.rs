@@ -1831,10 +1831,6 @@ impl MisalignedAnchorSeekDecoder {
             spec,
         }
     }
-
-    fn seek_log(&self) -> Arc<Mutex<Vec<Duration>>> {
-        Arc::clone(&self.seek_log)
-    }
 }
 
 impl InnerDecoder for MisalignedAnchorSeekDecoder {
@@ -1981,29 +1977,29 @@ fn v1_info() -> MediaInfo {
 /// Catches: wrong `base_offset`, forgotten seek, cross-variant data, sample gaps.
 #[kithara::test(timeout(Duration::from_secs(10)), env(KITHARA_HANG_TIMEOUT_SECS = "1"))]
 fn abr_switch_must_not_lose_samples() {
-    let spv = SEGMENTS_PER_VARIANT;
-    let sps = SAMPLES_PER_SEGMENT;
+    let segments_per_variant = SEGMENTS_PER_VARIANT;
+    let samples_per_segment = SAMPLES_PER_SEGMENT;
 
-    // Build segment descriptors: V0 (segments 0..spv), V1 (segments spv..2*spv)
+    // Build segment descriptors: V0 (segments 0..n), V1 (segments n..2n)
     let mut segments = Vec::new();
-    for seg in 0..spv {
-        let gsi = (seg * sps) as u64;
+    for seg in 0..segments_per_variant {
+        let gsi = (seg * samples_per_segment) as u64;
         segments.push((0, seg as u32, gsi, V0_SAMPLE_SIZE));
     }
-    for seg in 0..spv {
-        let global_seg = spv + seg;
-        let gsi = (global_seg * sps) as u64;
+    for seg in 0..segments_per_variant {
+        let global_seg = segments_per_variant + seg;
+        let gsi = (global_seg * samples_per_segment) as u64;
         segments.push((1, global_seg as u32, gsi, V1_SAMPLE_SIZE));
     }
 
     let data = generate_encoded_stream(&segments);
-    let v0_bytes = spv * sps * V0_SAMPLE_SIZE; // 153600
-    let v1_bytes = spv * sps * V1_SAMPLE_SIZE; // 614400
+    let v0_bytes = segments_per_variant * samples_per_segment * V0_SAMPLE_SIZE; // 153600
+    let v1_bytes = segments_per_variant * samples_per_segment * V1_SAMPLE_SIZE; // 614400
     let total_bytes = v0_bytes + v1_bytes; // 768000
     assert_eq!(data.len(), total_bytes);
 
     // First V1 segment byte range (for format_change_range)
-    let v1_first_seg_end = v0_bytes + sps * V1_SAMPLE_SIZE;
+    let v1_first_seg_end = v0_bytes + samples_per_segment * V1_SAMPLE_SIZE;
 
     // Setup TestSource with variant map
     let source = TestSource::new(data, Some(total_bytes as u64));
@@ -2065,7 +2061,7 @@ fn abr_switch_must_not_lose_samples() {
     }
 
     // Verify: decode each f32 and check both axes
-    let total_samples = 2 * spv * sps; // 76800
+    let total_samples = 2 * segments_per_variant * samples_per_segment; // 76800
     assert_eq!(
         all_pcm.len(),
         total_samples,
@@ -2076,7 +2072,7 @@ fn abr_switch_must_not_lose_samples() {
     for (i, &val) in all_pcm.iter().enumerate() {
         let (variant_segment, sample_index) = decode_pcm_sample(val);
         // variant_segment = global segment index (0..63)
-        let expected_vs = (i / sps) as u8;
+        let expected_vs = (i / samples_per_segment) as u8;
         assert_eq!(
             variant_segment, expected_vs,
             "sample {i}: expected variant_segment {expected_vs}, got {variant_segment}"

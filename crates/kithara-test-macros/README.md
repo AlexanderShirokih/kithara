@@ -39,7 +39,7 @@ async fn plays_hls_in_browser() {
 
 #[kithara::fixture]
 fn temp_playlist() -> String {
-    "http://127.0.0.1:3333/hls/master.m3u8".to_string()
+    "http://127.0.0.1:3444/assets/hls/master.m3u8".to_string()
 }
 ```
 

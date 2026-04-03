@@ -6,6 +6,10 @@
 
 mod common;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "common/continuity.rs"]
+pub(crate) mod continuity;
+
 mod browser_runner_smoke;
 mod env_guard;
 mod events;
@@ -14,16 +18,12 @@ mod kithara_audio;
 mod kithara_bufpool;
 
 mod kithara_decode {
-    pub(crate) mod fixture;
-
     mod decoder_seek_tests;
     mod decoder_tests;
     mod timeline_tests;
 }
 
 mod kithara_file {
-    pub(crate) mod fixture;
-
     #[cfg(not(target_arch = "wasm32"))]
     mod early_stream_close;
     #[cfg(not(target_arch = "wasm32"))]
@@ -31,8 +31,6 @@ mod kithara_file {
 }
 
 mod kithara_hls {
-    pub(crate) mod fixture;
-
     mod abr_integration;
     mod basic_playback;
     mod deferred_abr;

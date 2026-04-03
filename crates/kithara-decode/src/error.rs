@@ -131,7 +131,7 @@ pub type DecodeResult<T> = Result<T, DecodeError>;
 
 #[cfg(test)]
 mod tests {
-    use std::io::{self, Error as IoError};
+    use std::io::{Error as IoError, ErrorKind};
 
     use kithara_test_utils::kithara;
 

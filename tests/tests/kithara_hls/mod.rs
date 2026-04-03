@@ -1,7 +1,5 @@
 //! Integration tests for kithara-hls
 
-pub(crate) mod fixture;
-
 mod abr_switch_playback;
 mod abr_integration;
 mod basic_playback;

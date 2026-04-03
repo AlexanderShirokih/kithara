@@ -11,11 +11,10 @@ use kithara::{
     file::{File, FileConfig},
     stream::Stream,
 };
-use kithara_integration_tests::audio_fixture::AudioTestServer;
 #[cfg(target_arch = "wasm32")]
 use kithara_platform::thread;
 use kithara_platform::{time::Duration, tokio::task::spawn_blocking};
-use kithara_test_utils::TestTempDir;
+use kithara_test_utils::{TestServerHelper, TestTempDir};
 use tracing::info;
 
 #[cfg(target_arch = "wasm32")]
@@ -120,13 +119,13 @@ fn assert_consistent_counts(results: &[(usize, u64)]) {
     env(KITHARA_HANG_TIMEOUT_SECS = "2")
 )]
 async fn two_file_instances() {
-    let server = AudioTestServer::new().await;
+    let server = TestServerHelper::new().await;
 
     let mut handles = Vec::new();
     let mut temps = Vec::new();
     for i in 0..2 {
         let temp = TestTempDir::new();
-        let audio = create_file_audio(server.mp3_url(), temp.path()).await;
+        let audio = create_file_audio(server.asset("test.mp3"), temp.path()).await;
         temps.push(temp);
         handles.push(spawn_blocking(move || {
             let mut audio = audio;
@@ -159,13 +158,13 @@ async fn two_file_instances() {
     env(KITHARA_HANG_TIMEOUT_SECS = "2")
 )]
 async fn four_file_instances() {
-    let server = AudioTestServer::new().await;
+    let server = TestServerHelper::new().await;
 
     let mut handles = Vec::new();
     let mut temps = Vec::new();
     for i in 0..4 {
         let temp = TestTempDir::new();
-        let audio = create_file_audio(server.mp3_url(), temp.path()).await;
+        let audio = create_file_audio(server.asset("test.mp3"), temp.path()).await;
         temps.push(temp);
         handles.push(spawn_blocking(move || {
             let mut audio = audio;
@@ -198,13 +197,13 @@ async fn four_file_instances() {
     env(KITHARA_HANG_TIMEOUT_SECS = "2")
 )]
 async fn eight_file_instances() {
-    let server = AudioTestServer::new().await;
+    let server = TestServerHelper::new().await;
 
     let mut handles = Vec::new();
     let mut temps = Vec::new();
     for i in 0..8 {
         let temp = TestTempDir::new();
-        let audio = create_file_audio(server.mp3_url(), temp.path()).await;
+        let audio = create_file_audio(server.asset("test.mp3"), temp.path()).await;
         temps.push(temp);
         handles.push(spawn_blocking(move || {
             let mut audio = audio;

@@ -24,19 +24,40 @@ use kithara::{
 };
 use kithara_file::{File as FileSource, FileConfig, FileSrc};
 use kithara_integration_tests::hls_fixture::{HlsTestServer, HlsTestServerConfig};
-use kithara_platform::{
-    thread,
-    time::{Duration, Instant, sleep},
-    tokio,
-};
+use kithara_platform::time::{Duration, Instant, sleep};
 use kithara_test_utils::{
-    TestHttpServer, TestTempDir, create_wav_exact_bytes, signal_pcm::signal, temp_dir,
+    HlsFixtureBuilder, TestHttpServer, TestServerHelper, TestTempDir, create_wav_exact_bytes,
+    fixture_protocol::PackagedSignal, signal_pcm::signal, temp_dir,
 };
 use tokio::time::timeout;
 use tracing::{debug, info};
 
+use crate::continuity::{
+    CONTINUITY_BLOCK_FRAMES, CONTINUITY_SAMPLE_RATE, PlaybackProgressProbe, render_offline_window,
+};
+
 const TEST_MP3_BYTES: &[u8] = include_bytes!("../../../assets/test.mp3");
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn packaged_single_variant_builder(codec: AudioCodec) -> HlsFixtureBuilder {
+    let builder = HlsFixtureBuilder::new()
+        .variant_count(1)
+        .segments_per_variant(8)
+        .segment_duration_secs(0.5);
+    match codec {
+        AudioCodec::AacLc => builder.packaged_audio_signal_aac_lc(
+            CONTINUITY_SAMPLE_RATE,
+            2,
+            PackagedSignal::Sawtooth,
+        ),
+        AudioCodec::Flac => builder.packaged_audio_signal_flac(
+            CONTINUITY_SAMPLE_RATE,
+            2,
+            PackagedSignal::Sawtooth,
+        ),
+        other => panic!("unsupported packaged single-variant codec: {other:?}"),
+    }
+}
 const HLS_SEGMENT_COUNT: usize = 3;
 const HLS_SEGMENT_SIZE: usize = 200_000;
 const HLS_TOTAL_BYTES: usize = HLS_SEGMENT_COUNT * HLS_SEGMENT_SIZE;
@@ -284,6 +305,50 @@ async fn open_audio_hls_server() -> HlsTestServer {
     .await
 }
 
+async fn create_packaged_single_variant_fixture(codec: AudioCodec) -> (TestServerHelper, url::Url) {
+    let server = TestServerHelper::new().await;
+    let created = server
+        .create_hls(packaged_single_variant_builder(codec))
+        .await
+        .unwrap_or_else(|error| panic!("create packaged single-variant fixture: {error}"));
+    (server, created.master_url())
+}
+
+async fn open_packaged_hls_audio(
+    url: &url::Url,
+    store: StoreOptions,
+    _codec: AudioCodec,
+) -> Audio<Stream<Hls>> {
+    let config = AudioConfig::<Hls>::new(HlsConfig::new(url.clone()).with_store(store));
+    let mut audio = Audio::<Stream<Hls>>::new(config)
+        .await
+        .unwrap_or_else(|err| panic!("packaged HLS audio should open for {url}: {err}"));
+    audio.preload();
+    audio
+}
+
+async fn read_audio_some(audio: &mut Audio<Stream<Hls>>, stage: &str) -> usize {
+    let deadline = Instant::now() + READ_TIMEOUT;
+    let mut buf = [0.0f32; 4096];
+
+    loop {
+        audio.preload();
+        let read = audio.read(&mut buf);
+        if read > 0 {
+            return read;
+        }
+        assert!(
+            !audio.is_eof(),
+            "unexpected EOF while waiting for packaged audio at stage={stage}"
+        );
+        assert!(
+            Instant::now() <= deadline,
+            "timed out waiting for packaged audio at stage={stage}"
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
 async fn read_some(resource: &mut Resource, stage: &str) -> usize {
     let deadline = Instant::now() + READ_TIMEOUT;
     let mut buf = [0.0f32; 4096];
@@ -423,7 +488,7 @@ async fn player_worker_hls_then_unavailable_mp3_then_mp3_recovery(
     let player = PlayerImpl::new(PlayerConfig::default());
     let worker = player.worker().clone();
     let store = store_options(&temp_dir, ephemeral);
-    let hls_url = hls_server.url("/master.m3u8").unwrap();
+    let hls_url = hls_server.url("/master.m3u8");
     let ok_url = file_server.url("/ok.mp3");
     let bad_url = file_server.url("/gone.mp3");
 
@@ -481,7 +546,7 @@ async fn shared_worker_hls_then_mp3_reopen_keeps_backward_seek_ephemeral(temp_di
     let file_server = TestHttpServer::new(test_app()).await;
     let worker = AudioWorkerHandle::new();
     let store = store_options(&temp_dir, true);
-    let hls_url = hls_server.url("/master.m3u8").unwrap();
+    let hls_url = hls_server.url("/master.m3u8");
     let ok_url = file_server.url("/ok.mp3");
 
     let hls_seek = warm_hls_worker(&hls_url, store.clone(), worker.clone()).await;
@@ -551,8 +616,8 @@ async fn sequential_hls_warmup_does_not_poison_next_ephemeral_session() {
     let worker_b = AudioWorkerHandle::new();
     let store_a = store_options(&temp_a, false);
     let store_b = store_options(&temp_b, true);
-    let hls_url_a = server_a.url("/master.m3u8").unwrap();
-    let hls_url_b = server_b.url("/master.m3u8").unwrap();
+    let hls_url_a = server_a.url("/master.m3u8");
+    let hls_url_b = server_b.url("/master.m3u8");
 
     let first_pos = warm_hls_worker(&hls_url_a, store_a, worker_a.clone()).await;
     assert!(
@@ -584,8 +649,8 @@ async fn sequential_hls_warmup_drop_only_does_not_poison_next_ephemeral_session(
     let worker_b = AudioWorkerHandle::new();
     let store_a = store_options(&temp_a, false);
     let store_b = store_options(&temp_b, true);
-    let hls_url_a = server_a.url("/master.m3u8").unwrap();
-    let hls_url_b = server_b.url("/master.m3u8").unwrap();
+    let hls_url_a = server_a.url("/master.m3u8");
+    let hls_url_b = server_b.url("/master.m3u8");
 
     let first_pos = warm_hls_worker(&hls_url_a, store_a, worker_a.clone()).await;
     assert!(
@@ -617,8 +682,8 @@ async fn sequential_hls_read_only_session_does_not_poison_next_ephemeral_session
     let worker_b = AudioWorkerHandle::new();
     let store_a = store_options(&temp_a, false);
     let store_b = store_options(&temp_b, true);
-    let hls_url_a = server_a.url("/master.m3u8").unwrap();
-    let hls_url_b = server_b.url("/master.m3u8").unwrap();
+    let hls_url_a = server_a.url("/master.m3u8");
+    let hls_url_b = server_b.url("/master.m3u8");
 
     let first_pos = warm_hls_worker_without_seek(&hls_url_a, store_a, worker_a.clone()).await;
     assert!(
@@ -649,14 +714,112 @@ async fn sequential_hls_stream_sessions_do_not_poison_next_ephemeral_session() {
     let temp_b = TestTempDir::new();
     let store_a = store_options(&temp_a, false);
     let store_b = store_options(&temp_b, true);
-    let hls_url_a = server_a.url("/master.m3u8").unwrap();
-    let hls_url_b = server_b.url("/master.m3u8").unwrap();
+    let hls_url_a = server_a.url("/master.m3u8");
+    let hls_url_b = server_b.url("/master.m3u8");
 
     let first_read = read_hls_stream_some(&hls_url_a, store_a).await;
     assert!(first_read > 0, "first HLS stream session must read bytes");
 
     let second_read = read_hls_stream_some(&hls_url_b, store_b).await;
     assert!(second_read > 0, "second HLS stream session must read bytes");
+}
+
+/// Packaged HLS audio must stay continuous in both decode and player-output paths.
+///
+/// This is the single-variant continuity contract for the packaged mock-server path:
+/// `PcmMeta` stays contiguous, `PlaybackProgress` remains monotonic, and the offline
+/// player output does not produce sustained silence or over-budget render stalls.
+#[kithara::test(
+    tokio,
+    native,
+    timeout(Duration::from_secs(25)),
+    env(KITHARA_HANG_TIMEOUT_SECS = "3")
+)]
+#[case::aac(AudioCodec::AacLc)]
+#[case::flac(AudioCodec::Flac)]
+async fn packaged_hls_single_variant_continuity_is_stable(
+    #[case] codec: AudioCodec,
+    temp_dir: TestTempDir,
+) {
+    use kithara::play::internal::offline::OfflinePlayer;
+
+    let (_server, url) = create_packaged_single_variant_fixture(codec).await;
+    let store = StoreOptions::new(temp_dir.path());
+
+    let mut progress_audio = open_packaged_hls_audio(&url, store.clone(), codec).await;
+    let mut progress_rx = progress_audio.decode_events();
+    let mut progress_probe = PlaybackProgressProbe::default();
+    let mut total_samples = 0u64;
+    let mut buf = [0.0f32; 4096];
+    total_samples += read_audio_some(&mut progress_audio, "packaged_progress_warmup").await as u64;
+    progress_probe.drain(&mut progress_rx);
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while Instant::now() < deadline && progress_probe.progress_events < 10 {
+        progress_audio.preload();
+        let read = progress_audio.read(&mut buf);
+        progress_probe.drain(&mut progress_rx);
+        if read == 0 {
+            if progress_audio.is_eof() {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+            progress_probe.observe_idle();
+            continue;
+        }
+        total_samples += read as u64;
+    }
+    progress_probe.drain(&mut progress_rx);
+    progress_probe.observe_idle();
+    assert!(
+        total_samples > 0,
+        "{codec:?}: expected decoded output during progress tracking"
+    );
+    assert!(
+        progress_probe.progress_events >= 4,
+        "{codec:?}: expected PlaybackProgress events, got {}",
+        progress_probe.progress_events
+    );
+    assert_eq!(
+        progress_probe.regressions, 0,
+        "{codec:?}: PlaybackProgress moved backward"
+    );
+    assert!(
+        progress_probe.max_gap_between_events < Duration::from_millis(1_200),
+        "{codec:?}: PlaybackProgress stalled for {:?}",
+        progress_probe.max_gap_between_events
+    );
+
+    let decode_audio = open_packaged_hls_audio(&url, store, codec).await;
+    let mut resource = resource_from_reader(decode_audio);
+    timeout(READ_TIMEOUT, resource.preload())
+        .await
+        .expect("packaged HLS preload must complete");
+    let mut player = OfflinePlayer::new(CONTINUITY_SAMPLE_RATE);
+    player.load_and_fadein(resource, "packaged_single_variant");
+    let _warmup = render_offline_window(
+        &mut player,
+        24,
+        "packaged warmup",
+        CONTINUITY_BLOCK_FRAMES,
+        CONTINUITY_SAMPLE_RATE,
+    );
+    let steady = render_offline_window(
+        &mut player,
+        80,
+        "packaged steady-state",
+        CONTINUITY_BLOCK_FRAMES,
+        CONTINUITY_SAMPLE_RATE,
+    );
+    assert!(
+        steady.max_silence_run <= 1,
+        "{codec:?}: offline output produced {} silent blocks ({steady})",
+        steady.max_silence_run
+    );
+    assert!(
+        steady.slow_renders <= 1,
+        "{codec:?}: offline output exceeded render budget {} times ({steady})",
+        steady.slow_renders
+    );
 }
 
 #[kithara::test(
@@ -676,7 +839,7 @@ async fn player_worker_hls_then_mp3_reopen_keeps_backward_seek(
     let player = PlayerImpl::new(PlayerConfig::default());
     let worker = player.worker().clone();
     let store = store_options(&temp_dir, ephemeral);
-    let hls_url = hls_server.url("/master.m3u8").unwrap();
+    let hls_url = hls_server.url("/master.m3u8");
     let ok_url = file_server.url("/ok.mp3");
 
     let hls_seek = warm_hls_worker(&hls_url, store.clone(), worker.clone()).await;
@@ -750,7 +913,7 @@ async fn stress_offline_crossfade_no_gaps() {
 
     let hls_server = open_audio_hls_server().await;
     let store = store_options(&temp_dir(), true);
-    let hls_url = hls_server.url("/master.m3u8").unwrap();
+    let hls_url = hls_server.url("/master.m3u8");
 
     let worker = AudioWorkerHandle::new();
     let mut player = OfflinePlayer::new(SR);
@@ -793,91 +956,27 @@ async fn stress_offline_crossfade_no_gaps() {
         }
     };
 
-    // Helper: render N blocks, collect stats
-    struct PhaseStats {
-        label: String,
-        blocks: u32,
-        max_silence_run: u32,
-        max_render: Duration,
-        slow_renders: u32,
-    }
-    impl std::fmt::Display for PhaseStats {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(
-                f,
-                "{}: {} blocks, silence={} ({:.1}ms) max_render={:?} slow={}",
-                self.label,
-                self.blocks,
-                self.max_silence_run,
-                self.max_silence_run as f64 * BLOCK as f64 / SR as f64 * 1000.0,
-                self.max_render,
-                self.slow_renders,
-            )
-        }
-    }
-
-    let render_phase = |player: &mut OfflinePlayer, n: u32, label: &str| -> PhaseStats {
-        let mut max_silence = 0u32;
-        let mut cur_silence = 0u32;
-        let mut max_render = Duration::ZERO;
-        let mut slow = 0u32;
-
-        for _ in 0..n {
-            let t = Instant::now();
-            let out = player.render(BLOCK);
-            let d = t.elapsed();
-            if d > max_render {
-                max_render = d;
-            }
-            if d > block_budget {
-                slow += 1;
-            }
-            if out.iter().any(|s| s.abs() > 0.001) {
-                if cur_silence > max_silence {
-                    max_silence = cur_silence;
-                }
-                cur_silence = 0;
-            } else {
-                cur_silence += 1;
-            }
-            // Simulate a real audio callback period (~11.6ms between blocks).
-            // Without this, the tight loop outpaces the worker, creating
-            // artificial silence that wouldn't happen in production.
-            thread::sleep(block_budget.saturating_sub(d));
-        }
-        if cur_silence > max_silence {
-            max_silence = cur_silence;
-        }
-        PhaseStats {
-            label: label.to_owned(),
-            blocks: n,
-            max_silence_run: max_silence,
-            max_render,
-            slow_renders: slow,
-        }
-    };
-
     // Scenario 1: MP3 to HLS
     let mp3_1 = make_mp3(worker.clone(), store.clone()).await;
     player.load_and_fadein(mp3_1, "mp3_1");
-    let s1a = render_phase(&mut player, 40, "MP3 solo");
+    let s1a = render_offline_window(&mut player, 40, "MP3 solo", BLOCK, SR);
 
     let hls_1 = make_hls(worker.clone(), store.clone()).await;
     sleep(Duration::from_millis(50)).await;
     player.load_and_fadein(hls_1, "hls_1");
-    let s1b = render_phase(&mut player, 80, "MP3→HLS fade");
+    let s1b = render_offline_window(&mut player, 80, "MP3→HLS fade", BLOCK, SR);
 
     // Scenario 2: HLS to MP3
     let mp3_2 = make_mp3(worker.clone(), store.clone()).await;
     sleep(Duration::from_millis(50)).await;
     player.load_and_fadein(mp3_2, "mp3_2");
-    let s2 = render_phase(&mut player, 80, "HLS→MP3 fade");
+    let s2 = render_offline_window(&mut player, 80, "HLS→MP3 fade", BLOCK, SR);
 
     // Scenario 3: MP3 to MP3
     let mp3_3 = make_mp3(worker.clone(), store.clone()).await;
     sleep(Duration::from_millis(50)).await;
     player.load_and_fadein(mp3_3, "mp3_3");
-    let s3 = render_phase(&mut player, 80, "MP3→MP3 fade");
+    let s3 = render_offline_window(&mut player, 80, "MP3→MP3 fade", BLOCK, SR);
 
     // Report
     info!("\n=== Stress crossfade results (budget={block_budget:?}) ===");
@@ -898,13 +997,13 @@ async fn stress_offline_crossfade_no_gaps() {
         let hls_n = make_hls(worker.clone(), store.clone()).await;
         sleep(Duration::from_millis(50)).await;
         player.load_and_fadein(hls_n, &format!("hls_iter{iter}"));
-        let _sh = render_phase(&mut player, 40, &format!("HLS solo #{iter}"));
+        let _sh = render_offline_window(&mut player, 40, &format!("HLS solo #{iter}"), BLOCK, SR);
 
         // Crossfade HLS→MP3
         let mp3_n = make_mp3(worker.clone(), store.clone()).await;
         sleep(Duration::from_millis(50)).await;
         player.load_and_fadein(mp3_n, &format!("mp3_iter{iter}"));
-        let sm = render_phase(&mut player, 60, &format!("HLS→MP3 #{iter}"));
+        let sm = render_offline_window(&mut player, 60, &format!("HLS→MP3 #{iter}"), BLOCK, SR);
 
         info!("  {sm}");
         if sm.max_silence_run > worst_silence {

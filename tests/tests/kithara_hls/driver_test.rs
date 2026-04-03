@@ -48,7 +48,7 @@ async fn test_driver_seek_after_playlist_finished(
     cancel_token: CancellationToken,
 ) {
     let server = TestServer::new().await;
-    let url = server.url("/master.m3u8").unwrap();
+    let url = server.url("/master.m3u8");
 
     let config = HlsConfig::new(url)
         .with_store(StoreOptions::new(temp_dir.path()))
@@ -120,7 +120,7 @@ async fn test_driver_abr_seek_backward(temp_dir: TestTempDir, cancel_token: Canc
     )
     .await;
 
-    let url = server.url("/master.m3u8").unwrap();
+    let url = server.url("/master.m3u8");
 
     let bus = EventBus::new(32);
     let mut events_rx = bus.subscribe();

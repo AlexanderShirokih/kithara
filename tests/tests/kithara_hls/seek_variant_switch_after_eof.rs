@@ -54,7 +54,7 @@ async fn seek_after_variant_switch_at_eof_must_not_deadlock(
     })
     .await;
 
-    let url = server.url("/master.m3u8").unwrap();
+    let url = server.url("/master.m3u8");
 
     let config = HlsConfig::new(url)
         .with_store(StoreOptions::new(temp_dir.path()))

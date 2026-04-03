@@ -19,7 +19,7 @@ use kithara_platform::{
     time::{Duration, Instant},
     tokio::task::{spawn, spawn_blocking},
 };
-use kithara_test_utils::{TestTempDir, serve_assets, temp_dir};
+use kithara_test_utils::{TestServerHelper, TestTempDir, temp_dir};
 use tracing::info;
 
 /// Stress test: 20 seconds of rapid seeking after ABR switch.
@@ -34,15 +34,15 @@ use tracing::info;
     timeout(Duration::from_secs(120)),
     env(KITHARA_HANG_TIMEOUT_SECS = "3")
 )]
-#[case::hls("/hls/master.m3u8", "HLS")]
-#[case::drm("/drm/master.m3u8", "DRM")]
+#[case::hls("hls/master.m3u8", "HLS")]
+#[case::drm("drm/master.m3u8", "DRM")]
 async fn stress_seek_during_abr_switch_real_decoder(
     temp_dir: TestTempDir,
     #[case] path: &str,
     #[case] label: &str,
 ) {
-    let server = serve_assets().await;
-    let url = server.url(path);
+    let server = TestServerHelper::new().await;
+    let url = server.asset(path);
     info!(label, path, "Opening real stream");
 
     // Create audio pipeline with ABR auto (start from cheapest variant)
@@ -179,15 +179,15 @@ async fn stress_seek_during_abr_switch_real_decoder(
     timeout(Duration::from_secs(120)),
     env(KITHARA_HANG_TIMEOUT_SECS = "5")
 )]
-#[case::hls("/hls/master.m3u8", "HLS")]
-#[case::drm("/drm/master.m3u8", "DRM")]
+#[case::hls("hls/master.m3u8", "HLS")]
+#[case::drm("drm/master.m3u8", "DRM")]
 async fn seek_sequence_from_log_real_stream(
     temp_dir: TestTempDir,
     #[case] path: &str,
     #[case] label: &str,
 ) {
-    let server = serve_assets().await;
-    let url = server.url(path);
+    let server = TestServerHelper::new().await;
+    let url = server.asset(path);
     let hls_config = HlsConfig::new(url)
         .with_store(StoreOptions::new(temp_dir.path()))
         .with_abr_options(AbrOptions {

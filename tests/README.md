@@ -19,7 +19,7 @@
 - RSS memory profiling tests;
 - Criterion microbenchmarks;
 - fuzz targets (`cargo-fuzz`);
-- local test binaries/fixtures (fixture server, WASM test runner).
+- local test binaries/fixtures (unified test server, WASM test runner).
 
 ## Layout
 
@@ -28,8 +28,8 @@
 - `tests/benches/` — Criterion benchmarks.
 - `tests/fuzz/` — `cargo-fuzz` fuzz targets.
 - `tests/bin/` — helper binaries:
-  - `fixture_server` — dynamic fixture server for HLS/ABR test sessions (native + WASM).
-  - `wasm_test_runner` — custom WASM test runner that auto-starts fixture server.
+  - `test_server` — unified synthetic/static media server exposing `/assets/*`, `/signal/*`, and `/stream/*`.
+  - `wasm_test_runner` — custom WASM test runner that auto-starts `test_server`.
 
 ## Cross-Platform Test Architecture
 
@@ -54,14 +54,20 @@ Additional flags:
 | `multi_thread` | Use multi-thread tokio runtime instead of current-thread |
 | `selenium` | Implies `native + tokio + serial + multi_thread`, adds `#[ignore = "requires selenium"]` |
 
-### Fixture Server
+### Unified Test Server
 
-Tests that need an HTTP server (HLS playlists, segments, ABR) use **fixture servers** with a cross-platform interface:
+Tests that need HTTP media fixtures use the unified `test_server` with a cross-platform interface:
 
-- **Native**: in-process axum server (`TestServer`, `HlsTestServer`, `AbrTestServer`)
-- **WASM**: external `fixture_server` binary via HTTP session API
+- **Native**: in-process helper-backed URLs via `kithara-test-utils::TestServerHelper` and `kithara-test-utils::hls_fixture::*`
+- **WASM**: the same `test_server` binary on `http://127.0.0.1:3444`
 
-Fixture types (`tests/tests/kithara_hls/fixture/`):
+The helper contract is token-backed but transparent to tests:
+
+- complex `/signal/*` and `/stream/*` specs are registered through `POST /token`
+- the server returns a UUID
+- helper APIs return ordinary `Url`s that already point at `/signal/{token}...` or `/stream/{token}...`
+
+Canonical fixture types (`kithara_test_utils::hls_fixture`):
 
 | Fixture | Purpose |
 |---------|---------|
@@ -69,19 +75,18 @@ Fixture types (`tests/tests/kithara_hls/fixture/`):
 | `HlsTestServer` | Configurable variants, segments, delays, encryption, HEAD mismatch |
 | `AbrTestServer` | ABR bitrate switching scenarios |
 
-The WASM path sends config to the fixture server via `POST /session/{type}`, receives a `base_url`, and uses it for all requests. Cleanup happens via `DELETE /session/{id}`.
+Synthetic HLS lives under `/stream/*`; procedural encoded audio lives under `/signal/*`; repository-owned regression assets remain under `/assets/*`.
 
-### Session Protocol
+### Synthetic HLS Protocol
 
-Shared protocol types live in `kithara-test-utils/src/fixture_protocol.rs`:
+Shared synthetic HLS types live in `kithara-test-utils/src/fixture_protocol.rs`:
 
-- `HlsSessionConfig`, `AbrSessionConfig`, `FixedHlsSessionConfig`
-- `DataMode` (TestPattern, SawWav, PerVariantPcm)
-- `InitMode` (None, WavHeader)
-- `DelayRule` - declarative delay rules replacing closure-based `segment_delay`
-- `SessionResponse` (session_id, base_url, total_bytes, init_len)
+- `DataMode` (TestPattern, SawWav, PerVariantPcm, CustomData, blob-backed payloads)
+- `InitMode` (None, WavHeader, Custom, blob-backed init payloads)
+- `DelayRule` - declarative delay rules for synthetic segment serving
+- `EncryptionRequest` - AES-128 parameters for encrypted fixture scenarios
 
-Data generation functions (`generate_segment`, `expected_byte_at_test_pattern`, `create_pcm_segments`) are also in `fixture_protocol.rs` - shared between server and client for byte-level verification.
+Pure generation helpers such as `generate_segment`, `expected_byte_at_test_pattern`, and `create_wav_init_header` also live in `fixture_protocol.rs` so byte-level assertions stay deterministic across test helpers.
 
 ## Agent guardrails
 
@@ -90,6 +95,19 @@ Data generation functions (`generate_segment`, `expected_byte_at_test_pattern`, 
 - Choose the suite and `#[kithara::test]` flags from the contract you are exercising, not from local convenience.
 
 ## Running Tests
+
+### Native prerequisites
+
+Some native test fixtures now generate encoded audio via `ffmpeg-next` in `kithara-test-utils`.
+That path requires a system FFmpeg installation plus `pkg-config`/`pkgconf` so Rust build scripts can find the FFmpeg libraries during compilation.
+
+On macOS with Homebrew:
+
+```bash
+brew install pkgconf ffmpeg
+```
+
+If these tools are missing, native test builds that touch encoded `/signal/...{mp3,flac,aac,m4a}` fixtures will fail while building `ffmpeg-sys-next`.
 
 ```bash
 # Workspace default
@@ -116,19 +134,19 @@ just test-all      # both unit and doc tests
 
 ## WASM Tests
 
-WASM tests run via `wasm-bindgen-test` in headless Chrome. The `wasm_test_runner` binary auto-starts the fixture server before delegating to `wasm-bindgen-test-runner`.
+WASM tests run via `wasm-bindgen-test` in headless Chrome. The `wasm_test_runner` binary auto-starts `test_server` before delegating to `wasm-bindgen-test-runner`.
 
 ```bash
 # Recommended entrypoint (handles everything)
 just wasm-test
 
-# Manual run (wasm_test_runner auto-starts fixture server)
+# Manual run (wasm_test_runner auto-starts test_server)
 cargo +nightly test --target wasm32-unknown-unknown -p kithara-integration-tests
 ```
 
 Test categories on `cargo +nightly test --target wasm32-unknown-unknown`:
 
-- **`kithara_hls/`** — HLS integration tests with `browser` flag (fixture server)
+- **`kithara_hls/`** — HLS integration tests with `browser` flag (unified `test_server`)
 
 `tests/tests/kithara_wasm/stress.rs` currently contains ignored regression specs:
 `Audio::new` stalls in the `wasm-bindgen-test` headless runner during bootstrap.
@@ -311,4 +329,4 @@ Profiles are defined in `.config/nextest.toml`.
 - noisy perf results:
   use `--release`, `--test-threads=1`, and run on an idle machine.
 - WASM tests fail to connect:
-  fixture server starts automatically via `wasm_test_runner`. Set `FIXTURE_SERVER_URL` to override the default `http://127.0.0.1:3333`. Check that port 3333 is available.
+  `test_server` starts automatically via `wasm_test_runner`. Set `TEST_SERVER_URL` to override the default `http://127.0.0.1:3444`. Check that port 3444 is available.

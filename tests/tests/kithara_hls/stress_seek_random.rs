@@ -48,7 +48,6 @@ use tracing::info;
     } else {
         Duration::from_secs(120)
     }),
-    env(KITHARA_HANG_TIMEOUT_SECS = "1"),
     tracing("kithara_hls=debug,kithara_stream=debug")
 )]
 #[case::small(50_000, 20, 200, false, false)]
@@ -111,7 +110,7 @@ async fn stress_random_seek_read_hls(
     })
     .await;
 
-    let url = server.url("/master.m3u8").expect("url");
+    let url = server.url("/master.m3u8");
     let total_bytes = server.total_bytes();
     let init_len = server.init_len();
     info!(

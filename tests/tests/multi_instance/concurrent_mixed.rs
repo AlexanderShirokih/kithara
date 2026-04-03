@@ -12,17 +12,14 @@ use kithara::{
     hls::{AbrMode, AbrOptions, Hls, HlsConfig},
     stream::{AudioCodec, ContainerFormat, MediaInfo, Stream},
 };
-use kithara_integration_tests::{
-    audio_fixture::AudioTestServer,
-    hls_fixture::{HlsTestServer, HlsTestServerConfig},
-};
+use kithara_integration_tests::hls_fixture::{HlsTestServer, HlsTestServerConfig};
 #[cfg(target_arch = "wasm32")]
 use kithara_platform::thread;
 use kithara_platform::{
     time::Duration,
     tokio::task::{JoinHandle, spawn_blocking},
 };
-use kithara_test_utils::{TestTempDir, wav::create_test_wav};
+use kithara_test_utils::{TestServerHelper, TestTempDir, wav::create_test_wav};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -172,7 +169,7 @@ fn generate_wav_data() -> Arc<Vec<u8>> {
 )]
 async fn mixed_two_file_two_hls() {
     let wav_data = generate_wav_data();
-    let file_server = AudioTestServer::new().await;
+    let file_server = TestServerHelper::new().await;
 
     let segment_duration = D.segment_size as f64 / (D.sample_rate as f64 * D.channels as f64 * 2.0);
 
@@ -182,7 +179,7 @@ async fn mixed_two_file_two_hls() {
 
     // Spawn 2 File instances
     for i in 0..2 {
-        let url = file_server.mp3_url();
+        let url = file_server.asset("test.mp3");
         let temp = TestTempDir::new();
 
         let file_config = FileConfig::new(url.into()).with_store(StoreOptions::new(temp.path()));
@@ -215,7 +212,7 @@ async fn mixed_two_file_two_hls() {
         })
         .await;
 
-        let url = server.url("/master.m3u8").expect("url");
+        let url = server.url("/master.m3u8");
         let temp = TestTempDir::new();
         let cancel = CancellationToken::new();
 
@@ -275,7 +272,7 @@ async fn mixed_two_file_two_hls() {
 )]
 async fn mixed_four_file_four_hls() {
     let wav_data = generate_wav_data();
-    let file_server = AudioTestServer::new().await;
+    let file_server = TestServerHelper::new().await;
 
     let segment_duration = D.segment_size as f64 / (D.sample_rate as f64 * D.channels as f64 * 2.0);
 
@@ -285,7 +282,7 @@ async fn mixed_four_file_four_hls() {
 
     // Spawn 4 File instances
     for i in 0..4 {
-        let url = file_server.mp3_url();
+        let url = file_server.asset("test.mp3");
         let temp = TestTempDir::new();
 
         let file_config = FileConfig::new(url.into()).with_store(StoreOptions::new(temp.path()));
@@ -318,7 +315,7 @@ async fn mixed_four_file_four_hls() {
         })
         .await;
 
-        let url = server.url("/master.m3u8").expect("url");
+        let url = server.url("/master.m3u8");
         let temp = TestTempDir::new();
         let cancel = CancellationToken::new();
 

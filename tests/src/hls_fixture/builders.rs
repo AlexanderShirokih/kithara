@@ -14,9 +14,8 @@ use kithara::{
     hls::{AbrMode, AbrOptions, Hls, HlsConfig},
     stream::Stream,
 };
+use kithara_test_utils::hls_fixture::TestServer;
 use tokio_util::sync::CancellationToken;
-
-use super::server::TestServer;
 
 /// Builder for creating `Stream<Hls>` in integration tests.
 ///
@@ -101,7 +100,7 @@ impl HlsStreamBuilder {
         temp_path: &Path,
         cancel_token: CancellationToken,
     ) -> Stream<Hls> {
-        let url = server.url(self.master_path).expect("fixture server URL");
+        let url = server.url(self.master_path);
 
         let store_path = match self.store_subdir {
             Some(sub) => temp_path.join(sub),
