@@ -1,3 +1,4 @@
+import Kithara
 import SwiftUI
 
 // MARK: - Kithara color palette (matches kithara-ui theme)
@@ -17,6 +18,8 @@ extension Color {
     static let kitharaSuccess = Color(red: 0.400, green: 0.800, blue: 0.400)
     /// Danger red (#e64c4c).
     static let kitharaDanger = Color(red: 0.900, green: 0.300, blue: 0.300)
+    /// Warning amber (#e6b333) — matches kithara-ui theme.warning.
+    static let kitharaWarning = Color(red: 0.902, green: 0.702, blue: 0.200)
 }
 
 // MARK: - Player View
@@ -415,16 +418,17 @@ struct PlayerView: View {
                 .background(Color.kitharaPanel)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
         } else {
-            ScrollView {
-                LazyVStack(spacing: 6) {
-                    ForEach(Array(viewModel.playlist.enumerated()), id: \.element.id) { index, entry in
-                        playlistRow(entry: entry, index: index)
-                    }
+            List {
+                ForEach(Array(viewModel.playlist.enumerated()), id: \.element.id) { index, entry in
+                    playlistRow(entry: entry, index: index)
+                        .listRowInsets(EdgeInsets(top: 3, leading: 10, bottom: 3, trailing: 10))
+                        .listRowBackground(Color.kitharaPanel)
+                        .listRowSeparator(.hidden)
                 }
             }
+            .listStyle(.plain)
             .scrollIndicators(.hidden)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .padding(10)
             .background(Color.kitharaPanel)
             .clipShape(RoundedRectangle(cornerRadius: 10))
         }
@@ -449,11 +453,10 @@ struct PlayerView: View {
     // MARK: - Helpers
 
     private var statusColor: Color {
-        switch viewModel.status {
-        case .readyToPlay: .kitharaSuccess
-        case .failed: .kitharaDanger
-        case .unknown: .kitharaMuted
-        }
+        if viewModel.status == .failed { return .kitharaDanger }
+        if viewModel.playlist.isEmpty { return .kitharaMuted }
+        if viewModel.isPlaying { return .kitharaSuccess }
+        return .kitharaGold
     }
 
     private func rateLabel(_ rate: Float) -> String {
@@ -462,6 +465,7 @@ struct PlayerView: View {
 
     private func playlistRow(entry: PlaylistEntry, index: Int) -> some View {
         let isCurrent = entry.id == viewModel.currentTrackId
+        let statusColor = trackStatusColor(entry.trackStatus, isCurrent: isCurrent)
 
         return Button {
             viewModel.selectTrack(entry.id)
@@ -469,11 +473,11 @@ struct PlayerView: View {
             HStack(spacing: 10) {
                 Text(String(format: "%02d", index + 1))
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(isCurrent ? Color.kitharaGold : .kitharaMuted)
+                    .foregroundStyle(statusColor ?? (isCurrent ? Color.kitharaGold : .kitharaMuted))
 
                 Text(entry.name)
                     .font(.system(size: 13))
-                    .foregroundStyle(isCurrent ? Color.kitharaLight : .kitharaMuted)
+                    .foregroundStyle(statusColor ?? (isCurrent ? Color.kitharaLight : .kitharaMuted))
                     .lineLimit(1)
 
                 Spacer()
@@ -489,6 +493,21 @@ struct PlayerView: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            Button(role: .destructive) {
+                viewModel.removeTrack(entry.id)
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+    }
+
+    private func trackStatusColor(_ status: TrackStatus?, isCurrent: Bool) -> Color? {
+        switch status {
+        case .slow: .kitharaWarning
+        case .failed: .kitharaDanger
+        default: nil
+        }
     }
 
     // MARK: - Settings
@@ -540,10 +559,8 @@ struct PlayerView: View {
     }
 
     private var statusText: String {
-        switch viewModel.status {
-        case .readyToPlay: "Ready"
-        case .failed: "Failed"
-        case .unknown: "Not Ready"
-        }
+        if viewModel.status == .failed { return "Failed" }
+        if viewModel.playlist.isEmpty { return "Not Ready" }
+        return viewModel.isPlaying ? "Playing" : "Idle"
     }
 }

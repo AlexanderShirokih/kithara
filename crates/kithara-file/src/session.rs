@@ -6,11 +6,16 @@ use futures::StreamExt;
 use kithara_assets::{AssetResource, AssetStore, ResourceKey};
 use kithara_events::{EventBus, FileEvent};
 use kithara_net::{Headers, RangeSpec};
-use kithara_platform::{Mutex, time::Duration, tokio};
+use kithara_platform::{
+    Mutex,
+    time::Duration,
+    tokio,
+    tokio::{task, time as tokio_time},
+};
 use kithara_storage::{ResourceExt, ResourceStatus, WaitOutcome};
 use kithara_stream::{
-    AudioCodec, MediaInfo, ReadOutcome, SourcePhase, StreamError,
-    dl::{FetchCmd, Peer, PeerHandle},
+    AudioCodec, MediaInfo, ReadOutcome, SourcePhase, StreamError, Timeline,
+    dl::{FetchCmd, Peer, PeerHandle, Priority, reject_html_response},
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace};
@@ -23,9 +28,31 @@ const THROTTLE_PAUSE: Duration = Duration::from_millis(10);
 
 // FilePeer — Peer impl for file protocol
 
-pub(crate) struct FilePeer;
+pub(crate) struct FilePeer {
+    /// Same Arc-clone as the one held by `FileCoord` — reads from the
+    /// audio FSM's PLAYING flag route this track's fetches to the
+    /// High-priority slot while the listener is actively consuming it.
+    timeline: Timeline,
+}
 
-impl Peer for FilePeer {}
+impl FilePeer {
+    pub(crate) fn new(timeline: Timeline) -> Self {
+        Self { timeline }
+    }
+}
+
+impl Peer for FilePeer {
+    /// Priority reflects the audio FSM's decode-activity flag on the
+    /// shared `Timeline`. Cheap, lock-free — called by Registry on
+    /// every `poll_peers` pass.
+    fn priority(&self) -> Priority {
+        if self.timeline.is_playing() {
+            Priority::High
+        } else {
+            Priority::Low
+        }
+    }
+}
 
 // FileStreamState — creation helper (unchanged API)
 
@@ -33,6 +60,8 @@ impl Peer for FilePeer {}
 pub(crate) struct FileStreamState {
     pub(crate) res: AssetResource,
     pub(crate) bus: EventBus,
+    pub(crate) backend: Arc<AssetStore>,
+    pub(crate) key: ResourceKey,
 }
 
 impl FileStreamState {
@@ -45,7 +74,12 @@ impl FileStreamState {
         let key = ResourceKey::from_url(url);
         let res = assets.acquire_resource(&key).map_err(SourceError::Assets)?;
         let bus = bus.unwrap_or_else(|| EventBus::new(event_channel_capacity));
-        Ok(Self { res, bus })
+        Ok(Self {
+            res,
+            bus,
+            backend: Arc::clone(assets),
+            key,
+        })
     }
 }
 
@@ -78,6 +112,29 @@ pub(crate) struct FileInner {
 
     /// Codec discovered from HTTP Content-Type.
     pub(crate) content_type_codec: Option<AudioCodec>,
+
+    /// Owning asset store — needed so a failed download can tear down the
+    /// pre-allocated mmap immediately instead of waiting for
+    /// `LeaseResource::Drop` to fire at `Stream<File>`-drop time (which is
+    /// typically app shutdown because `FileInner.res` holds a clone that
+    /// outlives every local transaction).
+    pub(crate) backend: Arc<AssetStore>,
+    /// Cache key for `backend.remove_resource` on failure.
+    pub(crate) key: ResourceKey,
+}
+
+impl FileInner {
+    /// Mark the resource failed and evict the pre-allocated cache file.
+    ///
+    /// Call on any terminal download error so the file is gone from disk
+    /// before the task returns — without this the clone in `FileInner.res`
+    /// keeps the mmap parked in the cache directory for the full lifetime
+    /// of the holding `Stream<File>`.
+    pub(crate) fn fail_and_evict(&mut self, reason: &str) {
+        self.phase = FilePhase::Complete;
+        self.res.fail(reason.to_string());
+        self.backend.remove_resource(&self.key);
+    }
 }
 
 // FileSource — implements Source (sync Read+Seek)
@@ -98,7 +155,13 @@ pub struct FileSource {
 
 impl FileSource {
     /// Create a source for a local/cached file (no downloads needed).
-    pub(crate) fn local(res: AssetResource, coord: Arc<FileCoord>, bus: EventBus) -> Self {
+    pub(crate) fn local(
+        res: AssetResource,
+        coord: Arc<FileCoord>,
+        bus: EventBus,
+        backend: Arc<AssetStore>,
+        key: ResourceKey,
+    ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(FileInner {
                 phase: FilePhase::Complete,
@@ -109,6 +172,8 @@ impl FileSource {
                 url: Url::parse("file:///local").expect("valid url"),
                 headers: None,
                 content_type_codec: None,
+                backend,
+                key,
             })),
             coord,
             content_type_codec: None,
@@ -140,19 +205,21 @@ impl FileSource {
             url,
             headers,
             content_type_codec: None,
+            backend: Arc::clone(&state.backend),
+            key: state.key.clone(),
         }));
 
         // Spawn full-file download task.
         let dl_inner = Arc::clone(&inner);
         let dl_peer = peer.clone();
-        tokio::task::spawn(async move {
+        task::spawn(async move {
             run_full_download(dl_inner, dl_peer, look_ahead_bytes).await;
         });
 
         // Spawn range-request watcher task.
         let rng_inner = Arc::clone(&inner);
         let rng_coord = Arc::clone(&coord);
-        tokio::task::spawn(async move {
+        task::spawn(async move {
             run_range_watcher(rng_inner, peer, rng_coord, cancel).await;
         });
 
@@ -189,15 +256,14 @@ async fn run_full_download(
 
     inner.lock_sync().phase = FilePhase::Downloading;
 
-    let cmd = FetchCmd::get(url).headers(headers);
+    let cmd = FetchCmd::get(url)
+        .headers(headers)
+        .with_validator(reject_html_response);
 
     let resp = match peer.execute(cmd).await {
         Ok(r) => r,
         Err(e) => {
-            let mut state = inner.lock_sync();
-            state.phase = FilePhase::Complete;
-            state.res.fail(e.to_string());
-            drop(state);
+            inner.lock_sync().fail_and_evict(&e.to_string());
             bus.publish(FileEvent::DownloadError {
                 error: e.to_string(),
             });
@@ -214,7 +280,7 @@ async fn run_full_download(
     match result {
         Err(StreamBodyError::Write(e)) => {
             debug!(?e, "write error during full download");
-            inner.lock_sync().phase = FilePhase::Complete;
+            inner.lock_sync().fail_and_evict(&e.to_string());
             bus.publish(FileEvent::DownloadError {
                 error: e.to_string(),
             });
@@ -222,9 +288,13 @@ async fn run_full_download(
         Err(StreamBodyError::Net(e, written)) => {
             debug!("stream error during full download: {e}");
             let mut state = inner.lock_sync();
-            state.phase = FilePhase::Complete;
+            // Only tear down the pre-allocated mmap when nothing was
+            // persisted — any written bytes are still useful to the
+            // reader and must not be discarded.
             if written == 0 {
-                state.res.fail(e.to_string());
+                state.fail_and_evict(&e.to_string());
+            } else {
+                state.phase = FilePhase::Complete;
             }
             drop(state);
             bus.publish(FileEvent::DownloadError {
@@ -292,7 +362,7 @@ async fn stream_body_to_resource(
                         if cancel.is_cancelled() {
                             return Err(StreamBodyError::Cancelled);
                         }
-                        tokio::time::sleep(THROTTLE_PAUSE).await;
+                        tokio_time::sleep(THROTTLE_PAUSE).await;
                     }
                 }
             }
@@ -360,7 +430,7 @@ async fn run_range_watcher(
             }
             let task_inner = Arc::clone(&inner);
             let task_peer = peer.clone();
-            tokio::task::spawn(async move {
+            task::spawn(async move {
                 run_range_download(task_inner, task_peer, range).await;
             });
         }
@@ -383,7 +453,10 @@ async fn run_range_download(inner: Arc<Mutex<FileInner>>, peer: PeerHandle, rang
     };
 
     let range_spec = RangeSpec::new(range.start, Some(range.end.saturating_sub(1)));
-    let cmd = FetchCmd::get(url).range(Some(range_spec)).headers(headers);
+    let cmd = FetchCmd::get(url)
+        .range(Some(range_spec))
+        .headers(headers)
+        .with_validator(reject_html_response);
 
     let resp = match peer.execute(cmd).await {
         Ok(r) => r,
@@ -442,10 +515,9 @@ async fn run_range_download(inner: Arc<Mutex<FileInner>>, peer: PeerHandle, rang
 
 impl kithara_stream::Source for FileSource {
     type Error = SourceError;
-    type Coord = Arc<FileCoord>;
 
-    fn coord(&self) -> &Self::Coord {
-        &self.coord
+    fn timeline(&self) -> Timeline {
+        self.coord.timeline()
     }
 
     #[cfg_attr(feature = "perf", hotpath::measure)]
@@ -586,7 +658,14 @@ mod tests {
     }
 
     fn make_source(res: AssetResource, coord: Arc<FileCoord>, bus: EventBus) -> FileSource {
-        FileSource::local(res, coord, bus)
+        let backend = Arc::new(
+            AssetStoreBuilder::new()
+                .asset_root(None)
+                .cancel(CancellationToken::new())
+                .build(),
+        );
+        let key = ResourceKey::new("test-source");
+        FileSource::local(res, coord, bus, backend, key)
     }
 
     // FileCoord

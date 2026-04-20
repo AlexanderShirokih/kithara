@@ -4,10 +4,14 @@
 use crate::AppEvent;
 #[cfg(feature = "audio")]
 use crate::AudioEvent;
+#[cfg(feature = "downloader")]
+use crate::DownloaderEvent;
 #[cfg(feature = "file")]
 use crate::FileEvent;
 #[cfg(feature = "hls")]
 use crate::HlsEvent;
+#[cfg(feature = "queue")]
+use crate::QueueEvent;
 #[cfg(feature = "player")]
 use crate::{DjEvent, EngineEvent, ItemEvent, PlayerEvent, SessionEvent};
 
@@ -18,6 +22,10 @@ use crate::{DjEvent, EngineEvent, ItemEvent, PlayerEvent, SessionEvent};
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum Event {
+    /// Unified downloader event (soft-timeout, progress, completion,
+    /// error). Published by the downloader layer on the peer's bus.
+    #[cfg(feature = "downloader")]
+    Downloader(DownloaderEvent),
     /// HLS stream event.
     #[cfg(feature = "hls")]
     Hls(HlsEvent),
@@ -45,6 +53,16 @@ pub enum Event {
     /// Application lifecycle event.
     #[cfg(feature = "app")]
     App(AppEvent),
+    /// Queue-level event (track added/removed/status/current/ended).
+    #[cfg(feature = "queue")]
+    Queue(QueueEvent),
+}
+
+#[cfg(feature = "downloader")]
+impl From<DownloaderEvent> for Event {
+    fn from(e: DownloaderEvent) -> Self {
+        Self::Downloader(e)
+    }
 }
 
 #[cfg(feature = "hls")]
@@ -107,6 +125,13 @@ impl From<DjEvent> for Event {
 impl From<AppEvent> for Event {
     fn from(e: AppEvent) -> Self {
         Self::App(e)
+    }
+}
+
+#[cfg(feature = "queue")]
+impl From<QueueEvent> for Event {
+    fn from(e: QueueEvent) -> Self {
+        Self::Queue(e)
     }
 }
 

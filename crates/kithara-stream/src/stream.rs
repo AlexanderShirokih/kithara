@@ -20,12 +20,8 @@ use kithara_storage::WaitOutcome;
 
 use crate::{
     MediaInfo, SourcePhase, SourceSeekAnchor, StreamContext, Timeline,
-    coordination::TransferCoordination,
     source::{ReadOutcome, Source, VariantChangeError},
 };
-
-/// Timeout for seek `wait_range` calls before returning an error.
-const SEEK_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Defines a stream type and how to create it.
 ///
@@ -36,11 +32,9 @@ const SEEK_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 pub trait StreamType: MaybeSend + 'static {
     /// Configuration for this stream type.
     type Config: Default + MaybeSend;
-    /// Shared runtime coordination between source and downloader.
-    type Coord: TransferCoordination;
 
     /// Source implementing `Source`.
-    type Source: Source<Coord = Self::Coord>;
+    type Source: Source;
 
     /// Error type for stream creation.
     type Error: StdError + Send + Sync + 'static;
@@ -164,23 +158,23 @@ impl<T: StreamType> Stream<T> {
     }
 }
 
-/// Short timeout keeps the audio worker responsive for round-robin
-/// between tracks. At 44100Hz stereo with 4096-sample chunks, one chunk
-/// lasts ~46ms. A 10ms budget gives the worker time to serve other
-/// tracks and still refill the ringbuf before the audio callback drains it.
-const WAIT_RANGE_TIMEOUT: Duration = Duration::from_millis(10);
-
-/// Maximum `wait_range` retries before returning `Interrupted` to the caller.
-/// Each retry takes `WAIT_RANGE_TIMEOUT` (10ms), so 50 iterations ≈ 500ms.
-/// This prevents the hang detector (typically 1–10s) from firing when data
-/// is legitimately not yet available (e.g. encrypted HLS startup). Symphonia
-/// retries `Interrupted` automatically, resetting the per-call detector.
-const MAX_WAIT_SPINS: u32 = 50;
-
 impl<T: StreamType> Read for Stream<T> {
     #[cfg_attr(feature = "perf", hotpath::measure)]
     #[kithara_hang_detector::hang_watchdog]
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        /// Short timeout keeps the audio worker responsive for round-robin
+        /// between tracks. At 44100Hz stereo with 4096-sample chunks, one chunk
+        /// lasts ~46ms. A 10ms budget gives the worker time to serve other
+        /// tracks and still refill the ringbuf before the audio callback drains it.
+        const WAIT_RANGE_TIMEOUT: Duration = Duration::from_millis(10);
+
+        /// Maximum `wait_range` retries before returning `Interrupted` to the caller.
+        /// Each retry takes `WAIT_RANGE_TIMEOUT` (10ms), so 50 iterations ≈ 500ms.
+        /// This prevents the hang detector (typically 1–10s) from firing when data
+        /// is legitimately not yet available (e.g. encrypted HLS startup). Symphonia
+        /// retries `Interrupted` automatically, resetting the per-call detector.
+        const MAX_WAIT_SPINS: u32 = 50;
+
         if buf.is_empty() {
             return Ok(0);
         }
@@ -266,6 +260,9 @@ impl<T: StreamType> Read for Stream<T> {
 impl<T: StreamType> Seek for Stream<T> {
     #[cfg_attr(feature = "perf", hotpath::measure)]
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        /// Timeout for seek `wait_range` calls before returning an error.
+        const SEEK_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+
         let timeline = self.source.timeline();
         let current = timeline.byte_position();
 
@@ -329,20 +326,9 @@ mod tests {
         pub(crate) use kithara_test_macros::test;
     }
 
-    #[derive(Default)]
-    struct TestCoord {
-        timeline: Timeline,
-    }
-
-    impl TransferCoordination for TestCoord {
-        fn timeline(&self) -> Timeline {
-            self.timeline.clone()
-        }
-    }
-
     struct ScriptSource {
         anchor: Option<SourceSeekAnchor>,
-        coord: TestCoord,
+        timeline: Timeline,
         data: Vec<u8>,
         reads: VecDeque<ReadOutcome>,
         waits: VecDeque<WaitOutcome>,
@@ -357,7 +343,7 @@ mod tests {
         ) -> Self {
             Self {
                 anchor: None,
-                coord: TestCoord { timeline },
+                timeline,
                 data,
                 reads: reads.into_iter().collect(),
                 waits: waits.into_iter().collect(),
@@ -367,10 +353,9 @@ mod tests {
 
     impl Source for ScriptSource {
         type Error = io::Error;
-        type Coord = TestCoord;
 
-        fn coord(&self) -> &Self::Coord {
-            &self.coord
+        fn timeline(&self) -> Timeline {
+            self.timeline.clone()
         }
 
         fn wait_range(
@@ -421,7 +406,6 @@ mod tests {
 
     impl StreamType for DummyType {
         type Config = ();
-        type Coord = TestCoord;
         type Error = io::Error;
         type Events = ();
         type Source = ScriptSource;
@@ -435,7 +419,6 @@ mod tests {
 
     impl StreamType for SeekDuringWaitType {
         type Config = ();
-        type Coord = TestCoord;
         type Error = io::Error;
         type Events = ();
         type Source = SeekDuringWaitSource;
@@ -446,16 +429,15 @@ mod tests {
     }
 
     struct SeekDuringWaitSource {
-        coord: TestCoord,
+        timeline: Timeline,
         read_calls: usize,
     }
 
     impl Source for SeekDuringWaitSource {
         type Error = io::Error;
-        type Coord = TestCoord;
 
-        fn coord(&self) -> &Self::Coord {
-            &self.coord
+        fn timeline(&self) -> Timeline {
+            self.timeline.clone()
         }
 
         fn wait_range(
@@ -463,7 +445,7 @@ mod tests {
             _range: Range<u64>,
             _timeout: Duration,
         ) -> crate::StreamResult<WaitOutcome, Self::Error> {
-            let _ = self.coord.timeline.initiate_seek(Duration::from_millis(10));
+            let _ = self.timeline.initiate_seek(Duration::from_millis(10));
             Ok(WaitOutcome::Ready)
         }
 
@@ -524,9 +506,7 @@ mod tests {
     fn read_aborts_when_seek_epoch_changes_after_wait() {
         let timeline = Timeline::new();
         let source = SeekDuringWaitSource {
-            coord: TestCoord {
-                timeline: timeline.clone(),
-            },
+            timeline: timeline.clone(),
             read_calls: 0,
         };
         let mut stream = Stream::<SeekDuringWaitType> { source };

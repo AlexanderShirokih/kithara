@@ -1,55 +1,34 @@
 #![forbid(unsafe_code)]
 
-use std::{collections::HashMap, fmt, fmt::Debug, sync::Arc};
-
-use bytes::Bytes;
 use derivative::Derivative;
 use derive_setters::Setters;
+// Re-export ABR types from kithara-abr crate
+pub use kithara_abr::{AbrController, AbrMode, AbrOptions, ThroughputEstimator};
 use kithara_assets::{BytePool, StoreOptions};
+use kithara_drm::KeyProcessorRegistry;
 use kithara_events::EventBus;
-use kithara_net::{Headers, NetOptions};
-use kithara_platform::tokio as platform_tokio;
+use kithara_net::Headers;
 use kithara_stream::dl::Downloader;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-use crate::error::HlsResult;
-
-/// AES initialization vector length in bytes.
-const IV_LEN: usize = 16;
-
-#[derive(Clone, Debug)]
-pub struct KeyContext {
-    pub iv: Option<[u8; IV_LEN]>,
-    pub url: Url,
-}
-
-/// Callback for processing encryption keys.
-pub type KeyProcessor = Arc<dyn Fn(Bytes, KeyContext) -> HlsResult<Bytes> + Send + Sync>;
-
-// Re-export ABR types from kithara-abr crate
-pub use kithara_abr::{AbrController, AbrMode, AbrOptions, ThroughputEstimator};
-
 /// Encryption key handling configuration.
+///
+/// DRM key processing is routed through [`KeyProcessorRegistry`] so
+/// different providers (zvuk, custom in-house DRM, etc.) can coexist
+/// with different processors, headers, and query params — all scoped
+/// by URL domain.
 #[derive(Clone, Default, Derivative, Setters)]
 #[derivative(Debug)]
 #[setters(prefix = "with_", strip_option)]
 pub struct KeyOptions {
-    /// Callback for processing (e.g. decrypting) raw key bytes after fetch.
-    #[derivative(Debug(format_with = "fmt_key_processor"))]
-    pub key_processor: Option<KeyProcessor>,
-    /// Query parameters to append to key URLs.
-    pub query_params: Option<HashMap<String, String>>,
-    /// Headers to include in key requests.
-    pub request_headers: Option<HashMap<String, String>>,
-}
-
-fn fmt_key_processor(val: &Option<KeyProcessor>, f: &mut fmt::Formatter) -> fmt::Result {
-    Debug::fmt(&val.as_ref().map(|_| "KeyProcessor"), f)
+    /// Domain-scoped processor registry. Key URLs whose host matches
+    /// a rule get that rule's processor + headers + query params;
+    /// unmatched URLs use the raw key as-is.
+    pub key_registry: Option<KeyProcessorRegistry>,
 }
 
 impl KeyOptions {
-    /// Create default key options.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -98,21 +77,10 @@ pub struct HlsConfig {
     /// cache directory.
     #[setters(skip)]
     pub name: Option<String>,
-    /// Network configuration.
-    pub net: NetOptions,
     /// Additional HTTP headers to include in all requests.
     pub headers: Option<Headers>,
     /// Buffer pool (shared across all components, created if not provided).
     pub pool: Option<BytePool>,
-    /// Shared tokio runtime handle for the downloader.
-    ///
-    /// When provided, the downloader runs as an async task on this runtime
-    /// instead of spawning a dedicated OS thread. When `None`, the downloader
-    /// auto-detects: reuses a multi-thread runtime if available, otherwise
-    /// falls back to a dedicated thread.
-    #[setters(skip)]
-    #[derivative(Debug = "ignore")]
-    pub runtime: Option<platform_tokio::runtime::Handle>,
     /// Storage configuration.
     pub store: StoreOptions,
     /// Master playlist URL.

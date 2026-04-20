@@ -2,14 +2,19 @@
 
 use std::sync::{Arc, atomic::AtomicUsize};
 
+use futures::task::AtomicWaker;
+use kithara_events::EventBus;
 use kithara_net::HttpClient;
-use kithara_platform::{Mutex, time::Duration, tokio, tokio::sync::mpsc};
+use kithara_platform::{Mutex, RwLock, time::Duration, tokio, tokio::sync::mpsc};
 use tokio_util::sync::CancellationToken;
 
 use super::{
     peer::{Peer, PeerHandle},
     registry::Registry,
 };
+
+/// Capacity of the per-peer bounded command channel.
+const PEER_CMD_CHANNEL_CAPACITY: usize = 32;
 
 /// Unified downloader — sole HTTP client owner and fetch orchestrator.
 ///
@@ -36,6 +41,11 @@ pub(super) struct RegisteredPeerEntry {
     /// `PeerHandle` clone is released, letting the [`Registry`] drop the
     /// peer entry (and its `Arc<dyn Peer>`).
     pub(super) cancel: CancellationToken,
+    /// Shared bus reference. Written by
+    /// [`PeerHandle::with_bus`](super::peer::PeerHandle::with_bus), read
+    /// by the Registry when dispatching fetches so that
+    /// `DownloaderEvent::LoadSlow` lands on the owning track's bus.
+    pub(super) bus: Arc<RwLock<Option<EventBus>>>,
 }
 
 /// Shared inner state for the downloader.
@@ -46,6 +56,7 @@ pub(super) struct DownloaderInner {
     pub(super) client: HttpClient,
     pub(super) cancel: CancellationToken,
     pub(super) chunk_timeout: Duration,
+    pub(super) soft_timeout: Duration,
     pub(super) runtime: Option<tokio::runtime::Handle>,
     pub(super) max_concurrent: usize,
     pub(super) demand_throttle: Duration,
@@ -54,7 +65,7 @@ pub(super) struct DownloaderInner {
     pub(super) inflight: Arc<AtomicUsize>,
     /// Waker fired when a fetch task completes (inflight decremented).
     /// Wakes `poll_fn` in `Registry::tick` so it can spawn more work.
-    pub(super) fetch_waker: Arc<futures::task::AtomicWaker>,
+    pub(super) fetch_waker: Arc<AtomicWaker>,
     /// Sender for registering new peers (cold path).
     pub(super) register_tx: mpsc::UnboundedSender<RegisteredPeerEntry>,
     /// Receiver — taken once by [`ensure_spawned`](Downloader::ensure_spawned).
@@ -69,17 +80,19 @@ impl Downloader {
     pub fn new(config: super::DownloaderConfig) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let chunk_timeout = config.net.request_timeout;
+        let soft_timeout = config.soft_timeout;
         let runtime = config.runtime;
         Self {
             inner: Arc::new(DownloaderInner {
                 client: HttpClient::new(config.net),
                 cancel: config.cancel,
                 chunk_timeout,
+                soft_timeout,
                 runtime,
                 max_concurrent: config.max_concurrent,
                 demand_throttle: config.demand_throttle,
                 inflight: Arc::new(AtomicUsize::new(0)),
-                fetch_waker: Arc::new(futures::task::AtomicWaker::new()),
+                fetch_waker: Arc::new(AtomicWaker::new()),
                 register_tx: tx,
                 register_rx: Mutex::new(Some(rx)),
             }),
@@ -94,14 +107,16 @@ impl Downloader {
     pub fn register(&self, peer: Arc<dyn Peer>) -> PeerHandle {
         self.ensure_spawned();
         let cancel = self.inner.cancel.child_token();
-        let (cmd_tx, cmd_rx) = mpsc::channel(32);
+        let (cmd_tx, cmd_rx) = mpsc::channel(PEER_CMD_CHANNEL_CAPACITY);
+        let bus: Arc<RwLock<Option<EventBus>>> = Arc::new(RwLock::new(None));
         let entry = RegisteredPeerEntry {
             peer,
             cmd_rx,
             cancel: cancel.clone(),
+            bus: Arc::clone(&bus),
         };
         let _ = self.inner.register_tx.send(entry);
-        PeerHandle::new(Arc::clone(&self.inner), cancel, cmd_tx)
+        PeerHandle::new(Arc::clone(&self.inner), cancel, cmd_tx, bus)
     }
 
     /// Ensure the download loop is running (lazy spawn on first register

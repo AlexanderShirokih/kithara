@@ -7,7 +7,7 @@ use kithara::{
     bufpool::byte_pool,
     storage::ResourceExt,
 };
-use kithara_assets::internal::schema::PinsIndexFile;
+use kithara_assets::{index::schema::ArchivedPinsIndexFile, internal::schema::PinsIndexFile};
 use kithara_platform::{thread, time::Duration};
 use kithara_test_utils::temp_dir;
 
@@ -38,11 +38,11 @@ fn read_pins_file(root: &Path) -> Option<Vec<String>> {
     if bytes.is_empty() {
         return Some(Vec::new());
     }
-    let archived = rkyv::check_archived_root::<PinsIndexFile>(&bytes)
+    let archived = rkyv::access::<ArchivedPinsIndexFile, rkyv::rancor::Error>(&bytes)
         .expect("pins index must be valid rkyv if exists");
 
-    use rkyv::Deserialize;
-    let pins_file: PinsIndexFile = archived.deserialize(&mut rkyv::Infallible).unwrap();
+    let pins_file: PinsIndexFile =
+        rkyv::deserialize::<PinsIndexFile, rkyv::rancor::Error>(archived).unwrap();
 
     let mut pinned = Vec::new();
     for (k, v) in pins_file.pinned.iter() {

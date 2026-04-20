@@ -1,22 +1,16 @@
 use std::sync::Arc;
 
 use iced::Size;
+use kithara_queue::Queue;
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
 use super::{app::Kithara, update, view};
 use crate::{
     config::AppConfig,
-    controls::AppController,
     frontend::{Frontend, FrontendError},
     theme::gui,
 };
-
-/// Default window width in logical pixels.
-const WINDOW_WIDTH: f32 = 448.0;
-
-/// Default window height in logical pixels.
-const WINDOW_HEIGHT: f32 = 734.0;
 
 /// Initialize tracing for GUI-only mode (no CRLF writer needed).
 ///
@@ -46,27 +40,23 @@ impl Frontend for GuiFrontend {
         })
     }
 
-    fn start(&mut self, _controller: &mut AppController) -> Result<(), FrontendError> {
+    fn start(&mut self, _queue: Arc<Queue>) -> Result<(), FrontendError> {
         // iced handles window setup internally.
         Ok(())
     }
 
-    fn run_loop(&mut self, controller: &mut AppController) -> Result<(), FrontendError> {
-        let player = controller.player().clone();
-        let load_params = controller.load_params(self.config.danger_accept_invalid_certs);
-        let playlist = Arc::clone(load_params.playlist());
-        let palette = self.palette;
+    fn run_loop(&mut self, queue: Arc<Queue>) -> Result<(), FrontendError> {
+        /// Default window width in logical pixels.
+        const WINDOW_WIDTH: f32 = 448.0;
 
-        // iced owns the tokio runtime — this must NOT be called from within block_on().
+        /// Default window height in logical pixels.
+        const WINDOW_HEIGHT: f32 = 734.0;
+
+        let palette = self.palette;
+        let config = self.config.clone();
+
         iced::application(
-            move || {
-                Kithara::new(
-                    player.clone(),
-                    Arc::clone(&playlist),
-                    load_params.clone(),
-                    palette,
-                )
-            },
+            move || Kithara::new(Arc::clone(&queue), palette, &config),
             update::update,
             view::view,
         )

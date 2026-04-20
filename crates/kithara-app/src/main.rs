@@ -1,19 +1,27 @@
+// Binary needs at least one frontend — `lib-only` alone is not enough.
+#[cfg(not(any(feature = "tui", feature = "gui")))]
+compile_error!("`kithara` binary requires at least one of `tui` or `gui` feature");
+
 use std::{
     io::{self, IsTerminal},
     sync::Arc,
 };
 
 use clap::Parser;
-use kithara::{audio::generate_log_spaced_bands, play::PlayerConfig, prelude::PlayerImpl};
+use kithara::{
+    audio::generate_log_spaced_bands,
+    net::NetOptions,
+    play::{PlayerConfig, PlayerImpl},
+    stream::dl::{Downloader, DownloaderConfig},
+};
 #[cfg(not(feature = "tui"))]
 use kithara_app::gui;
 #[cfg(feature = "gui")]
 use kithara_app::gui::GuiFrontend;
 #[cfg(feature = "tui")]
 use kithara_app::tui::{TuiFrontend, init_tracing as init_tui_tracing};
-use kithara_app::{
-    config::AppConfig, controls::AppController, frontend::Frontend, playlist::Playlist,
-};
+use kithara_app::{config::AppConfig, frontend::Frontend};
+use kithara_queue::{Queue, QueueConfig};
 
 /// Kithara — audio player application.
 #[derive(Parser)]
@@ -71,8 +79,18 @@ fn main() -> AppResult {
     let args = Args::parse();
     let mode = resolve_mode(args.mode);
 
-    let mut config = AppConfig::with_defaults(args.tracks);
-    config.danger_accept_invalid_certs = args.insecure;
+    // One Downloader for the whole app — shared HTTP pool and
+    // ambient-runtime aware, so every track created through
+    // `sources::build_source` reuses it. TLS posture goes through
+    // `NetOptions` on the Downloader; `ResourceConfig` has no `net`.
+    let net = NetOptions {
+        insecure: args.insecure,
+        ..NetOptions::default()
+    };
+    let downloader = Downloader::new(DownloaderConfig::default().with_net(net));
+    let config = AppConfig::new(downloader)
+        .with_tracks(args.tracks)
+        .with_danger_accept_invalid_certs(args.insecure);
 
     // Initialize tracing based on mode.
     #[cfg(feature = "tui")]
@@ -89,28 +107,32 @@ fn main() -> AppResult {
         gui::init_tracing()?;
     }
 
-    // Create player and controller.
-    let player = Arc::new(PlayerImpl::new(
-        PlayerConfig::default()
-            .with_crossfade_duration(config.crossfade_seconds)
-            .with_eq_layout(generate_log_spaced_bands(config.eq_band_count)),
-    ));
-    let playlist = Arc::new(Playlist::new(config.tracks.clone(), &config.drm_domains));
-    let mut controller = AppController::new(Arc::clone(&player), playlist, config.eq_band_count);
+    let player_config = PlayerConfig::default()
+        .with_crossfade_duration(config.crossfade_seconds)
+        .with_eq_layout(generate_log_spaced_bands(config.eq_band_count));
+    let player = Arc::new(PlayerImpl::new(player_config));
+    let queue_config = QueueConfig::default()
+        .with_player(player)
+        .with_autoplay(true);
+
+    // Queue is constructed here, but `queue.set_tracks` is deferred to each
+    // frontend's runtime context — `Loader::spawn_load` requires a running
+    // tokio runtime.
+    let queue = Arc::new(Queue::new(queue_config));
 
     match mode {
         #[cfg(feature = "tui")]
         Mode::Tui | Mode::Auto => {
             let mut frontend = TuiFrontend::new(&config)?;
-            frontend.start(&mut controller)?;
-            frontend.run_loop(&mut controller)?;
+            frontend.start(Arc::clone(&queue))?;
+            frontend.run_loop(Arc::clone(&queue))?;
             frontend.shutdown()?;
         }
         #[cfg(feature = "gui")]
         Mode::Gui => {
             let mut frontend = GuiFrontend::new(&config)?;
-            frontend.start(&mut controller)?;
-            frontend.run_loop(&mut controller)?;
+            frontend.start(Arc::clone(&queue))?;
+            frontend.run_loop(Arc::clone(&queue))?;
             frontend.shutdown()?;
         }
         #[cfg(not(feature = "gui"))]

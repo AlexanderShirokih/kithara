@@ -6,6 +6,7 @@ use std::{
     },
 };
 
+use kithara_abr::AbrController;
 use kithara_assets::{AssetStore, ResourceKey};
 use kithara_drm::DecryptContext;
 use kithara_events::EventBus;
@@ -514,6 +515,16 @@ fn commit_seek_landing_uses_decoder_landed_offset_with_anchor_variant() {
         Arc::clone(&playlist_state),
         Timeline::new(),
     ));
+    // Layout variant (0) has target segment 2 committed, so
+    // resolve_seek_anchor prefers it over the ABR target. This keeps
+    // the test focused on its original intent — "seek landing
+    // resolves demand from the decoder-landed offset" — without
+    // tripping the fallback-to-ABR path (exercised by dedicated tests
+    // in source::tests).
+    {
+        let mut segments = shared.segments.lock_sync();
+        segments.commit_segment(0, 2, make_segment_data(100));
+    }
     shared.abr_variant_index.store(1, Ordering::Relaxed);
 
     let mut source = make_test_source(Arc::clone(&shared), cancel);
@@ -1156,7 +1167,7 @@ fn build_pair_seeds_current_variant_from_abr_mode() {
     let variants = parsed_variants(2);
     let (backend, _loader) = local_test_loader(&cancel);
     let config = HlsConfig::default()
-        .with_abr(kithara_abr::AbrController::new(AbrOptions {
+        .with_abr(AbrController::new(AbrOptions {
             mode: AbrMode::Manual(1),
             ..AbrOptions::default()
         }))

@@ -1,15 +1,6 @@
 use reqwest::{Error as ReqwestError, Url};
 use thiserror::Error;
 
-/// Minimum HTTP status code for server errors (5xx).
-const HTTP_SERVER_ERROR_MIN: u16 = 500;
-
-/// HTTP 429 Too Many Requests.
-const HTTP_TOO_MANY_REQUESTS: u16 = 429;
-
-/// HTTP 408 Request Timeout.
-const HTTP_REQUEST_TIMEOUT: u16 = 408;
-
 pub type NetResult<T> = Result<T, NetError>;
 
 /// Centralized error type for kithara-net
@@ -31,9 +22,20 @@ pub enum NetError {
     Unimplemented,
     #[error("Cancelled")]
     Cancelled,
+    #[error("Invalid content-type: {0}")]
+    InvalidContentType(String),
 }
 
 impl NetError {
+    /// Minimum HTTP status code for server errors (5xx).
+    const HTTP_SERVER_ERROR_MIN: u16 = 500;
+
+    /// HTTP 429 Too Many Requests.
+    const HTTP_TOO_MANY_REQUESTS: u16 = 429;
+
+    /// HTTP 408 Request Timeout.
+    const HTTP_REQUEST_TIMEOUT: u16 = 408;
+
     /// Creates a timeout error
     #[must_use]
     pub fn timeout() -> Self {
@@ -62,11 +64,14 @@ impl NetError {
             Self::Timeout => true,
             Self::HttpError { status, .. } => {
                 // Retry on 5xx server errors and 429 Too Many Requests
-                *status >= HTTP_SERVER_ERROR_MIN
-                    || *status == HTTP_TOO_MANY_REQUESTS
-                    || *status == HTTP_REQUEST_TIMEOUT
+                *status >= Self::HTTP_SERVER_ERROR_MIN
+                    || *status == Self::HTTP_TOO_MANY_REQUESTS
+                    || *status == Self::HTTP_REQUEST_TIMEOUT
             }
-            Self::RetryExhausted { .. } | Self::Unimplemented | Self::Cancelled => false,
+            Self::RetryExhausted { .. }
+            | Self::Unimplemented
+            | Self::Cancelled
+            | Self::InvalidContentType(_) => false,
         }
     }
 }
@@ -119,6 +124,7 @@ mod tests {
     #[case::http_404(NetError::HttpError { status: 404, url: test_url("http://example.com"), body: None }, false)]
     #[case::unimplemented(NetError::Unimplemented, false)]
     #[case::retry_exhausted(NetError::RetryExhausted { max_retries: 3, source: Box::new(NetError::Timeout) }, false)]
+    #[case::invalid_content_type(NetError::InvalidContentType("text/html".to_string()), false)]
     async fn test_is_retryable(#[case] error: NetError, #[case] expected_retryable: bool) {
         assert_eq!(error.is_retryable(), expected_retryable);
     }

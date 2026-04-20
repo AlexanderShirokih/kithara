@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{io::Error as IoError, time::Duration};
 
 use kithara_bufpool::{BudgetExhausted, PcmBuf, PcmPool};
 use kithara_stream::{AudioCodec, ContainerFormat, StreamContext};
@@ -105,11 +105,12 @@ pub(crate) fn frame_offset_from_presentation_time_us(
     sample_rate: u32,
     presentation_time_us: i64,
 ) -> u64 {
+    const MICROS_PER_SECOND: i128 = 1_000_000;
     if sample_rate == 0 || presentation_time_us <= 0 {
         return 0;
     }
 
-    let frames = i128::from(presentation_time_us) * i128::from(sample_rate) / 1_000_000;
+    let frames = i128::from(presentation_time_us) * i128::from(sample_rate) / MICROS_PER_SECOND;
     u64::try_from(frames).unwrap_or(u64::MAX)
 }
 
@@ -117,9 +118,9 @@ pub(crate) fn duration_from_presentation_time_us(
     presentation_time_us: i64,
 ) -> Result<Duration, DecodeError> {
     if presentation_time_us < 0 {
-        return Err(DecodeError::Backend(Box::new(std::io::Error::other(
-            format!("negative presentation timestamp: {presentation_time_us}"),
-        ))));
+        return Err(DecodeError::Backend(Box::new(IoError::other(format!(
+            "negative presentation timestamp: {presentation_time_us}"
+        )))));
     }
 
     Ok(Duration::from_micros(presentation_time_us.cast_unsigned()))
@@ -165,26 +166,25 @@ pub(crate) fn decode_pcm16_to_f32(
     trim_frames: usize,
     channels: u16,
 ) -> Result<PcmBuf, DecodeError> {
+    const PCM16_BYTES_PER_SAMPLE: usize = 2;
     let channels = usize::from(channels);
     if channels == 0 {
-        return Err(DecodeError::Backend(Box::new(std::io::Error::other(
+        return Err(DecodeError::Backend(Box::new(IoError::other(
             "PCM16 output reported zero channels",
         ))));
     }
-    if !bytes.len().is_multiple_of(2) {
-        return Err(DecodeError::Backend(Box::new(std::io::Error::other(
-            format!(
-                "PCM16 payload length {} is not aligned to 2 bytes",
-                bytes.len()
-            ),
-        ))));
+    if !bytes.len().is_multiple_of(PCM16_BYTES_PER_SAMPLE) {
+        return Err(DecodeError::Backend(Box::new(IoError::other(format!(
+            "PCM16 payload length {} is not aligned to {PCM16_BYTES_PER_SAMPLE} bytes",
+            bytes.len()
+        )))));
     }
 
-    let total_samples = bytes.len() / 2;
+    let total_samples = bytes.len() / PCM16_BYTES_PER_SAMPLE;
     if !total_samples.is_multiple_of(channels) {
-        return Err(DecodeError::Backend(Box::new(std::io::Error::other(
-            format!("PCM16 sample count {total_samples} is not aligned to {channels} channels"),
-        ))));
+        return Err(DecodeError::Backend(Box::new(IoError::other(format!(
+            "PCM16 sample count {total_samples} is not aligned to {channels} channels"
+        )))));
     }
 
     let total_frames = total_samples / channels;
@@ -195,7 +195,11 @@ pub(crate) fn decode_pcm16_to_f32(
     let start_sample = trim_frames * channels;
     let remaining_samples = total_samples - start_sample;
     let mut pcm = pool_buffer(pool, remaining_samples)?;
-    for (dst, sample_bytes) in pcm.iter_mut().zip(bytes.chunks_exact(2).skip(start_sample)) {
+    for (dst, sample_bytes) in pcm.iter_mut().zip(
+        bytes
+            .chunks_exact(PCM16_BYTES_PER_SAMPLE)
+            .skip(start_sample),
+    ) {
         let sample = i16::from_le_bytes([sample_bytes[0], sample_bytes[1]]);
         *dst = f32::from(sample) / PCM_16_SCALE;
     }
@@ -209,26 +213,27 @@ pub(crate) fn copy_pcm_float_to_pool(
     trim_frames: usize,
     channels: u16,
 ) -> Result<PcmBuf, DecodeError> {
+    const FLOAT_BYTES_PER_SAMPLE: usize = 4;
+    const FLOAT_BYTE_2: usize = 2;
+    const FLOAT_BYTE_3: usize = 3;
     let channels = usize::from(channels);
     if channels == 0 {
-        return Err(DecodeError::Backend(Box::new(std::io::Error::other(
+        return Err(DecodeError::Backend(Box::new(IoError::other(
             "PCM float output reported zero channels",
         ))));
     }
-    if !bytes.len().is_multiple_of(4) {
-        return Err(DecodeError::Backend(Box::new(std::io::Error::other(
-            format!(
-                "PCM float payload length {} is not aligned to 4 bytes",
-                bytes.len()
-            ),
-        ))));
+    if !bytes.len().is_multiple_of(FLOAT_BYTES_PER_SAMPLE) {
+        return Err(DecodeError::Backend(Box::new(IoError::other(format!(
+            "PCM float payload length {} is not aligned to {FLOAT_BYTES_PER_SAMPLE} bytes",
+            bytes.len()
+        )))));
     }
 
-    let total_samples = bytes.len() / 4;
+    let total_samples = bytes.len() / FLOAT_BYTES_PER_SAMPLE;
     if !total_samples.is_multiple_of(channels) {
-        return Err(DecodeError::Backend(Box::new(std::io::Error::other(
-            format!("PCM float sample count {total_samples} is not aligned to {channels} channels"),
-        ))));
+        return Err(DecodeError::Backend(Box::new(IoError::other(format!(
+            "PCM float sample count {total_samples} is not aligned to {channels} channels"
+        )))));
     }
 
     let total_frames = total_samples / channels;
@@ -239,12 +244,16 @@ pub(crate) fn copy_pcm_float_to_pool(
     let start_sample = trim_frames * channels;
     let remaining_samples = total_samples - start_sample;
     let mut pcm = pool_buffer(pool, remaining_samples)?;
-    for (dst, sample_bytes) in pcm.iter_mut().zip(bytes.chunks_exact(4).skip(start_sample)) {
+    for (dst, sample_bytes) in pcm.iter_mut().zip(
+        bytes
+            .chunks_exact(FLOAT_BYTES_PER_SAMPLE)
+            .skip(start_sample),
+    ) {
         *dst = f32::from_le_bytes([
             sample_bytes[0],
             sample_bytes[1],
-            sample_bytes[2],
-            sample_bytes[3],
+            sample_bytes[FLOAT_BYTE_2],
+            sample_bytes[FLOAT_BYTE_3],
         ]);
     }
 

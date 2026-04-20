@@ -1,8 +1,6 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-use bytes::Bytes;
-use kithara::hls::KeyOptions;
-use kithara_drm::UniqueBinaryCipher;
+use kithara_drm::{KeyProcessorRegistry, KeyProcessorRule, UniqueBinaryCipher};
 use rand::{distr::Alphanumeric, prelude::*};
 
 const SEED_LEN: usize = 16;
@@ -12,26 +10,44 @@ macro_rules! env_or_default {
     () => {
         match option_env!("KITHARA_DRM_KEY") {
             Some(k) => k,
-            None => "kithara",
+            None => "BinaryCipherKey",
         }
     };
 }
 
 /// Obfuscated DRM cipher key.
-///
-/// Custom key via `KITHARA_DRM_KEY` env at compile time, otherwise falls back
-/// to obfuscated default `"kithara"`. `obfstr!` stores XOR'd bytes in the
-/// binary and decodes them at runtime.
 fn drm_key() -> String {
     obfstr::obfstr!(env_or_default!()).to_string()
 }
 
-/// Build `KeyOptions` for zvuk DRM streams.
+/// Auth token baked in at build time from `KITHARA_DRM_AUTH_TOKEN`.
+/// `None` when the env var was unset during compilation — in which case
+/// `X-Auth-Token` is simply omitted from key requests and the key
+/// server returns 401 for authenticated tracks. Production builds
+/// should supply the token; dev builds work fine without it for
+/// non-DRM content.
+fn compile_time_zvq_auth_token() -> Option<&'static str> {
+    option_env!("KITHARA_DRM_AUTH_TOKEN")
+}
+
+/// Build the default registry for `*.zvq.me` DRM tracks, using the
+/// auth token baked in at compile time (when available).
+#[must_use]
+pub fn default_zvq_key_registry() -> KeyProcessorRegistry {
+    make_key_registry(
+        &["*.zvq.me".to_string()],
+        compile_time_zvq_auth_token().map(ToString::to_string),
+    )
+}
+
+/// Build a [`KeyProcessorRegistry`] scoped to `domains`.
 ///
 /// Generates a random seed, creates a cipher from `cipher_key + seed`,
-/// and returns `KeyOptions` with the `X-Encrypted-Key` header and
-/// a key processor that decrypts fetched keys.
-pub(crate) fn make_key_options() -> KeyOptions {
+/// and binds `X-Encrypted-Key` (always) and `X-Auth-Token` (when
+/// `auth_token` is `Some`) headers to the given domain patterns. Key
+/// URLs that don't match any pattern pass through unmodified
+/// (silvercomet keys, which need no auth).
+pub fn make_key_registry(domains: &[String], auth_token: Option<String>) -> KeyProcessorRegistry {
     let cipher_key = drm_key();
     let seed: String = rand::rng()
         .sample_iter(Alphanumeric)
@@ -41,20 +57,28 @@ pub(crate) fn make_key_options() -> KeyOptions {
 
     let secret = format!("{cipher_key}{seed}");
     let cipher = UniqueBinaryCipher::new(&secret);
+    let mut headers = HashMap::new();
+    headers.insert("X-Encrypted-Key".to_string(), seed);
+    if let Some(token) = auth_token {
+        headers.insert("X-Auth-Token".to_string(), token);
+    }
 
-    let headers = [("X-Encrypted-Key".to_string(), seed)].into();
+    let rule = KeyProcessorRule::new(domains, Arc::new(move |key| Ok(cipher.decrypt(&key))))
+        .with_headers(headers);
 
-    KeyOptions::new()
-        .with_request_headers(headers)
-        .with_key_processor(Arc::new(move |key: Bytes, _ctx| Ok(cipher.decrypt(&key))))
+    let mut registry = KeyProcessorRegistry::new();
+    registry.add(rule);
+    registry
 }
 
 #[cfg(test)]
 mod tests {
+    use kithara_test_utils::kithara;
+
     use super::*;
 
-    #[test]
+    #[kithara::test]
     fn drm_key_returns_expected_default() {
-        assert_eq!(drm_key(), "kithara");
+        assert_eq!(drm_key(), "BinaryCipherKey");
     }
 }

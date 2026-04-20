@@ -1,14 +1,15 @@
-// Require at least one frontend feature.
-#[cfg(not(any(feature = "tui", feature = "gui")))]
-compile_error!("Enable at least one frontend feature: `tui` or `gui`");
+// Require at least one frontend feature — unless the crate is being
+// used as a plain library (e.g. from an integration test that only
+// needs `config` / `sources` / `drm` without iced / ratatui).
+#[cfg(not(any(feature = "tui", feature = "gui", feature = "lib-only")))]
+compile_error!("Enable at least one frontend feature: `tui`, `gui`, or `lib-only`");
 
 pub mod config;
-pub mod controls;
 pub mod crossfade;
-pub(crate) mod drm;
+pub mod drm;
 pub mod events;
 pub mod frontend;
-pub mod playlist;
+pub mod sources;
 pub mod theme;
 
 #[cfg(feature = "tui")]

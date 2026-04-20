@@ -1,0 +1,35 @@
+[package]
+name = "kithara-queue"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "AVQueuePlayer-analogue orchestration on top of kithara-play (queue, loader, navigation, crossfade-aware select)"
+
+[lints]
+workspace = true
+
+[features]
+default = ["backend-cpal"]
+backend-cpal = ["kithara-play/backend-cpal"]
+backend-web-audio = ["kithara-play/backend-web-audio"]
+
+[dependencies]
+kithara-play = { workspace = true, features = ["file", "hls"] }
+kithara-events = { workspace = true }
+
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+derivative = { workspace = true }
+derive_setters = { workspace = true }
+delegate = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+kithara-workspace-hack = { version = "0.1", path = "../kithara-workspace-hack" }
+
+[dev-dependencies]
+kithara-platform = { workspace = true }
+kithara-test-utils = { workspace = true }
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }

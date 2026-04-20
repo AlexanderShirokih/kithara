@@ -85,7 +85,7 @@ ast-grep-blocking:
       exit 1; \
     fi; \
     {{ast-grep-bin}} scan --config sgconfig.yml --report-style short \
-      --filter '^(style.no-tests-in-lib-or-mod-rs|rust.no-thin-async-wrapper|style.no-separator-comments-toml)$'
+      --filter '^(style.no-tests-in-lib-or-mod-rs|rust.no-thin-async-wrapper|style.no-separator-comments-toml|style.no-noop-in-impl|style.no-duplicate-impl|style.no-masked-unused-arg|style.multiple-private-module-consts|style.no-impl-only-consts)$'
 
 ast-grep-advisory:
     @if [[ -z "{{ast-grep-bin}}" ]]; then \
@@ -176,6 +176,16 @@ bench-run:
     cargo bench -p kithara-integration-tests --bench abr_estimator -- --sample-size "$sample_size" 2>&1 | tee bench-results.txt; \
     cargo bench -p kithara-integration-tests --bench bufpool -- --sample-size "$sample_size" 2>&1 | tee -a bench-results.txt; \
     cargo bench -p kithara-integration-tests --bench refactor_hotpaths -- --sample-size "$sample_size" 2>&1 | tee -a bench-results.txt
+
+# Lint + main suite + perf sanity + bench compile + fuzz compile.
+# Not part of `just test` (~5-10 min). Run on PR as optional CI job.
+test-with-perf:
+    just lint-fast
+    just test
+    cargo test -p kithara-integration-tests --features perf --profile test-release \
+      --test suite_perf --test memory_rss -- --test-threads=1
+    just bench-build
+    cargo +nightly fuzz build --fuzz-dir tests/fuzz --release
 
 bench-ci:
     just bench-build; \

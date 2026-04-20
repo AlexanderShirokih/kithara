@@ -24,12 +24,6 @@ pub(crate) fn run(cmd: AndroidCommand) -> Result<()> {
     }
 }
 
-const ANDROID_API_LEVEL: &str = "26";
-const RUST_TARGETS: &[(&str, &str)] = &[
-    ("aarch64-linux-android", "arm64-v8a"),
-    ("x86_64-linux-android", "x86_64"),
-];
-
 fn recreate_dir(path: &Path) -> Result<()> {
     if path.exists() {
         fs::remove_dir_all(path).with_context(|| format!("remove {}", path.display()))?;
@@ -39,6 +33,12 @@ fn recreate_dir(path: &Path) -> Result<()> {
 }
 
 pub(crate) fn run_build(profile: BuildProfile) -> Result<()> {
+    const ANDROID_API_LEVEL: &str = "26";
+    const RUST_TARGETS: &[(&str, &str)] = &[
+        ("aarch64-linux-android", "arm64-v8a"),
+        ("x86_64-linux-android", "x86_64"),
+    ];
+
     // 1. Check prerequisites.
     check_tool("cargo", &["ndk", "--help"], "cargo install cargo-ndk")?;
     check_tool("rustup", &["--version"], "https://rustup.rs")?;
@@ -70,6 +70,15 @@ pub(crate) fn run_build(profile: BuildProfile) -> Result<()> {
         .flat_map(|(_, abi)| ["-t", abi])
         .collect();
 
+    // Debug builds enable the `test` feature to expose diagnostic
+    // JNI entrypoints (e.g. offline capture) that must never ship in
+    // a release AAR.
+    let features: &str = if matches!(profile, BuildProfile::Release) {
+        "backend-uniffi,android"
+    } else {
+        "backend-uniffi,android,dev,test"
+    };
+
     let mut cmd = Command::new("cargo");
     cmd.arg("ndk")
         .arg("-P")
@@ -77,13 +86,7 @@ pub(crate) fn run_build(profile: BuildProfile) -> Result<()> {
         .args(&ndk_targets)
         .arg("-o")
         .arg(&jni_dir)
-        .args([
-            "build",
-            "-p",
-            "kithara-ffi",
-            "--features",
-            "backend-uniffi,android",
-        ]);
+        .args(["build", "-p", "kithara-ffi", "--features", features]);
 
     if matches!(profile, BuildProfile::Release) {
         cmd.arg("--release");

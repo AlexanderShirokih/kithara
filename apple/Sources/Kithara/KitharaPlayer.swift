@@ -110,19 +110,65 @@ public final class KitharaPlayer: @unchecked Sendable {
 
     // MARK: - Init
 
+    /// A single DRM rule: a key processor bound to one or more domain
+    /// patterns (exact `"example.com"` or wildcard `"*.example.com"`),
+    /// plus optional headers / query params sent with matching key
+    /// requests.
+    public struct KeyRule: Sendable {
+        public let processor: KeyProcessor
+        public let domains: [String]
+        public let headers: [String: String]?
+        public let queryParams: [String: String]?
+
+        public init(
+            processor: KeyProcessor,
+            domains: [String],
+            headers: [String: String]? = nil,
+            queryParams: [String: String]? = nil
+        ) {
+            self.processor = processor
+            self.domains = domains
+            self.headers = headers
+            self.queryParams = queryParams
+        }
+    }
+
     /// Configuration for player creation.
     public struct Config: Sendable {
         /// Number of EQ bands (log-spaced). Default: 10.
         public var eqBandCount: Int
+        /// Domain-scoped DRM rules. Evaluated in order; first match wins.
+        public var keyRules: [KeyRule]
+        /// Optional cache directory path. `nil` uses the platform default.
+        public var cacheDir: String?
 
-        public init(eqBandCount: Int = 10) {
+        public init(
+            eqBandCount: Int = 10,
+            keyRules: [KeyRule] = [],
+            cacheDir: String? = nil
+        ) {
             self.eqBandCount = eqBandCount
+            self.keyRules = keyRules
+            self.cacheDir = cacheDir
         }
     }
 
     /// Create a new player instance.
     public init(config: Config = Config()) {
-        self._inner = AudioPlayer(config: FfiPlayerConfig(eqBandCount: UInt32(config.eqBandCount)))
+        let ffiRules = config.keyRules.map { rule -> FfiKeyRule in
+            FfiKeyRule(
+                processor: KeyProcessorBridge(processor: rule.processor),
+                domains: rule.domains,
+                headers: rule.headers,
+                queryParams: rule.queryParams
+            )
+        }
+        let ffiConfig = FfiPlayerConfig(
+            eqBandCount: UInt32(config.eqBandCount),
+            keyOptions: FfiKeyOptions(rules: ffiRules),
+            store: StoreOptions(cacheDir: config.cacheDir)
+        )
+        self._inner = AudioPlayer(config: ffiConfig)
 
         let bridge = PlayerObserverBridge(subject: _eventSubject)
         _inner.setObserver(observer: bridge)
@@ -220,41 +266,47 @@ public final class KitharaPlayer: @unchecked Sendable {
         }
     }
 
-    /// Select an item at the given queue index, applying the configured
-    /// crossfade duration during the transition.
+    /// Select an item at the given queue index.
     ///
     /// - Parameters:
     ///   - index: Queue index (0-based).
-    ///   - autoplay: If `true`, begin playback immediately after the switch.
+    ///   - transition: How the switch plays — `.none` for an immediate
+    ///     cut (AVQueuePlayer user-initiated-selection idiom — default),
+    ///     `.crossfade` to use the player's configured duration.
     /// - Throws: ``KitharaError`` if the index is out of range or the item
     ///   is not yet inserted into the engine.
-    public func selectItem(at index: Int, autoplay: Bool = true) throws {
+    public func selectItem(at index: Int, transition: Transition = .none) throws {
         do {
-            try _inner.selectItem(index: UInt32(index), autoplay: autoplay)
+            try _inner.selectItem(index: UInt32(index), transition: transition.ffi)
         } catch let ffiError as FfiError {
             throw KitharaError(ffi: ffiError)
         }
+    }
+
+    /// Select an item by identity (AVQueuePlayer-style).
+    ///
+    /// Resolves the item's current index via ``items`` and delegates to
+    /// ``selectItem(at:transition:)``. Race-free against concurrent
+    /// `insert`/`remove` that would shift indices.
+    ///
+    /// - Parameters:
+    ///   - item: The item to select. Must currently be in the queue.
+    ///   - transition: `.none` by default (immediate cut); pass
+    ///     `.crossfade` for Next/Prev button UX.
+    /// - Throws: ``KitharaError/invalidArgument`` if the item is not in
+    ///   the queue, or whatever ``selectItem(at:transition:)`` throws.
+    public func selectItem(_ item: KitharaPlayerItem, transition: Transition = .none) throws {
+        let snapshot = items
+        guard let index = snapshot.firstIndex(where: { $0.id == item.id }) else {
+            throw KitharaError.invalidArgument("item \(item.id) not in queue")
+        }
+        try selectItem(at: index, transition: transition)
     }
 
     /// Crossfade duration in seconds applied on item transitions.
     public var crossfadeDuration: Float {
         get { _inner.crossfadeDuration() }
         set { _inner.setCrossfadeDuration(seconds: newValue) }
-    }
-
-    // MARK: - Key processing (DRM)
-
-    /// Set a key processor for HLS DRM key decryption.
-    ///
-    /// The processor is applied to all items' key requests when loading.
-    /// Optional `headers` are sent with every key request (e.g. `X-Encrypted-Key`).
-    ///
-    /// - Parameters:
-    ///   - processor: Callback that receives encrypted key bytes and returns decrypted bytes.
-    ///   - headers: Optional HTTP headers for key requests only.
-    public func setKeyProcessor(_ processor: KeyProcessor, headers: [String: String]? = nil) {
-        let bridge = KeyProcessorBridge(processor: processor)
-        _inner.setKeyProcessor(processor: bridge, headers: headers)
     }
 
 }

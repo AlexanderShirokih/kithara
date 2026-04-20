@@ -3,7 +3,7 @@ use kithara_stream::SourceSeekAnchor;
 use tracing::{debug, trace};
 
 use super::{core::HlsSource, types::SeekLayout};
-use crate::{HlsError, playlist::PlaylistAccess};
+use crate::{HlsError, playlist::PlaylistAccess, stream_index::VariantSegments};
 
 impl HlsSource {
     pub(super) fn resolve_seek_anchor(
@@ -15,23 +15,84 @@ impl HlsSource {
             return Err(HlsError::SegmentNotFound("empty playlist".to_string()));
         }
 
-        // Use current layout variant, NOT ABR target.
-        // ABR must not affect seek resolution — variant switch happens
-        // after seek completes, via format_change detection.
-        let mut variant = self.segments.lock_sync().layout_variant();
-        if variant >= variants {
-            variant = 0;
-        }
+        // Default policy: anchor resolves in `layout_variant` so an
+        // in-place seek doesn't uselessly recreate the decoder while
+        // the layout still has the data. Fallback to `abr_variant_index`
+        // fires ONLY when the layout is *stranded* — the target segment
+        // lies strictly past the highest committed segment index in the
+        // layout variant AND ABR has already moved on. That's the
+        // silvercomet / kithara-app shape: ABR up-switched mid-playback,
+        // peer stopped fetching the old variant, user seeks into a
+        // region the peer will never deliver. Without fallback,
+        // `wait_range` hangs forever on bytes that never arrive.
+        //
+        // We deliberately do NOT fall back on LRU-evicted holes inside
+        // the layout's fetched range: peer is still actively engaged
+        // with the layout variant (ABR is a *download target hint*,
+        // not an *abandonment signal*), so the missing segment will be
+        // re-fetched by the scheduler's tail/gap logic. Falling back
+        // there would force a decoder recreation per evicted seek
+        // target and pile up latency under stress-seek workloads.
+        let layout_variant = {
+            let segs = self.segments.lock_sync();
+            let v = segs.layout_variant();
+            if v < variants { v } else { 0 }
+        };
 
-        let (segment_index, segment_start, segment_end) = self
+        let (layout_segment_index, layout_segment_start, layout_segment_end) = self
             .playlist_state
-            .find_seek_point_for_time(variant, position)
+            .find_seek_point_for_time(layout_variant, position)
             .ok_or_else(|| {
                 HlsError::SegmentNotFound(format!(
-                    "seek point not found: variant={variant} target_ms={}",
+                    "seek point not found: variant={layout_variant} target_ms={}",
                     position.as_millis()
                 ))
             })?;
+
+        // "Stranded" is stronger than "not loaded": the layout has
+        // literally never fetched a segment at or after the target
+        // index. We use `max_stored_index` (which includes segments
+        // the LRU evicted) so that a cache miss on a previously
+        // fetched segment does NOT trip the fallback — the scheduler
+        // will re-fetch it.
+        let (layout_has_target, layout_stranded) = {
+            let segs = self.segments.lock_sync();
+            let has_target = segs.is_segment_loaded(layout_variant, layout_segment_index);
+            let max_stored = segs
+                .variant_segments(layout_variant)
+                .and_then(VariantSegments::max_stored_index);
+            drop(segs);
+            let stranded = !has_target && max_stored.is_none_or(|max| layout_segment_index > max);
+            (has_target, stranded)
+        };
+
+        let (variant, segment_index, segment_start, segment_end) =
+            if layout_has_target || !layout_stranded {
+                (
+                    layout_variant,
+                    layout_segment_index,
+                    layout_segment_start,
+                    layout_segment_end,
+                )
+            } else {
+                let abr_variant = self
+                    .coord
+                    .abr_variant_index
+                    .load(std::sync::atomic::Ordering::Acquire);
+                let fallback = if abr_variant < variants && abr_variant != layout_variant {
+                    self.playlist_state
+                        .find_seek_point_for_time(abr_variant, position)
+                        .map(|(idx, start, end)| (abr_variant, idx, start, end))
+                } else {
+                    None
+                };
+                fallback.unwrap_or((
+                    layout_variant,
+                    layout_segment_index,
+                    layout_segment_start,
+                    layout_segment_end,
+                ))
+            };
 
         let byte_offset = self
             .byte_offset_for_segment(variant, segment_index)
@@ -52,16 +113,16 @@ impl HlsSource {
 
     /// Classify a seek as Preserve or Reset.
     ///
-    /// Since `resolve_seek_anchor` always uses `layout_variant` (not ABR target),
-    /// seeks are always within the current layout → always Preserve.
-    /// Variant switches happen via `format_change` detection, not during seek.
+    /// Preserve only when the anchor stays inside the current layout variant.
+    /// Cross-variant seek is always Reset — byte spaces are per-variant and
+    /// non-convertible, so a shared codec is not enough: Preserve would leave
+    /// the layout pinned at the old variant while `anchor.byte_offset` lives
+    /// in the new variant's space, stranding `wait_range` on a segment that
+    /// will never be fetched (post-ABR-switch seek hang).
     pub(super) fn classify_seek(&self, anchor: &SourceSeekAnchor) -> SeekLayout {
         let target_variant = anchor.variant_index.unwrap_or(0);
         match self.current_layout_variant() {
             Some(current) if current == target_variant => SeekLayout::Preserve,
-            Some(current) if self.can_cross_variant_without_reset(current, target_variant) => {
-                SeekLayout::Preserve
-            }
             _ => SeekLayout::Reset,
         }
     }

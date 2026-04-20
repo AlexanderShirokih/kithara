@@ -30,17 +30,20 @@ use tracing::info;
 
 use crate::common::test_defaults::SawWav;
 
-const D: SawWav = SawWav::DEFAULT;
-const SEGMENT_COUNT: usize = 100;
-const TOTAL_BYTES: usize = SEGMENT_COUNT * D.segment_size; // 20 MB
-const SEEK_ITERATIONS: usize = 1000;
+struct Consts;
+impl Consts {
+    const D: SawWav = SawWav::DEFAULT;
+    const SEGMENT_COUNT: usize = 100;
+    const TOTAL_BYTES: usize = Self::SEGMENT_COUNT * Self::D.segment_size; // 20 MB
+    const SEEK_ITERATIONS: usize = 1000;
 
-/// Compute the expected duration in seconds for the generated WAV.
-fn expected_duration_secs() -> f64 {
-    let header_size = 44usize;
-    let bytes_per_frame = D.channels as usize * 2;
-    let frame_count = (TOTAL_BYTES - header_size) / bytes_per_frame;
-    frame_count as f64 / f64::from(D.sample_rate)
+    /// Compute the expected duration in seconds for the generated WAV.
+    fn expected_duration_secs() -> f64 {
+        let header_size = 44usize;
+        let bytes_per_frame = Self::D.channels as usize * 2;
+        let frame_count = (Self::TOTAL_BYTES - header_size) / bytes_per_frame;
+        frame_count as f64 / f64::from(Self::D.sample_rate)
+    }
 }
 
 // Stress Test
@@ -70,20 +73,25 @@ fn expected_duration_secs() -> f64 {
 #[case::mmap(false)]
 async fn stress_seek_audio_hls_wav(#[case] ephemeral: bool) {
     // Step 1: Generate WAV
-    let wav_data = create_wav_exact_bytes(signal::Sawtooth, D.sample_rate, D.channels, TOTAL_BYTES);
-    let expected_dur = expected_duration_secs();
+    let wav_data = create_wav_exact_bytes(
+        signal::Sawtooth,
+        Consts::D.sample_rate,
+        Consts::D.channels,
+        Consts::TOTAL_BYTES,
+    );
+    let expected_dur = Consts::expected_duration_secs();
     info!(
-        total_bytes = TOTAL_BYTES,
+        total_bytes = Consts::TOTAL_BYTES,
         duration_secs = format!("{expected_dur:.2}"),
         "Generated saw-tooth WAV"
     );
 
     // Step 2: Spawn HLS server with custom WAV data
-    let segment_duration =
-        D.segment_size as f64 / (f64::from(D.sample_rate) * f64::from(D.channels) * 2.0);
+    let segment_duration = Consts::D.segment_size as f64
+        / (f64::from(Consts::D.sample_rate) * f64::from(Consts::D.channels) * 2.0);
     let server = HlsTestServer::new(HlsTestServerConfig {
-        segments_per_variant: SEGMENT_COUNT,
-        segment_size: D.segment_size,
+        segments_per_variant: Consts::SEGMENT_COUNT,
+        segment_size: Consts::D.segment_size,
         segment_duration_secs: segment_duration,
         custom_data: Some(Arc::new(wav_data)),
         ..Default::default()
@@ -91,7 +99,7 @@ async fn stress_seek_audio_hls_wav(#[case] ephemeral: bool) {
     .await;
 
     let url = server.url("/master.m3u8");
-    info!(%url, segments = SEGMENT_COUNT, "HLS server ready");
+    info!(%url, segments = Consts::SEGMENT_COUNT, "HLS server ready");
 
     // Step 3: Create Audio<Stream<Hls>>
     let temp_dir = TestTempDir::new();
@@ -101,7 +109,8 @@ async fn stress_seek_audio_hls_wav(#[case] ephemeral: bool) {
     if ephemeral {
         // Ephemeral mode auto-evicts MemResources from the LRU cache.
         // Increase capacity so all segments remain accessible for random seeks.
-        store.cache_capacity = Some(NonZeroUsize::new(SEGMENT_COUNT + 10).expect("nonzero"));
+        store.cache_capacity =
+            Some(NonZeroUsize::new(Consts::SEGMENT_COUNT + 10).expect("nonzero"));
         store.ephemeral = true;
     }
 
@@ -151,7 +160,7 @@ async fn stress_seek_audio_hls_wav(#[case] ephemeral: bool) {
         let max_seek_secs = total_secs - chunk_duration_secs;
         assert!(max_seek_secs > 0.0, "stream too short for chunk size");
 
-        let seek_positions: Vec<f64> = (0..SEEK_ITERATIONS)
+        let seek_positions: Vec<f64> = (0..Consts::SEEK_ITERATIONS)
             .map(|_| rng.range_f64(0.001, max_seek_secs))
             .collect();
 
@@ -283,13 +292,13 @@ async fn stress_seek_audio_hls_wav(#[case] ephemeral: bool) {
             channel_mismatches,
             continuity_errors,
             position_errors,
-            "All {SEEK_ITERATIONS} seek+read iterations done"
+            "All {} seek+read iterations done", Consts::SEEK_ITERATIONS
         );
 
-        assert_eq!(successful_reads, SEEK_ITERATIONS as u64);
+        assert_eq!(successful_reads, Consts::SEEK_ITERATIONS as u64);
         assert_eq!(
             channel_mismatches, 0,
-            "L/R channel data diverged {channel_mismatches} times — data corruption"
+            "L/R channel data diverged {channel_mismatches} times - data corruption"
         );
         if continuity_errors > 0 {
             tracing::warn!(
@@ -299,7 +308,7 @@ async fn stress_seek_audio_hls_wav(#[case] ephemeral: bool) {
         }
         assert!(
             continuity_errors <= 5,
-            "{continuity_errors} continuity breaks (>5 tolerance) — decoder returned non-contiguous data"
+            "{continuity_errors} continuity breaks (>5 tolerance) - decoder returned non-contiguous data"
         );
         if position_errors > 0 {
             tracing::warn!(
@@ -309,7 +318,7 @@ async fn stress_seek_audio_hls_wav(#[case] ephemeral: bool) {
         }
         assert!(
             position_errors <= 3,
-            "{position_errors} position mismatches (>3 tolerance) — seek landed in wrong place"
+            "{position_errors} position mismatches (>3 tolerance) - seek landed in wrong place"
         );
 
         // Step 6: Final seek near the end → read to EOF
@@ -343,9 +352,9 @@ async fn stress_seek_audio_hls_wav(#[case] ephemeral: bool) {
             "expected EOF after reading all remaining data from {final_seek_secs:.4}s"
         );
 
-        info!(remaining_samples, "Final read done — EOF confirmed");
+        info!(remaining_samples, "Final read done - EOF confirmed");
 
-        // Step 7: Regression check — seek after EOF must resume playback.
+        // Step 7: Regression check - seek after EOF must resume playback.
         // This catches false-EOF races where seek re-queues demand, but the downloader 
         // marks EOF before demand is processed.
         let resume_positions = [0.5_f64, total_secs * 0.25, total_secs * 0.75];

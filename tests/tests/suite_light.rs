@@ -20,6 +20,7 @@ mod kithara_bufpool;
 mod kithara_decode {
     mod decoder_seek_tests;
     mod decoder_tests;
+    mod symphonia_seek_stale_duration;
     mod timeline_tests;
 }
 
@@ -28,15 +29,20 @@ mod kithara_file {
     mod early_stream_close;
     #[cfg(not(target_arch = "wasm32"))]
     mod file_source;
+    mod html_error_cleanup;
 }
 
 mod kithara_hls {
     mod abr_integration;
     mod basic_playback;
+    mod cancel_isolation;
     mod config_with_downloader;
     mod deferred_abr;
     mod driver_test;
     mod ephemeral;
+    #[cfg(not(target_arch = "wasm32"))]
+    mod html_error_body;
+    mod html_error_cleanup;
     mod keys_integration;
     mod playlist_integration;
     mod red_leak_pattern;

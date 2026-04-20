@@ -1,62 +1,63 @@
-//! Bridge between kithara broadcast events and FFI observer callbacks.
+//! Bridge between the Queue event stream and FFI observer callbacks.
 //!
-//! Subscribes to [`PlayerEvent`] channels, translates events into
-//! typed [`FfiPlayerEvent`] variants dispatched via a single
-//! [`PlayerObserver::on_event`] call. A secondary **OS thread** polls
-//! `position_seconds()` / `duration_seconds()` for periodic time
-//! updates — avoiding blocking `Mutex::lock_sync()` inside async.
+//! Subscribes to [`Queue::subscribe`] (a unified stream carrying player,
+//! audio, hls, file and queue events), translates them into typed
+//! [`FfiPlayerEvent`] variants dispatched via a single
+//! [`PlayerObserver::on_event`] call. A secondary **OS thread** drives
+//! `Queue::tick()` (which pumps `PlayerImpl::tick` and drains engine
+//! events for auto-advance) and polls `position_seconds` /
+//! `duration_seconds` for periodic time updates — avoiding blocking
+//! `Mutex::lock_sync()` inside async.
 
-use std::sync::{Arc, atomic::Ordering};
+use std::{collections::HashMap, sync::Arc};
 
-use kithara::play::{PlayerEvent, PlayerImpl};
-use kithara_events::{Event, EventReceiver};
+use kithara::play::PlayerEvent;
+use kithara_events::{Event, EventReceiver, QueueEvent, TrackId, TrackStatus};
 use kithara_platform::{Duration, JoinHandle, Mutex, sleep, spawn, tokio, tokio::sync::broadcast};
+use kithara_queue::Queue;
 use tokio_util::sync::CancellationToken;
 
-use crate::{observer::PlayerObserver, player::QueueEntry, types::FfiPlayerEvent};
+use crate::{
+    item::AudioPlayerItem,
+    observer::{ItemObserver, PlayerObserver},
+    types::{FfiItemEvent, FfiItemStatus, FfiPlayerEvent, FfiTrackStatus},
+};
 
-/// Polling interval for time/duration updates (~10 Hz).
-const TIME_POLL_INTERVAL_MS: u64 = 100;
-
-/// Threshold for suppressing redundant time/duration updates (seconds).
-const TIME_UPDATE_THRESHOLD: f64 = 0.01;
-
-/// Forwards player events to an observer on background tasks.
 pub(crate) struct EventBridge {
     cancel: CancellationToken,
     time_thread: Option<JoinHandle<()>>,
 }
 
 impl EventBridge {
-    /// Spawn background tasks that translate player events into observer
-    /// callbacks. Returns a bridge handle; dropping it cancels the tasks.
+    /// Polling interval for time/duration updates (~10 Hz).
+    const TIME_POLL_INTERVAL_MS: u64 = 100;
+
+    /// Threshold for suppressing redundant time/duration updates (seconds).
+    const TIME_UPDATE_THRESHOLD: f64 = 0.01;
+
+    /// Spawn background tasks that translate queue/player events into
+    /// observer callbacks. Returns a bridge handle; dropping it cancels
+    /// the tasks.
     pub(crate) fn spawn(
         rx: EventReceiver,
         observer: Arc<dyn PlayerObserver>,
-        player: Arc<Mutex<PlayerImpl>>,
-        queue: Arc<Mutex<Vec<Arc<QueueEntry>>>>,
+        queue: Arc<Queue>,
+        items: &Arc<Mutex<HashMap<TrackId, Arc<AudioPlayerItem>>>>,
         cancel: CancellationToken,
     ) -> Self {
-        Self::spawn_event_task(
-            rx,
-            Arc::clone(&observer),
-            Arc::clone(&player),
-            queue,
-            cancel.clone(),
-        );
-        let time_thread = Self::spawn_time_thread(player, observer, cancel.clone());
+        Self::spawn_event_task(rx, Arc::clone(&observer), Arc::clone(items), cancel.clone());
+        let time_thread = Self::spawn_time_thread(queue, observer, cancel.clone());
         Self {
             cancel,
             time_thread: Some(time_thread),
         }
     }
 
-    /// Task that listens for player events on the shared `EventBus`.
+    /// Task that listens for queue events on the unified bus.
     fn spawn_event_task(
         mut rx: EventReceiver,
         observer: Arc<dyn PlayerObserver>,
-        player: Arc<Mutex<PlayerImpl>>,
-        queue: Arc<Mutex<Vec<Arc<QueueEntry>>>>,
+        items: Arc<Mutex<HashMap<TrackId, Arc<AudioPlayerItem>>>>,
         cancel: CancellationToken,
     ) {
         crate::FFI_RUNTIME.spawn(async move {
@@ -65,8 +66,7 @@ impl EventBridge {
                     () = cancel.cancelled() => break,
                     event = rx.recv() => {
                         match event {
-                            Ok(Event::Player(ref pe)) => Self::dispatch(&observer, pe, &player, &queue),
-                            Ok(_) => {}
+                            Ok(ev) => Self::dispatch(&observer, &items, &ev),
                             Err(broadcast::error::RecvError::Lagged(_)) => continue,
                             Err(broadcast::error::RecvError::Closed) => break,
                         }
@@ -76,35 +76,34 @@ impl EventBridge {
         });
     }
 
-    /// Dedicated OS thread that polls current time and duration at ~10 Hz.
-    ///
-    /// Uses a plain thread instead of an async task to avoid blocking the
-    /// single-threaded tokio runtime with `Mutex::lock_sync()`.
+    /// Dedicated OS thread that drives `Queue::tick` and polls current
+    /// time / duration at ~10 Hz. Uses a plain thread instead of an
+    /// async task to avoid blocking the single-threaded tokio runtime
+    /// with sync locks held inside the engine.
     fn spawn_time_thread(
-        player: Arc<Mutex<PlayerImpl>>,
+        queue: Arc<Queue>,
         observer: Arc<dyn PlayerObserver>,
         cancel: CancellationToken,
     ) -> JoinHandle<()> {
         spawn(move || {
-            let interval = Duration::from_millis(TIME_POLL_INTERVAL_MS);
+            let interval = Duration::from_millis(Self::TIME_POLL_INTERVAL_MS);
             let mut last_time: Option<f64> = None;
             let mut last_duration: Option<f64> = None;
 
             while !cancel.is_cancelled() {
                 sleep(interval);
-
-                let inner = player.lock_sync();
-                // Pump Firewheel graph updates (volume, etc.) on native.
-                let _ = inner.tick();
-                inner.process_notifications();
-                let time = inner.position_seconds();
-                let duration = inner.duration_seconds();
-                drop(inner);
+                // Pump engine updates and drain `ItemDidPlayToEnd` /
+                // `CurrentItemChanged` into QueueEvents for consistent
+                // handling below.
+                let _ = queue.tick();
+                queue.player().process_notifications();
+                let time = queue.position_seconds();
+                let duration = queue.player().duration_seconds();
 
                 match time {
                     Some(t)
                         if last_time
-                            .is_none_or(|prev| (prev - t).abs() > TIME_UPDATE_THRESHOLD) =>
+                            .is_none_or(|prev| (prev - t).abs() > Self::TIME_UPDATE_THRESHOLD) =>
                     {
                         observer.on_event(FfiPlayerEvent::TimeChanged { seconds: t });
                         last_time = Some(t);
@@ -118,7 +117,7 @@ impl EventBridge {
                 match duration {
                     Some(d)
                         if last_duration
-                            .is_none_or(|prev| (prev - d).abs() > TIME_UPDATE_THRESHOLD) =>
+                            .is_none_or(|prev| (prev - d).abs() > Self::TIME_UPDATE_THRESHOLD) =>
                     {
                         observer.on_event(FfiPlayerEvent::DurationChanged { seconds: d });
                         last_duration = Some(d);
@@ -134,11 +133,83 @@ impl EventBridge {
 
     fn dispatch(
         observer: &Arc<dyn PlayerObserver>,
-        event: &PlayerEvent,
-        player: &Arc<Mutex<PlayerImpl>>,
-        queue: &Arc<Mutex<Vec<Arc<QueueEntry>>>>,
+        items: &Arc<Mutex<HashMap<TrackId, Arc<AudioPlayerItem>>>>,
+        event: &Event,
     ) {
-        let ffi_event = match event {
+        match event {
+            Event::Player(pe) => {
+                let Some(ffi_event) = Self::player_event_to_ffi(pe) else {
+                    return;
+                };
+                observer.on_event(ffi_event);
+            }
+            Event::Queue(qe) => Self::dispatch_queue_event(observer, items, qe),
+            _ => {}
+        }
+    }
+
+    fn dispatch_queue_event(
+        observer: &Arc<dyn PlayerObserver>,
+        items: &Arc<Mutex<HashMap<TrackId, Arc<AudioPlayerItem>>>>,
+        event: &QueueEvent,
+    ) {
+        match event {
+            QueueEvent::CurrentTrackChanged { id } => {
+                let item_id = id.and_then(|tid| items.lock_sync().get(&tid).map(|i| i.id()));
+                observer.on_event(FfiPlayerEvent::CurrentItemChanged { item_id });
+            }
+            QueueEvent::TrackStatusChanged { id, status } => {
+                let item = items.lock_sync().get(id).cloned();
+                if let Some(item) = item {
+                    let item_id = item.id();
+                    if let Some(item_obs) = item.observer() {
+                        Self::route_track_status_to_item(&item_obs, status);
+                    }
+                    observer.on_event(FfiPlayerEvent::TrackStatusChanged {
+                        item_id,
+                        status: FfiTrackStatus::from(status.clone()),
+                    });
+                }
+            }
+            QueueEvent::QueueEnded => {
+                observer.on_event(FfiPlayerEvent::QueueEnded);
+            }
+            QueueEvent::CrossfadeStarted { duration_seconds } => {
+                observer.on_event(FfiPlayerEvent::CrossfadeStarted {
+                    duration_seconds: *duration_seconds,
+                });
+            }
+            QueueEvent::CrossfadeDurationChanged { seconds } => {
+                observer.on_event(FfiPlayerEvent::CrossfadeDurationChanged { seconds: *seconds });
+            }
+            _ => {}
+        }
+    }
+
+    /// Translate a queue-level `TrackStatus` into per-item callbacks so
+    /// Swift `KitharaPlayerItem.eventPublisher` sees `StatusChanged` +
+    /// `Error` without having to subscribe to the player-level stream.
+    fn route_track_status_to_item(observer: &Arc<dyn ItemObserver>, status: &TrackStatus) {
+        match status {
+            TrackStatus::Loaded => {
+                observer.on_event(FfiItemEvent::StatusChanged {
+                    status: FfiItemStatus::ReadyToPlay,
+                });
+            }
+            TrackStatus::Failed(reason) => {
+                observer.on_event(FfiItemEvent::StatusChanged {
+                    status: FfiItemStatus::Failed,
+                });
+                observer.on_event(FfiItemEvent::Error {
+                    error: reason.clone(),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    fn player_event_to_ffi(event: &PlayerEvent) -> Option<FfiPlayerEvent> {
+        Some(match event {
             PlayerEvent::RateChanged { rate } => FfiPlayerEvent::RateChanged { rate: *rate },
             PlayerEvent::StatusChanged { status } => FfiPlayerEvent::StatusChanged {
                 status: (*status).into(),
@@ -148,24 +219,15 @@ impl EventBridge {
                     status: (*status).into(),
                 }
             }
-            PlayerEvent::CurrentItemChanged => {
-                let engine_idx = player.lock_sync().current_index();
-                let item_id = queue
-                    .lock_sync()
-                    .iter()
-                    .filter(|e| e.inserted_into_engine.load(Ordering::Acquire))
-                    .nth(engine_idx)
-                    .map(|e| e.item.id());
-                FfiPlayerEvent::CurrentItemChanged { item_id }
-            }
             PlayerEvent::VolumeChanged { volume } => {
                 FfiPlayerEvent::VolumeChanged { volume: *volume }
             }
             PlayerEvent::MuteChanged { muted } => FfiPlayerEvent::MuteChanged { muted: *muted },
             PlayerEvent::ItemDidPlayToEnd => FfiPlayerEvent::ItemDidPlayToEnd,
-            _ => return,
-        };
-        observer.on_event(ffi_event);
+            // `PlayerEvent::CurrentItemChanged` is shadowed by
+            // `QueueEvent::CurrentTrackChanged` (carries the item id).
+            _ => return None,
+        })
     }
 }
 

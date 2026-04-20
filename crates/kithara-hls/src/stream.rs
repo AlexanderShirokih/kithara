@@ -1,5 +1,9 @@
-use std::sync::{Arc, Mutex as StdMutex};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex as StdMutex},
+};
 
+use futures::future::{join, join_all};
 use kithara_assets::{
     AssetStore, AssetStoreBuilder, OnInvalidatedFn, ProcessChunkFn, ResourceKey, asset_root_for_url,
 };
@@ -17,7 +21,7 @@ use crate::{
     coord::HlsCoord,
     error::HlsError,
     loading::{KeyManager, PlaylistCache, SegmentLoader},
-    parsing::variant_info_from_master,
+    parsing::{EncryptionMethod, variant_info_from_master},
     peer::HlsPeer,
     playlist::PlaylistState,
     source::{HlsSource, build_pair},
@@ -50,7 +54,6 @@ fn make_invalidation_callback(
 
 impl StreamType for Hls {
     type Config = HlsConfig;
-    type Coord = Arc<HlsCoord>;
     type Source = HlsSource;
     type Error = HlsError;
     type Events = EventBus;
@@ -69,15 +72,7 @@ impl StreamType for Hls {
             .unwrap_or_else(|| EventBus::new(config.event_channel_capacity));
 
         let downloader = config.downloader.clone().unwrap_or_else(|| {
-            let mut net_opts = config.net.clone();
-            let slow_bus = bus.clone();
-            net_opts.on_slow = Some(Arc::new(move || slow_bus.publish(HlsEvent::LoadSlow)));
-            let mut dl_config = DownloaderConfig::default()
-                .with_net(net_opts)
-                .with_cancel(cancel.child_token());
-            if let Some(handle) = config.runtime.clone() {
-                dl_config = dl_config.with_runtime(handle);
-            }
+            let dl_config = DownloaderConfig::default().with_cancel(cancel.child_token());
             Downloader::new(dl_config)
         });
 
@@ -106,10 +101,16 @@ impl StreamType for Hls {
         if let Some(cap) = config.store.cache_capacity {
             builder = builder.cache_capacity(cap);
         }
+        if let Some(n) = config.store.checkpoint_every {
+            builder = builder.checkpoint_every(n);
+        }
         let backend: AssetStore<DecryptContext> = builder.build();
 
-        let hls_peer = Arc::new(HlsPeer::new());
-        let peer_handle = downloader.register(Arc::clone(&hls_peer) as Arc<dyn Peer>);
+        let timeline = Timeline::new();
+        let hls_peer = Arc::new(HlsPeer::new(timeline.clone()));
+        let peer_handle = downloader
+            .register(Arc::clone(&hls_peer) as Arc<dyn Peer>)
+            .with_bus(bus.clone());
 
         let playlist_cache = PlaylistCache::new(backend.clone(), peer_handle.clone());
         playlist_cache.set_master_url(config.url.clone());
@@ -181,6 +182,7 @@ impl StreamType for Hls {
             &config,
             Arc::clone(&playlist_state),
             bus,
+            timeline,
         );
         *invalidation_target
             .lock()
@@ -208,10 +210,6 @@ async fn prefetch_init_and_keys(
     key_manager: &Arc<KeyManager>,
     media_playlists: &[(url::Url, crate::parsing::MediaPlaylist)],
 ) {
-    use std::collections::HashSet;
-
-    use crate::parsing::EncryptionMethod;
-
     let num_variants = media_playlists.len();
 
     let init_futs: Vec<_> = (0..num_variants)
@@ -249,11 +247,7 @@ async fn prefetch_init_and_keys(
         })
         .collect();
 
-    let (init_results, key_results) = futures::future::join(
-        futures::future::join_all(init_futs),
-        futures::future::join_all(key_futs),
-    )
-    .await;
+    let (init_results, key_results) = join(join_all(init_futs), join_all(key_futs)).await;
 
     for (variant, result) in init_results {
         if let Err(e) = result {

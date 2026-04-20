@@ -15,7 +15,6 @@ internal = []  # Expose internal types for testing
 
 [dependencies]
 rkyv = { workspace = true }
-bytecheck = { workspace = true }
 bitflags = { workspace = true }
 dashmap = { workspace = true }
 delegate = { workspace = true }
@@ -29,6 +28,7 @@ rangemap = { workspace = true }
 serde = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }

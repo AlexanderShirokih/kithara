@@ -20,6 +20,7 @@ members = [
     "crates/kithara-hang-detector",
     "crates/kithara-hang-detector-macros",
     "crates/kithara-play",
+    "crates/kithara-queue",
     "crates/kithara-test-utils",
     "crates/kithara-test-macros",
     "crates/kithara-app",
@@ -51,6 +52,7 @@ default-members = [
     "crates/kithara-hang-detector",
     "crates/kithara-hang-detector-macros",
     "crates/kithara-play",
+    "crates/kithara-queue",
     "crates/kithara-test-utils",
     "crates/kithara-test-macros",
     "tests",
@@ -149,6 +151,7 @@ kithara-platform = { path = "crates/kithara-platform", version = "0.1.0" }
 kithara-hang-detector = { path = "crates/kithara-hang-detector", version = "0.1.0" }
 kithara-hang-detector-macros = { path = "crates/kithara-hang-detector-macros", version = "0.1.0" }
 kithara-play = { path = "crates/kithara-play", version = "0.1.0", default-features = false }
+kithara-queue = { path = "crates/kithara-queue", version = "0.1.0" }
 kithara-storage = { path = "crates/kithara-storage", version = "0.1.0" }
 kithara-stream = { path = "crates/kithara-stream", version = "0.1.0" }
 kithara-test-macros = { path = "crates/kithara-test-macros" }
@@ -156,14 +159,14 @@ kithara-test-utils = { path = "crates/kithara-test-utils" }
 kithara-wasm = { path = "crates/kithara-wasm" }
 kithara-wasm-macros = { path = "crates/kithara-wasm-macros" }
 kithara-ffi = { path = "crates/kithara-ffi" }
-kithara-app = { path = "crates/kithara-app" }
+kithara-app = { path = "crates/kithara-app", default-features = false }
 kithara-workspace-hack = { path = "crates/kithara-workspace-hack", version = "0.1.0" }
 rstest = { version = "0.26.1", features = ["async-timeout", "crate-name"] }
 serial_test = "3.4.0"
 unimock = { version = "0.6", features = ["std"] }
 
 # async/runtime
-tokio = { version = "1.50.0", default-features = false, features = ["sync", "macros", "rt", "time"] }
+tokio = { version = "1.52.1", default-features = false, features = ["sync", "macros", "rt", "time"] }
 tokio_with_wasm = { version = "0.9", features = ["full"] }
 tokio-util = { version = "0.7.18", default-features = false }
 tokio-stream = "0.1.18"
@@ -183,7 +186,7 @@ crossbeam-queue = "0.3"
 # http/url
 reqwest = { version = "0.13.2", default-features = false }
 url = "2.5.8"
-axum = "0.8.8"
+axum = "0.8.9"
 
 # hls parsing
 hls_m3u8 = "0.5.1"
@@ -198,15 +201,16 @@ ffmpeg-next = "8.1.0"
 dasp = { version = "0.11", features = ["interpolate", "interpolate-linear", "signal"] }
 rodio = { version = "0.22.2", default-features = false }
 ratatui = "0.30.0"
-rubato = "1.0"
-audioadapter-buffers = "2.0"
+rubato = "2.0"
+audioadapter-buffers = "3.0"
 smallvec = "1"
 
 # audio engine
+cpal = { version = "0.17", default-features = false }
 firewheel = { version = "0.10.0", default-features = false, features = ["std", "pool", "all_nodes", "musical_transport", "scheduled_events", "tracing"] }
 firewheel-web-audio = { version = "0.4.0", default-features = false }
 bevy_platform = { version = "0.18", default-features = false, features = ["alloc", "std", "web"] }
-biquad = "0.5.0"
+biquad = "0.6.0"
 thunderdome = { version = "0.6.1", default-features = false }
 portable-atomic = { version = "1.13.1", default-features = false, features = ["fallback", "float"] }
 
@@ -232,8 +236,8 @@ web-sys = { version = "0.3", features = ["Blob", "BroadcastChannel", "console", 
 base64 = "0.22.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-rkyv = { version = "0.7.45", features = ["validation"] }
-bytecheck = "0.6.11"
+rkyv = "0.8.15"
+bytecheck = "0.8.2"
 
 # hex encoding
 hex = "0.4"
@@ -241,12 +245,12 @@ hex = "0.4"
 # crypto/obfuscation
 crabtime = "1.1.4"
 obfstr = "0.4.4"
-rand = "0.10.0"
+rand = "0.10.1"
 
 # misc
 glob = "0.3"
-aes = "0.8.4"
-cbc = "0.1.2"
+aes = "0.9.0"
+cbc = "0.2.0"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.11"
 tower = "0.5.3"
@@ -254,8 +258,8 @@ tower-http = { version = "0.6", features = ["cors", "fs", "set-header"] }
 tempfile = "3.27.0"
 
 # FFI
-uniffi = { version = "0.31.0" }
-jni = "0.21"
+uniffi = { version = "0.31.1" }
+jni = "0.22"
 ndk-context = "0.1.1"
 rustls-platform-verifier = "0.6.2"
 
@@ -278,7 +282,7 @@ mmap-io = { version = "0.9", default-features = false }
 dashmap = "6.1.0"
 derivative = "2.2"
 derive_setters = "0.1"
-lru = "0.16"
+lru = "0.17"
 
 # fuzzing
 libfuzzer-sys = "0.4"
@@ -291,7 +295,7 @@ stats_alloc = "0.1"
 assert_no_alloc = "1.1"
 
 # performance monitoring
-hotpath = "0.14.0"
+hotpath = "0.15.0"
 criterion = "0.8.2"
 
 # fast interleave/deinterleave

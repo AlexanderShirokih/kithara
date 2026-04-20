@@ -4,16 +4,25 @@ use std::sync::{
 };
 
 use jni::{
-    JNIEnv,
-    objects::{GlobalRef, JClass, JObject},
+    Env, JNIEnv,
+    objects::{Global, JClass, JObject},
+    strings::JNIString,
     sys::jint,
+};
+use jni_rpv::{
+    objects::JObject as JObject021,
+    sys::{JNIEnv as SysEnv021, jobject as JObject021Raw},
 };
 use rustls_platform_verifier::android as rustls_android;
 use tracing::error;
 use tracing_subscriber::{filter::LevelFilter, prelude::*};
 
-static ANDROID_CONTEXT_READY: AtomicBool = AtomicBool::new(false);
-static ANDROID_CONTEXT_GLOBAL: OnceLock<GlobalRef> = OnceLock::new();
+mod android_context {
+    use super::{AtomicBool, Global, JObject, OnceLock};
+
+    pub(super) static READY: AtomicBool = AtomicBool::new(false);
+    pub(super) static GLOBAL: OnceLock<Global<JObject<'static>>> = OnceLock::new();
+}
 
 #[expect(unreachable_pub, reason = "JNI entrypoint must remain exported")]
 #[unsafe(no_mangle)]
@@ -23,37 +32,68 @@ pub extern "system" fn Java_com_kithara_Kithara_nativeInit(
     context: JObject<'_>,
     log_level: jint,
 ) {
-    if !ANDROID_CONTEXT_READY.load(Ordering::Acquire) {
+    if !android_context::READY.load(Ordering::Acquire) {
         let filter = level_filter(log_level);
         if let Ok(layer) = tracing_android::layer("kithara") {
             let _ = tracing_subscriber::registry()
                 .with(layer.with_filter(filter))
                 .try_init();
         }
-        match init_android_context(&mut env, &context) {
-            Ok(()) => {
-                ANDROID_CONTEXT_READY.store(true, Ordering::Release);
+
+        let mut init_ok = false;
+        let _ = env.with_env_no_catch(|env| -> Result<(), jni::errors::Error> {
+            match init_android_context(env, &context) {
+                Ok(()) => {
+                    android_context::READY.store(true, Ordering::Release);
+                    init_ok = true;
+                    Ok(())
+                }
+                Err(message) => {
+                    error!(message = %message);
+                    env.throw_new(
+                        JNIString::from("java/lang/IllegalStateException"),
+                        JNIString::from(message.as_str()),
+                    )
+                }
             }
-            Err(message) => {
-                error!(message = %message);
-                let _ = env.throw_new("java/lang/IllegalStateException", &message);
-                return;
-            }
+        });
+        if !init_ok {
+            return;
         }
     }
 
-    if let Err(err) = rustls_android::init_with_env(&mut env, context) {
-        let message = format!("failed to initialize rustls platform verifier: {err}");
-        error!(message = %message);
-        let _ = env.throw_new("java/lang/IllegalStateException", &message);
-    }
+    let _ = env.with_env_no_catch(|env| -> Result<(), jni::errors::Error> {
+        let raw_env = env.get_raw();
+        let raw_ctx: JObject021Raw = context.as_raw().cast();
+        // SAFETY:
+        // - `raw_env` is a live `*mut jni::sys::JNIEnv` obtained from the
+        //   caller's JNI env for the duration of this call.
+        // - `raw_ctx` is the same Android `Context` JObject already pinned
+        //   as a global ref in `init_android_context`.
+        // - `sys::JNIEnv` is the C-FFI layout shared across jni 0.21/0.22.
+        let result = unsafe {
+            let mut env_021 = jni_rpv::JNIEnv::from_raw(raw_env.cast::<SysEnv021>())
+                .expect("jni_rpv::JNIEnv::from_raw");
+            let ctx_021 = JObject021::from_raw(raw_ctx);
+            rustls_android::init_with_env(&mut env_021, ctx_021)
+        };
+        if let Err(err) = result {
+            let message = format!("failed to initialize rustls platform verifier: {err}");
+            error!(message = %message);
+            env.throw_new(
+                JNIString::from("java/lang/IllegalStateException"),
+                JNIString::from(message.as_str()),
+            )?;
+        }
+        Ok(())
+    });
 }
 
-const LOG_LEVEL_INFO: jint = 2;
-const LOG_LEVEL_WARN: jint = 3;
-const LOG_LEVEL_ERROR: jint = 4;
-
 fn level_filter(ordinal: jint) -> LevelFilter {
+    const LOG_LEVEL_INFO: jint = 2;
+    const LOG_LEVEL_WARN: jint = 3;
+    const LOG_LEVEL_ERROR: jint = 4;
+
     match ordinal {
         0 => LevelFilter::TRACE,
         1 => LevelFilter::DEBUG,
@@ -64,7 +104,7 @@ fn level_filter(ordinal: jint) -> LevelFilter {
     }
 }
 
-fn init_android_context(env: &mut JNIEnv<'_>, context: &JObject<'_>) -> Result<(), String> {
+fn init_android_context(env: &mut Env<'_>, context: &JObject<'_>) -> Result<(), String> {
     let java_vm = env
         .get_java_vm()
         .map_err(|err| format!("failed to get JavaVM: {err}"))?;
@@ -74,8 +114,8 @@ fn init_android_context(env: &mut JNIEnv<'_>, context: &JObject<'_>) -> Result<(
         .new_global_ref(context)
         .map_err(|err| format!("failed to create global context ref: {err}"))?;
 
-    let _ = ANDROID_CONTEXT_GLOBAL.set(context_global);
-    let Some(global) = ANDROID_CONTEXT_GLOBAL.get() else {
+    let _ = android_context::GLOBAL.set(context_global);
+    let Some(global) = android_context::GLOBAL.get() else {
         return Err("failed to store android context global ref".into());
     };
 
@@ -88,7 +128,7 @@ fn init_android_context(env: &mut JNIEnv<'_>, context: &JObject<'_>) -> Result<(
     // so ndk_context is not auto-initialized by runtime.
     unsafe {
         ndk_context::initialize_android_context(
-            java_vm.get_java_vm_pointer().cast(),
+            java_vm.get_raw().cast(),
             global.as_obj().as_raw().cast(),
         );
     }

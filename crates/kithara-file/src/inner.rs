@@ -26,7 +26,6 @@ pub struct File;
 
 impl StreamType for File {
     type Config = FileConfig;
-    type Coord = Arc<FileCoord>;
     type Source = FileSource;
     type Error = SourceError;
     type Events = EventBus;
@@ -62,10 +61,12 @@ impl File {
             )));
         }
 
-        let store = AssetStoreBuilder::new()
-            .asset_root(None)
-            .cancel(cancel)
-            .build();
+        let store = Arc::new(
+            AssetStoreBuilder::new()
+                .asset_root(None)
+                .cancel(cancel)
+                .build(),
+        );
 
         let key = ResourceKey::absolute(path);
         let res = store.open_resource(&key).map_err(SourceError::Assets)?;
@@ -82,7 +83,7 @@ impl File {
         coord.set_download_pos(total);
         bus.publish(FileEvent::DownloadComplete { total_bytes: total });
 
-        Ok(FileSource::local(res, coord, bus))
+        Ok(FileSource::local(res, coord, bus, store, key))
     }
 
     /// Create a source for a remote file.
@@ -142,11 +143,15 @@ impl File {
                 state.res.clone(),
                 coord,
                 state.bus.clone(),
+                Arc::clone(&state.backend),
+                state.key.clone(),
             ));
         }
 
         // Register a peer and get a PeerHandle for HTTP requests.
-        let peer_handle = downloader.register(Arc::new(FilePeer));
+        let peer_handle = downloader
+            .register(Arc::new(FilePeer::new(coord.timeline())))
+            .with_bus(state.bus.clone());
 
         // Create source — spawns download tasks internally.
         let source = FileSource::remote(

@@ -9,7 +9,7 @@ use std::{
 use aes::Aes128;
 use cbc::{
     Encryptor,
-    cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7},
+    cipher::{BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7},
 };
 use kithara_encode::{EncodeError, EncodedTrack, EncoderFactory, PackagedEncodeRequest};
 use kithara_stream::MediaInfo;
@@ -516,8 +516,8 @@ fn encrypt_aes128_cbc(data: &[u8], key: &[u8; 16], iv: &[u8; 16]) -> Vec<u8> {
     let mut buf = vec![0u8; padded_len];
     buf[..data.len()].copy_from_slice(data);
     let ciphertext = encryptor
-        .encrypt_padded_mut::<Pkcs7>(&mut buf, data.len())
-        .expect("encrypt_padded_mut");
+        .encrypt_padded::<Pkcs7>(&mut buf, data.len())
+        .expect("encrypt_padded");
     ciphertext.to_vec()
 }
 
@@ -528,9 +528,10 @@ mod tests {
         fixture_protocol::{DataMode, EncryptionRequest},
         hls_spec::parse_hls_spec_with,
         hls_url::{HlsSpec, encode_hls_spec},
+        kithara,
     };
 
-    #[test]
+    #[kithara::test]
     fn builds_master_and_media_playlist() {
         let spec =
             parse_hls_spec_with(&encode_hls_spec(&HlsSpec::default()), |_| unreachable!()).unwrap();
@@ -548,7 +549,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[kithara::test]
     fn encrypts_segment_payload() {
         let spec = parse_hls_spec_with(
             &encode_hls_spec(&HlsSpec {
@@ -569,7 +570,7 @@ mod tests {
         assert_ne!(bytes, generate_segment(0, 0, 32));
     }
 
-    #[test]
+    #[kithara::test]
     fn packaged_segments_can_exceed_requested_segment_count() {
         let spec = crate::test_server::HlsFixtureBuilder::new()
             .variant_count(1)

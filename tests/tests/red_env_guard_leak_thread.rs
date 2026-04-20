@@ -8,7 +8,6 @@
 //! ```
 //!
 //! What LEAK means in nextest
-//! --------------------------
 //! Each test runs in its own subprocess (invocation of the test binary with
 //! `--exact`).  After the test body completes, nextest waits up to
 //! `leak-timeout` (default **100 ms**) for the subprocess to close stdout,
@@ -16,7 +15,6 @@
 //! passes but its subprocess held resources past the grace window.
 //!
 //! Hypothesis
-//! ----------
 //! The `#[kithara::test(native, env(...), timeout(Duration::from_secs(5)))]`
 //! macro expands into a sync `#[test]` fn whose tail is:
 //!
@@ -44,7 +42,6 @@
 //! which is what triggers LEAK.
 //!
 //! What this RED test measures
-//! ---------------------------
 //! We launch the real test binary
 //! `env_guard::no_proxy_env_keeps_explicit_proxy_override` as a subprocess
 //! and measure the **wall-clock gap between our parent reading EOF on its
@@ -71,6 +68,8 @@ use std::{
     },
     time::{Duration, Instant},
 };
+
+use kithara::test as kithara_test;
 
 /// Locate the compiled `suite_light` binary next to our own test binary.
 ///
@@ -132,7 +131,7 @@ fn spawn_and_measure_leak_gap() -> Duration {
     exited_at.saturating_duration_since(eof_at)
 }
 
-#[test]
+#[kithara_test(native)]
 fn red_env_guard_no_leak_in_isolation() {
     let gap = spawn_and_measure_leak_gap();
     assert!(
@@ -143,7 +142,7 @@ fn red_env_guard_no_leak_in_isolation() {
     );
 }
 
-#[test]
+#[kithara_test(native)]
 fn red_env_guard_no_leak_under_env_lock_contention() {
     // Reproduce LEAK conditions: many in-parent workers hammer the
     // `test_env_lock` while the child subprocess runs its own env test.

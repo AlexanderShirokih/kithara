@@ -248,7 +248,7 @@ impl Resource {
 mod tests {
     use kithara_audio::mock::TestPcmReader;
     use kithara_decode::PcmSpec;
-    use kithara_events::{AudioEvent, Event, EventBus};
+    use kithara_events::{AudioEvent, AudioFormat, Event, EventBus};
     use kithara_platform::{time, time::Duration};
     use kithara_test_utils::kithara;
 
@@ -358,14 +358,17 @@ mod tests {
 
         // Publish an AudioEvent through the shared bus directly.
         let spec = mock_spec();
-        bus.publish(AudioEvent::FormatDetected { spec });
+        let format = AudioFormat::new(spec.channels, spec.sample_rate);
+        bus.publish(AudioEvent::FormatDetected { spec: format });
 
         let event = time::timeout(Duration::from_millis(200), rx.recv())
             .await
             .unwrap()
             .unwrap();
 
-        assert!(matches!(event, Event::Audio(AudioEvent::FormatDetected { spec: s }) if s == spec));
+        assert!(
+            matches!(event, Event::Audio(AudioEvent::FormatDetected { spec: s }) if s == format)
+        );
     }
 
     #[kithara::test(tokio)]

@@ -22,8 +22,6 @@ use crate::{
     BytesEncodeRequest, BytesEncodeTarget, EncodeError, EncodeResult, EncodedBytes, PcmSource,
 };
 
-const DIRECT_PCM_CHUNK_FRAMES: usize = 1024;
-
 struct EncodeTarget {
     ext: &'static str,
     mime: &'static str,
@@ -102,6 +100,7 @@ fn encode_direct_pcm(
     output_path: &Path,
     target: &EncodeTarget,
 ) -> Result<(), EncodeError> {
+    const DIRECT_PCM_CHUNK_FRAMES: usize = 1024;
     let mut octx = av_format::output(output_path)?;
     let mut encoder = DirectEncoder::new(
         &mut octx,
@@ -237,16 +236,18 @@ fn write_encoded_packets(
 
 #[cfg(test)]
 mod tests {
+    use kithara_test_utils::kithara;
+
     use crate::{
         BytesEncodeRequest, BytesEncodeTarget, EncoderFactory, test_pcm::SawtoothPcmFixture,
     };
 
-    const SAMPLE_RATE: u32 = 48_000;
-    const CHANNELS: u16 = 2;
-    const AAC_FRAME_SAMPLES: usize = 1024;
-
-    #[test]
+    #[kithara::test]
     fn encode_bytes_happy_paths_return_expected_metadata_and_container_markers() {
+        const SAMPLE_RATE: u32 = 48_000;
+        const CHANNELS: u16 = 2;
+        const AAC_FRAME_SAMPLES: usize = 1024;
+
         let pcm = SawtoothPcmFixture::new(4 * AAC_FRAME_SAMPLES, SAMPLE_RATE, CHANNELS);
         let cases = [
             BytesEncodeTarget::Mp3,

@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::TryStreamExt;
-use kithara_platform::tokio;
 use reqwest::Client;
 use url::Url;
 
@@ -13,6 +12,28 @@ use crate::{
 
 /// HTTP 206 Partial Content status code.
 const HTTP_PARTIAL_CONTENT: u16 = 206;
+
+/// Truncate an HTTP error body so it stays useful in logs without dumping
+/// kilobytes of HTML (rate-limit stubs, anti-bot challenges). Preserves
+/// the first 200 characters (char-aligned to not split a UTF-8 codepoint)
+/// and appends a `…(truncated, N chars total)` suffix for anything longer.
+fn truncate_error_body(mut body: String) -> String {
+    /// Maximum characters of an HTTP error body kept in
+    /// [`NetError::HttpError`].
+    const MAX_CHARS: usize = 200;
+
+    let total = body.chars().count();
+    if total <= MAX_CHARS {
+        return body;
+    }
+    let cut_at = body
+        .char_indices()
+        .nth(MAX_CHARS)
+        .map_or(body.len(), |(i, _)| i);
+    body.truncate(cut_at);
+    body.push_str(&format!("…(truncated, {total} chars total)"));
+    body
+}
 
 /// Extract response headers into our [`Headers`] type.
 fn extract_headers(resp: &reqwest::Response) -> Headers {
@@ -98,26 +119,6 @@ impl HttpClient {
         let stream = resp.bytes_stream().map_err(NetError::from);
         crate::ByteStream::new(headers, Box::pin(stream))
     }
-
-    /// Send with soft timeout notification.
-    ///
-    /// Hard timeout must be applied via `req.timeout()` on the request builder
-    /// before calling this. If soft timeout fires first, calls `on_slow`
-    /// callback and continues waiting for the hard timeout.
-    async fn send_with_soft(
-        &self,
-        req: reqwest::RequestBuilder,
-    ) -> Result<reqwest::Response, NetError> {
-        let send = req.send();
-        tokio::pin!(send);
-        tokio::select! {
-            result = &mut send => result.map_err(NetError::from),
-            () = tokio::time::sleep(self.options.soft_timeout) => {
-                if let Some(ref cb) = self.options.on_slow { cb(); }
-                send.await.map_err(NetError::from)
-            }
-        }
-    }
 }
 
 impl std::fmt::Debug for HttpClient {
@@ -137,11 +138,11 @@ impl Net for HttpClient {
         let req = Self::apply_headers(req, headers);
         let req = req.timeout(self.options.request_timeout);
 
-        let resp = self.send_with_soft(req).await?;
+        let resp = req.send().await.map_err(NetError::from)?;
         let status = resp.status();
 
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = truncate_error_body(resp.text().await.unwrap_or_default());
             return Err(NetError::HttpError {
                 url,
                 status: status.as_u16(),
@@ -162,11 +163,11 @@ impl Net for HttpClient {
         let req = Self::apply_headers(req, headers);
         let req = req.timeout(self.options.request_timeout);
 
-        let resp = self.send_with_soft(req).await?;
+        let resp = req.send().await.map_err(NetError::from)?;
         let status = resp.status();
 
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = truncate_error_body(resp.text().await.unwrap_or_default());
             return Err(NetError::HttpError {
                 url,
                 status: status.as_u16(),
@@ -191,11 +192,11 @@ impl Net for HttpClient {
         req = Self::apply_headers(req, headers);
         let req = req.timeout(self.options.request_timeout);
 
-        let resp = self.send_with_soft(req).await?;
+        let resp = req.send().await.map_err(NetError::from)?;
         let status = resp.status();
 
         if !(status.is_success() || status.as_u16() == HTTP_PARTIAL_CONTENT) {
-            let body = resp.text().await.unwrap_or_default();
+            let body = truncate_error_body(resp.text().await.unwrap_or_default());
             return Err(NetError::HttpError {
                 url,
                 status: status.as_u16(),
@@ -216,7 +217,7 @@ impl Net for HttpClient {
             let mut req = self.inner.get(url.clone()).header("Range", "bytes=0-0");
             req = Self::apply_headers(req, headers);
             let req = req.timeout(self.options.request_timeout);
-            self.send_with_soft(req).await?
+            req.send().await.map_err(NetError::from)?
         };
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -224,13 +225,13 @@ impl Net for HttpClient {
             let req = self.inner.head(url.clone());
             let req = Self::apply_headers(req, headers);
             let req = req.timeout(self.options.request_timeout);
-            self.send_with_soft(req).await?
+            req.send().await.map_err(NetError::from)?
         };
 
         let status = resp.status();
 
         if !status.is_success() && status.as_u16() != HTTP_PARTIAL_CONTENT {
-            let body = resp.text().await.unwrap_or_default();
+            let body = truncate_error_body(resp.text().await.unwrap_or_default());
             return Err(NetError::HttpError {
                 url,
                 status: status.as_u16(),

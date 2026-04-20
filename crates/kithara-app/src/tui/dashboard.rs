@@ -1,5 +1,6 @@
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
+use kithara_queue::{Queue, TrackEntry, TrackStatus};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -8,38 +9,12 @@ use ratatui::{
     widgets::{Clear, Paragraph},
 };
 
-use crate::{
-    playlist::{Playlist, TrackStatus},
-    theme::tui::TuiPalette,
-};
-
-const MIN_PROGRESS_BAR_WIDTH: usize = 4;
-const NOTE_MAX_CHARS: usize = 26;
-
-const PROGRESS_BAR_OVERHEAD: usize = 14;
-
-const BAR_COL_TRACK_PCT: u16 = 25;
-const BAR_COL_PROGRESS_PCT: u16 = 25;
-const BAR_COL_QUEUE_PCT: u16 = 12;
-const BAR_COL_CROSSFADE_PCT: u16 = 10;
-const BAR_COL_VOLUME_PCT: u16 = 8;
-const BAR_COL_NOTE_PCT: u16 = 20;
-
-const ELLIPSIS_LEN: usize = 3;
-
-const PERCENT_SCALE: f32 = 100.0;
-
-const MS_PER_SECOND: u64 = 1000;
-const SECONDS_PER_MINUTE: u64 = 60;
+use crate::theme::tui::TuiPalette;
 
 /// TUI dashboard widget for the Kithara player.
 ///
 /// Renders playlist, progress bar, volume, and status information
 /// using ratatui inline viewport.
-/// Frames between blink toggles (~500ms at 100ms poll).
-const BLINK_DIVISOR: u64 = 5;
-const BLINK_PERIOD: u64 = 2;
-
 pub struct Dashboard {
     colors: TuiPalette,
     crossfade_progress: Option<f32>,
@@ -48,15 +23,38 @@ pub struct Dashboard {
     item_count: usize,
     last_note: Option<String>,
     playing: bool,
-    playlist: Arc<Playlist>,
+    tracks: Vec<TrackEntry>,
     position_ms: u64,
     total_ms: Option<u64>,
     volume: f32,
 }
 
 impl Dashboard {
+    const MIN_PROGRESS_BAR_WIDTH: usize = 4;
+    const NOTE_MAX_CHARS: usize = 26;
+
+    const PROGRESS_BAR_OVERHEAD: usize = 14;
+
+    const BAR_COL_TRACK_PCT: u16 = 25;
+    const BAR_COL_PROGRESS_PCT: u16 = 25;
+    const BAR_COL_QUEUE_PCT: u16 = 12;
+    const BAR_COL_CROSSFADE_PCT: u16 = 10;
+    const BAR_COL_VOLUME_PCT: u16 = 8;
+    const BAR_COL_NOTE_PCT: u16 = 20;
+
+    const ELLIPSIS_LEN: usize = 3;
+
+    const PERCENT_SCALE: f32 = 100.0;
+
+    const MS_PER_SECOND: u64 = 1000;
+    const SECONDS_PER_MINUTE: u64 = 60;
+
+    /// Frames between blink toggles (~500ms at 100ms poll).
+    const BLINK_DIVISOR: u64 = 5;
+    const BLINK_PERIOD: u64 = 2;
+
     #[must_use]
-    pub fn new(playlist: Arc<Playlist>, palette: TuiPalette) -> Self {
+    pub fn new(palette: TuiPalette) -> Self {
         Self {
             colors: palette,
             crossfade_progress: None,
@@ -65,17 +63,26 @@ impl Dashboard {
             item_count: 0,
             last_note: None,
             playing: false,
-            playlist,
+            tracks: Vec::new(),
             position_ms: 0,
             total_ms: None,
             volume: 1.0,
         }
     }
 
+    pub fn refresh_tracks(&mut self, queue: &Queue) {
+        self.tracks = queue.tracks();
+    }
+
+    #[must_use]
+    pub fn track_count(&self) -> usize {
+        self.tracks.len()
+    }
+
     #[must_use]
     #[expect(clippy::cast_possible_truncation)]
     pub fn height(&self) -> u16 {
-        self.playlist.len() as u16 + 1
+        self.tracks.len() as u16 + 1
     }
 
     pub fn set_crossfade_progress(&mut self, progress: Option<f32>) {
@@ -114,7 +121,7 @@ impl Dashboard {
         frame.render_widget(Clear, area);
 
         #[expect(clippy::cast_possible_truncation)]
-        let playlist_lines = self.playlist.len() as u16;
+        let playlist_lines = self.tracks.len() as u16;
         let chunks = Layout::vertical([Constraint::Length(playlist_lines), Constraint::Length(1)])
             .split(area);
 
@@ -124,19 +131,19 @@ impl Dashboard {
 
     fn render_playlist(&self, frame: &mut Frame, area: Rect) {
         let c = &self.colors;
-        for i in 0..self.playlist.len() {
-            let track_name = self.playlist.track_name(i);
+        for (i, entry) in self.tracks.iter().enumerate() {
+            let track_name = &entry.name;
             let is_active = i == self.current_index;
-            let status = self.playlist.track_status(i);
-            let is_failed = status == TrackStatus::Failed;
-            let is_slow = status == TrackStatus::Slow;
+            let is_failed = matches!(entry.status, TrackStatus::Failed(_));
+            let is_slow = matches!(entry.status, TrackStatus::Slow);
             let number = i + 1;
             let marker = if is_active { "▶" } else { " " };
             let text = format!(" {marker} {number}  {track_name}");
             let style = if is_failed {
                 Style::default().fg(c.danger).bg(c.bg)
             } else if is_slow && is_active {
-                let blink_on = (self.frame_count / BLINK_DIVISOR).is_multiple_of(BLINK_PERIOD);
+                let blink_on =
+                    (self.frame_count / Self::BLINK_DIVISOR).is_multiple_of(Self::BLINK_PERIOD);
                 let fg = if blink_on { c.warning } else { c.muted };
                 Style::default().fg(fg).bg(c.bg_panel)
             } else if is_slow {
@@ -156,20 +163,23 @@ impl Dashboard {
     fn render_bar(&self, frame: &mut Frame, area: Rect) {
         let c = &self.colors;
         let chunks = Layout::horizontal([
-            Constraint::Percentage(BAR_COL_TRACK_PCT),
-            Constraint::Percentage(BAR_COL_PROGRESS_PCT),
-            Constraint::Percentage(BAR_COL_QUEUE_PCT),
-            Constraint::Percentage(BAR_COL_CROSSFADE_PCT),
-            Constraint::Percentage(BAR_COL_VOLUME_PCT),
-            Constraint::Percentage(BAR_COL_NOTE_PCT),
+            Constraint::Percentage(Self::BAR_COL_TRACK_PCT),
+            Constraint::Percentage(Self::BAR_COL_PROGRESS_PCT),
+            Constraint::Percentage(Self::BAR_COL_QUEUE_PCT),
+            Constraint::Percentage(Self::BAR_COL_CROSSFADE_PCT),
+            Constraint::Percentage(Self::BAR_COL_VOLUME_PCT),
+            Constraint::Percentage(Self::BAR_COL_NOTE_PCT),
         ])
         .split(area);
 
         let progress_bar_width = usize::from(chunks[1].width)
-            .saturating_sub(PROGRESS_BAR_OVERHEAD)
-            .max(MIN_PROGRESS_BAR_WIDTH);
+            .saturating_sub(Self::PROGRESS_BAR_OVERHEAD)
+            .max(Self::MIN_PROGRESS_BAR_WIDTH);
         let icon = if self.playing { '▶' } else { '⏸' };
-        let active_track = self.playlist.track_name(self.current_index);
+        let active_track = self
+            .tracks
+            .get(self.current_index)
+            .map_or("", |e| e.name.as_str());
         let queue_current = self.current_index.saturating_add(1).max(1);
         let queue_total = self.item_count.max(1);
         let segments = [
@@ -188,10 +198,13 @@ impl Dashboard {
             ),
             self.crossfade_progress.map_or_else(
                 || "xf -".to_string(),
-                |progress| format!("xf {:>3.0}%", progress * PERCENT_SCALE),
+                |progress| format!("xf {:>3.0}%", progress * Self::PERCENT_SCALE),
             ),
-            format!("🔉{:>3.0}%", self.volume * PERCENT_SCALE),
-            clamp_text(self.last_note.as_deref().unwrap_or("-"), NOTE_MAX_CHARS),
+            format!("🔉{:>3.0}%", self.volume * Self::PERCENT_SCALE),
+            clamp_text(
+                self.last_note.as_deref().unwrap_or("-"),
+                Self::NOTE_MAX_CHARS,
+            ),
         ];
 
         let style = Style::default().fg(c.text).bg(c.bg);
@@ -231,10 +244,10 @@ fn clamp_text(text: &str, max_chars: usize) -> String {
     if count <= max_chars {
         return text.to_string();
     }
-    if max_chars <= ELLIPSIS_LEN {
+    if max_chars <= Dashboard::ELLIPSIS_LEN {
         return text.chars().take(max_chars).collect();
     }
-    let keep = max_chars - ELLIPSIS_LEN;
+    let keep = max_chars - Dashboard::ELLIPSIS_LEN;
     let mut out: String = text.chars().take(keep).collect();
     out.push_str("...");
     out
@@ -253,8 +266,8 @@ fn fit_cell(text: &str, width: usize) -> String {
 }
 
 fn format_ms(ms: u64) -> String {
-    let total_seconds = ms / MS_PER_SECOND;
-    let minutes = total_seconds / SECONDS_PER_MINUTE;
-    let seconds = total_seconds % SECONDS_PER_MINUTE;
+    let total_seconds = ms / Dashboard::MS_PER_SECOND;
+    let minutes = total_seconds / Dashboard::SECONDS_PER_MINUTE;
+    let seconds = total_seconds % Dashboard::SECONDS_PER_MINUTE;
     format!("{minutes:02}:{seconds:02}")
 }

@@ -9,11 +9,10 @@ use kithara_platform::time::Duration;
 use kithara_storage::WaitOutcome;
 use kithara_stream::{
     AudioCodec, ContainerFormat, MediaInfo, ReadOutcome, Source, SourcePhase, Stream, StreamResult,
-    StreamType,
+    StreamType, Timeline,
 };
 
 use crate::{
-    memory_source::MemoryCoord,
     signal_pcm::{SignalPcm, signal},
     wav::WavHeader,
 };
@@ -21,7 +20,7 @@ use crate::{
 /// WAV-backed `Source` adapter over [`SignalPcm`].
 pub struct SignalSource<S: signal::SignalFn> {
     pcm: SignalPcm<S>,
-    coord: MemoryCoord,
+    timeline: Timeline,
     header: WavHeader,
 }
 
@@ -34,7 +33,7 @@ impl<S: signal::SignalFn> SignalSource<S> {
     #[must_use]
     pub fn new(pcm: SignalPcm<S>) -> Self {
         Self {
-            coord: MemoryCoord::default(),
+            timeline: Timeline::new(),
             header: create_header_from_signal(&pcm),
             pcm,
         }
@@ -60,10 +59,9 @@ pub struct SignalSourceError;
 
 impl<S: signal::SignalFn> Source for SignalSource<S> {
     type Error = SignalSourceError;
-    type Coord = MemoryCoord;
 
-    fn coord(&self) -> &Self::Coord {
-        &self.coord
+    fn timeline(&self) -> Timeline {
+        self.timeline.clone()
     }
 
     fn wait_range(
@@ -136,7 +134,6 @@ pub struct SignalStream<S: signal::SignalFn>(std::marker::PhantomData<S>);
 
 impl<S: signal::SignalFn> StreamType for SignalStream<S> {
     type Config = SignalStreamConfig<S>;
-    type Coord = MemoryCoord;
     type Source = SignalSource<S>;
     type Error = io::Error;
 
@@ -172,9 +169,12 @@ pub fn signal_stream<S: signal::SignalFn>(source: SignalSource<S>) -> Stream<Sig
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::signal_pcm::{Finite, Infinite};
+    use crate::{
+        kithara,
+        signal_pcm::{Finite, Infinite},
+    };
 
-    #[test]
+    #[kithara::test]
     fn finite_eof() {
         let sample_rate = 48000;
         let pcm = SignalPcm::new(
@@ -190,7 +190,7 @@ mod tests {
         assert_eq!(src.read_at(total, &mut buf).unwrap(), ReadOutcome::Data(0));
     }
 
-    #[test]
+    #[kithara::test]
     fn media_info_correct() {
         let pcm = SignalPcm::new(signal::SineWave(440.0), 48000, 2, Infinite);
         let src = SignalSource::new(pcm);
@@ -201,7 +201,7 @@ mod tests {
         assert_eq!(info.channels, Some(2));
     }
 
-    #[test]
+    #[kithara::test]
     fn read_spanning_header_and_pcm() {
         let pcm = SignalPcm::new(signal::Silence, 44100, 1, Infinite);
         let mut src = SignalSource::new(pcm);
@@ -212,7 +212,7 @@ mod tests {
         assert_eq!(&buf[4..8], &[0, 0, 0, 0]);
     }
 
-    #[test]
+    #[kithara::test]
     fn signal_stream_creates_stream() {
         let pcm = SignalPcm::new(signal::SineWave(440.0), 44100, 2, Infinite);
         let src = SignalSource::new(pcm);

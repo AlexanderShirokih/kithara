@@ -3,6 +3,7 @@
 use std::{
     cell::Cell,
     fmt,
+    io::Cursor,
     marker::PhantomData,
     sync::{
         Arc,
@@ -35,9 +36,6 @@ use crate::{
     traits::{Aac, CodecType, Flac, InnerDecoder, Mp3},
     types::{PcmChunk, PcmSpec, TrackMetadata},
 };
-
-const INPUT_DEQUEUE_TIMEOUT_US: i64 = 10_000;
-const OUTPUT_DEQUEUE_TIMEOUT_US: i64 = 10_000;
 
 struct AndroidInner {
     media_source: OwnedMediaDataSource,
@@ -77,6 +75,9 @@ impl<C: CodecType> fmt::Debug for Android<C> {
 }
 
 impl<C: CodecType> Android<C> {
+    const INPUT_DEQUEUE_TIMEOUT_US: i64 = 10_000;
+    const OUTPUT_DEQUEUE_TIMEOUT_US: i64 = 10_000;
+
     fn bootstrap(
         source: BoxedSource,
         config: AndroidConfig,
@@ -118,7 +119,7 @@ impl<C: CodecType> Android<C> {
         let extractor_bootstrap = match bootstrap_extractor(media_source, C::CODEC) {
             Ok(bootstrap) => bootstrap,
             Err((media_source, error)) => {
-                return Err(recover_extractor_failure(media_source, error));
+                return Err(recover_media_source_failure(media_source, error));
             }
         };
 
@@ -179,7 +180,7 @@ impl<C: CodecType> Android<C> {
         let Some(input) = self
             .inner
             .codec
-            .dequeue_input_buffer(INPUT_DEQUEUE_TIMEOUT_US)?
+            .dequeue_input_buffer(Self::INPUT_DEQUEUE_TIMEOUT_US)?
         else {
             return Ok(false);
         };
@@ -327,9 +328,11 @@ impl<C: CodecType> Android<C> {
             ));
         }
 
+        const BYTES_PER_PCM16_SAMPLE: usize = 2;
+        const BYTES_PER_FLOAT_SAMPLE: usize = 4;
         let bytes_per_sample = match self.inner.pcm_encoding {
-            AndroidPcmEncoding::Pcm16 => 2,
-            AndroidPcmEncoding::Float => 4,
+            AndroidPcmEncoding::Pcm16 => BYTES_PER_PCM16_SAMPLE,
+            AndroidPcmEncoding::Float => BYTES_PER_FLOAT_SAMPLE,
         };
         if bytes_len % bytes_per_sample != 0 {
             return Err(AndroidBackendError::operation(
@@ -380,7 +383,7 @@ impl<C: CodecType> InnerDecoder for Android<C> {
                 .map_err(AndroidBackendError::into_decode_error)?;
 
             if let Some(chunk_opt) = self
-                .try_drain_output(OUTPUT_DEQUEUE_TIMEOUT_US)
+                .try_drain_output(Self::OUTPUT_DEQUEUE_TIMEOUT_US)
                 .map_err(AndroidBackendError::into_decode_error)?
             {
                 if let Some(chunk) = chunk_opt {
@@ -465,13 +468,6 @@ pub(crate) fn try_create_android_decoder(
     }
 }
 
-fn recover_extractor_failure(
-    media_source: OwnedMediaDataSource,
-    error: AndroidBackendError,
-) -> RecoverableHardwareError {
-    recover_media_source_failure(media_source, error)
-}
-
 fn recover_codec_failure(
     bootstrap: super::extractor::ExtractorBootstrap,
     error: AndroidBackendError,
@@ -487,7 +483,7 @@ fn recover_media_source_failure(
     match media_source.into_source() {
         Ok(source) => recoverable_hardware_error(source, error.into_decode_error()),
         Err(recover_error) => RecoverableHardwareError {
-            source: Box::new(std::io::Cursor::new(Vec::<u8>::new())),
+            source: Box::new(Cursor::new(Vec::<u8>::new())),
             error: recover_error.into_decode_error(),
         },
     }

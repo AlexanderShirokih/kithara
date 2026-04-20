@@ -7,7 +7,8 @@ use std::{
     task::Poll,
 };
 
-use kithara_platform::{CancelGroup, tokio, tokio::sync::mpsc};
+use kithara_events::EventBus;
+use kithara_platform::{CancelGroup, RwLock, tokio, tokio::sync::mpsc};
 use thunderdome::{Arena, Index};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -21,14 +22,22 @@ use super::{
 
 const SLOT_COUNT: usize = 4;
 
+#[repr(usize)]
+enum Slot {
+    HighHigh = 0,
+    HighLow = 1,
+    LowHigh = 2,
+    LowLow = 3,
+}
+
 /// Map (`peer_priority`, `cmd_priority`) → slot index.
 /// Processing order: 0 → 1 → 2 → 3.
 fn slot_index(peer_prio: Priority, cmd_prio: Priority) -> usize {
     match (peer_prio, cmd_prio) {
-        (Priority::High, Priority::High) => 0,
-        (Priority::High, Priority::Low) => 1,
-        (Priority::Low, Priority::High) => 2,
-        (Priority::Low, Priority::Low) => 3,
+        (Priority::High, Priority::High) => Slot::HighHigh as usize,
+        (Priority::High, Priority::Low) => Slot::HighLow as usize,
+        (Priority::Low, Priority::High) => Slot::LowHigh as usize,
+        (Priority::Low, Priority::Low) => Slot::LowLow as usize,
     }
 }
 
@@ -38,6 +47,10 @@ struct PeerEntry {
     cmd_rx: mpsc::Receiver<InternalCmd>,
     peer_cancel: CancellationToken,
     peer_done: bool,
+    /// Same Arc as the owning [`PeerHandle`]'s bus. Read-snapshot on
+    /// every proactive poll so `PeerHandle::with_bus` takes effect
+    /// immediately.
+    bus: Arc<RwLock<Option<EventBus>>>,
 }
 
 /// Peer registry: owns peers, routes commands to priority slots,
@@ -73,6 +86,7 @@ impl Registry {
             cmd_rx: entry.cmd_rx,
             peer_cancel: entry.cancel,
             peer_done: false,
+            bus: entry.bus,
         });
         self.urgent_notify.notify_one();
         idx
@@ -110,6 +124,7 @@ impl Registry {
             match entry.peer.poll_next(cx) {
                 Poll::Ready(Some(batch)) => {
                     let peer_prio = entry.peer.priority();
+                    let bus = entry.bus.lock_sync_read().clone();
                     for mut cmd in batch {
                         let epoch_cancel = cmd.cancel.take();
                         let cancel = match epoch_cancel {
@@ -124,6 +139,7 @@ impl Registry {
                             priority: cmd_prio,
                             response: ResponseTarget::Streaming,
                             peer: Some(idx),
+                            bus: bus.clone(),
                         };
                         self.slots[slot].push_back(internal);
                         if slot <= 1 {
@@ -201,8 +217,8 @@ impl Registry {
         }
 
         let mut demand_cmds: Vec<InternalCmd> = Vec::new();
-        demand_cmds.extend(self.slots[2].drain(..));
-        demand_cmds.extend(self.slots[3].drain(..));
+        demand_cmds.extend(self.slots[Slot::LowHigh as usize].drain(..));
+        demand_cmds.extend(self.slots[Slot::LowLow as usize].drain(..));
         let demand_batch = BatchGroup::from_iter(demand_cmds.into_iter());
         if !demand_batch.is_empty() {
             demand_batch.process(inner).await;

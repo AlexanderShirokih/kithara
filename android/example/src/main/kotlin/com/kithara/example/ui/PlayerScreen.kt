@@ -61,13 +61,15 @@ import com.kithara.example.ui.theme.AccentGold
 import com.kithara.example.ui.theme.KitharaBackground
 import com.kithara.example.ui.theme.KitharaDanger
 import com.kithara.example.ui.theme.KitharaMuted
+import com.kithara.example.ui.theme.KitharaWarning
 import com.kithara.example.ui.theme.KitharaSuccess
+import androidx.compose.ui.graphics.Color
+import com.kithara.TrackStatus
 import com.kithara.example.ui.theme.KitharaTheme
 import com.kithara.example.ui.theme.PanelBackground
 import com.kithara.example.ui.theme.PanelBorder
 import com.kithara.example.ui.theme.PrimaryText
 import com.kithara.example.ui.theme.SecondaryText
-import java.util.UUID
 
 internal sealed interface PlayerScreenEvent {
     data class UrlChanged(val url: String) : PlayerScreenEvent
@@ -76,7 +78,7 @@ internal sealed interface PlayerScreenEvent {
     data object PlayPauseClick : PlayerScreenEvent
     data object PrevClick : PlayerScreenEvent
     data object NextClick : PlayerScreenEvent
-    data class TrackClick(val uuid: UUID) : PlayerScreenEvent
+    data class TrackClick(val trackId: String) : PlayerScreenEvent
     data class RateClick(val rate: Float) : PlayerScreenEvent
     data object SeekStarted : PlayerScreenEvent
     data class SeekChanged(val value: Float) : PlayerScreenEvent
@@ -110,7 +112,11 @@ internal fun PlayerScreen(
             ),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        HeaderSection(isPlaying = uiState.isPlaying, status = uiState.status)
+        HeaderSection(
+            isPlaying = uiState.isPlaying,
+            status = uiState.status,
+            hasTracks = uiState.playlist.isNotEmpty(),
+        )
         UrlSection(
             url = uiState.url,
             onEvent = onEvent,
@@ -144,7 +150,7 @@ internal fun PlayerScreen(
 }
 
 @Composable
-private fun HeaderSection(isPlaying: Boolean, status: PlayerStatus) {
+private fun HeaderSection(isPlaying: Boolean, status: PlayerStatus, hasTracks: Boolean) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -162,21 +168,23 @@ private fun HeaderSection(isPlaying: Boolean, status: PlayerStatus) {
             modifier = Modifier.padding(start = 8.dp, top = 10.dp),
         )
         Box(modifier = Modifier.weight(1f))
-        StatusBadge(status = status)
+        StatusBadge(status = status, isPlaying = isPlaying, hasTracks = hasTracks)
     }
 }
 
 @Composable
-private fun StatusBadge(status: PlayerStatus) {
-    val statusColor = when (status) {
-        PlayerStatus.ReadyToPlay -> KitharaSuccess
-        PlayerStatus.Failed -> KitharaDanger
-        PlayerStatus.Unknown -> KitharaMuted
+private fun StatusBadge(status: PlayerStatus, isPlaying: Boolean, hasTracks: Boolean) {
+    val statusColor = when {
+        status == PlayerStatus.Failed -> KitharaDanger
+        !hasTracks -> KitharaMuted
+        isPlaying -> KitharaSuccess
+        else -> AccentGold
     }
-    val statusText = when (status) {
-        PlayerStatus.ReadyToPlay -> stringResource(R.string.status_ready)
-        PlayerStatus.Failed -> stringResource(R.string.status_failed)
-        PlayerStatus.Unknown -> stringResource(R.string.status_not_ready)
+    val statusText = when {
+        status == PlayerStatus.Failed -> stringResource(R.string.status_failed)
+        !hasTracks -> stringResource(R.string.status_not_ready)
+        isPlaying -> stringResource(R.string.status_playing)
+        else -> stringResource(R.string.status_idle)
     }
 
     Row(
@@ -418,7 +426,7 @@ private fun RateSection(
 @Composable
 private fun PlaylistSection(
     playlist: List<PlaylistEntry>,
-    currentTrackId: UUID?,
+    currentTrackId: String?,
     onEvent: (PlayerScreenEvent) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -456,9 +464,10 @@ private fun PlaylistItem(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val statusColor = trackStatusColor(entry.trackStatus)
     val background = if (isCurrent) AccentGold.copy(alpha = 0.18f) else KitharaBackground
-    val indexColor = if (isCurrent) AccentGold else KitharaMuted
-    val nameColor = if (isCurrent) PrimaryText else SecondaryText
+    val indexColor = statusColor ?: if (isCurrent) AccentGold else KitharaMuted
+    val nameColor = statusColor ?: if (isCurrent) PrimaryText else SecondaryText
 
     Row(
         modifier = modifier
@@ -484,6 +493,12 @@ private fun PlaylistItem(
             modifier = Modifier.weight(1f),
         )
     }
+}
+
+private fun trackStatusColor(status: TrackStatus?): Color? = when (status) {
+    is TrackStatus.Slow -> KitharaWarning
+    is TrackStatus.Failed -> KitharaDanger
+    else -> null
 }
 
 @Composable
@@ -520,9 +535,9 @@ private fun rateLabel(rate: Float): String =
 @Composable
 private fun PlayerScreenPreview() {
     val playlist = listOf(
-        PlaylistEntry(url = "", name = "song.mp3"),
-        PlaylistEntry(url = "", name = "another-long-track-name-that-gets-truncated.mp3"),
-        PlaylistEntry(url = "", name = "third-track.mp3"),
+        PlaylistEntry(id = "preview-1", url = "", name = "song.mp3"),
+        PlaylistEntry(id = "preview-2", url = "", name = "another-long-track-name-that-gets-truncated.mp3"),
+        PlaylistEntry(id = "preview-3", url = "", name = "third-track.mp3"),
     )
 
     KitharaTheme {

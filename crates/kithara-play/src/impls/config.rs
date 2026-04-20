@@ -21,15 +21,12 @@ use kithara_file::{FileConfig, FileSrc};
 #[cfg(feature = "hls")]
 use kithara_hls::{HlsConfig, KeyOptions};
 #[cfg(any(feature = "file", feature = "hls"))]
-use kithara_net::{Headers, NetOptions};
-use kithara_platform::tokio::runtime;
-#[cfg(feature = "file")]
+use kithara_net::Headers;
+#[cfg(any(feature = "file", feature = "hls"))]
 use kithara_stream::dl::{Downloader, DownloaderConfig};
 use portable_atomic::AtomicF32;
 use tokio_util::sync::CancellationToken;
 use url::Url;
-
-type RuntimeHandle = runtime::Handle;
 
 #[cfg(feature = "file")]
 fn derive_remote_file_hint(url: &Url) -> Option<String> {
@@ -101,7 +98,7 @@ const DEFAULT_PRELOAD_CHUNKS: NonZeroUsize = NonZeroUsize::new(3).unwrap();
 ///     .with_hint("mp3")
 ///     .with_look_ahead_bytes(1_000_000);
 /// ```
-#[derive(Setters)]
+#[derive(Clone, Setters)]
 #[setters(prefix = "with_", strip_option)]
 pub struct ResourceConfig {
     /// ABR controller (shared across tracks in a player).
@@ -145,9 +142,6 @@ pub struct ResourceConfig {
     /// Additional HTTP headers to include in all network requests.
     #[cfg(any(feature = "file", feature = "hls"))]
     pub headers: Option<Headers>,
-    /// Network configuration (timeouts, retries).
-    #[cfg(any(feature = "file", feature = "hls"))]
-    pub net: NetOptions,
     /// Shared PCM pool for temporary buffers.
     pub pcm_pool: Option<PcmPool>,
     /// Shared playback rate atomic for the audio pipeline resampler.
@@ -178,11 +172,14 @@ pub struct ResourceConfig {
     /// Storage configuration (cache directory, eviction limits).
     #[cfg(any(feature = "file", feature = "hls"))]
     pub store: StoreOptions,
-    /// Shared tokio runtime handle for downloader tasks.
+    /// Shared downloader instance.
     ///
-    /// When set, downloader threads reuse this runtime instead of creating
-    /// their own. When `None`, auto-detected from current context.
-    pub runtime: Option<RuntimeHandle>,
+    /// When set, the underlying `FileConfig` / `HlsConfig` reuses this
+    /// downloader instead of spawning a private one. Lets multiple
+    /// resources share a single HTTP pool and runtime handle.
+    #[cfg(any(feature = "file", feature = "hls"))]
+    #[setters(skip)]
+    pub downloader: Option<Downloader>,
     /// Shared audio worker handle for cooperative multi-track decoding.
     ///
     /// When set, all resources sharing the same worker decode on a single
@@ -247,8 +244,6 @@ impl ResourceConfig {
             keys: KeyOptions::default(),
             look_ahead_bytes: None,
             name: None,
-            #[cfg(any(feature = "file", feature = "hls"))]
-            net: NetOptions::default(),
             pcm_pool: None,
             playback_rate: None,
             preferred_peak_bitrate: 0.0,
@@ -258,9 +253,18 @@ impl ResourceConfig {
             src,
             #[cfg(any(feature = "file", feature = "hls"))]
             store: StoreOptions::default(),
-            runtime: None,
+            #[cfg(any(feature = "file", feature = "hls"))]
+            downloader: None,
             worker: None,
         })
+    }
+
+    /// Set a shared downloader for the underlying stream.
+    #[cfg(any(feature = "file", feature = "hls"))]
+    #[must_use]
+    pub fn with_downloader(mut self, dl: Downloader) -> Self {
+        self.downloader = Some(dl);
+        self
     }
 
     /// Set name for cache disambiguation.
@@ -301,7 +305,9 @@ impl ResourceConfig {
             }
         };
 
-        let dl = Downloader::new(DownloaderConfig::default().with_net(self.net));
+        let dl = self
+            .downloader
+            .unwrap_or_else(|| Downloader::new(DownloaderConfig::default()));
         let mut file_config = FileConfig::new(file_src)
             .with_store(self.store)
             .with_downloader(dl);
@@ -368,8 +374,10 @@ impl ResourceConfig {
 
         let mut hls_config = HlsConfig::new(url)
             .with_store(self.store)
-            .with_net(self.net)
             .with_keys(self.keys);
+        if let Some(dl) = self.downloader {
+            hls_config = hls_config.with_downloader(dl);
+        }
 
         hls_config.abr = self.abr;
 
@@ -404,7 +412,6 @@ impl ResourceConfig {
         if let Some(cancel) = self.cancel {
             hls_config = hls_config.with_cancel(cancel);
         }
-        hls_config.runtime = self.runtime;
 
         let mut config = AudioConfig::<kithara_hls::Hls>::new(hls_config);
 

@@ -3,12 +3,15 @@
 mod abr_switch_playback;
 mod abr_integration;
 mod basic_playback;
+mod cancel_isolation;
 mod config_with_downloader;
 mod deferred_abr;
 mod deferred_abr_debug;
 mod drm_stream_integrity;
 mod driver_test;
 mod ephemeral;
+mod html_error_body;
+mod html_error_cleanup;
 mod keys_integration;
 mod live_stress_real_stream;
 mod playlist_integration;

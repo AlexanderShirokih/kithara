@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use kithara::play::{ItemStatus, PlayError, PlayerStatus, TimeControlStatus, TimeRange};
+use kithara_events::TrackStatus as TS;
 use url::Url;
 
 /// FFI-friendly error type bridging playback failures into platform bindings.
@@ -29,24 +30,23 @@ pub enum FfiError {
 }
 
 pub type FfiResult<T> = Result<T, FfiError>;
-
-const ERROR_CODE_INTERNAL: i32 = 0;
-const ERROR_CODE_NOT_READY: i32 = 1;
-const ERROR_CODE_ITEM_FAILED: i32 = 2;
-const ERROR_CODE_SEEK_FAILED: i32 = 3;
-const ERROR_CODE_ENGINE_NOT_RUNNING: i32 = 4;
-const ERROR_CODE_INVALID_ARGUMENT: i32 = 5;
-
 impl FfiError {
+    const ERROR_CODE_INTERNAL: i32 = 0;
+    const ERROR_CODE_NOT_READY: i32 = 1;
+    const ERROR_CODE_ITEM_FAILED: i32 = 2;
+    const ERROR_CODE_SEEK_FAILED: i32 = 3;
+    const ERROR_CODE_ENGINE_NOT_RUNNING: i32 = 4;
+    const ERROR_CODE_INVALID_ARGUMENT: i32 = 5;
+
     #[must_use]
     pub fn observer_code(&self) -> i32 {
         match self {
-            Self::Internal { .. } => ERROR_CODE_INTERNAL,
-            Self::NotReady => ERROR_CODE_NOT_READY,
-            Self::ItemFailed { .. } => ERROR_CODE_ITEM_FAILED,
-            Self::SeekFailed { .. } => ERROR_CODE_SEEK_FAILED,
-            Self::EngineNotRunning => ERROR_CODE_ENGINE_NOT_RUNNING,
-            Self::InvalidArgument { .. } => ERROR_CODE_INVALID_ARGUMENT,
+            Self::Internal { .. } => Self::ERROR_CODE_INTERNAL,
+            Self::NotReady => Self::ERROR_CODE_NOT_READY,
+            Self::ItemFailed { .. } => Self::ERROR_CODE_ITEM_FAILED,
+            Self::SeekFailed { .. } => Self::ERROR_CODE_SEEK_FAILED,
+            Self::EngineNotRunning => Self::ERROR_CODE_ENGINE_NOT_RUNNING,
+            Self::InvalidArgument { .. } => Self::ERROR_CODE_INVALID_ARGUMENT,
         }
     }
 }
@@ -119,20 +119,96 @@ pub fn parse_url(s: &str) -> FfiResult<Url> {
 }
 
 /// FFI-friendly player configuration.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "backend-uniffi", derive(uniffi::Record))]
 pub struct FfiPlayerConfig {
-    /// Number of EQ bands (log-spaced). Default: [`DEFAULT_EQ_BAND_COUNT`].
+    /// Number of EQ bands (log-spaced). Default: 10.
     pub eq_band_count: u32,
+    /// DRM key handling. Pass an empty [`FfiKeyOptions`] (default) when
+    /// no DRM is needed.
+    pub key_options: FfiKeyOptions,
+    /// Storage options shared by all items (cache directory, etc.).
+    pub store: crate::config::StoreOptions,
 }
 
 /// Default number of log-spaced EQ bands.
-const DEFAULT_EQ_BAND_COUNT: u32 = 10;
+pub const DEFAULT_EQ_BAND_COUNT: u32 = 10;
 
 impl Default for FfiPlayerConfig {
     fn default() -> Self {
         Self {
             eq_band_count: DEFAULT_EQ_BAND_COUNT,
+            key_options: FfiKeyOptions::default(),
+            store: crate::config::StoreOptions::default(),
+        }
+    }
+}
+
+/// FFI-friendly mirror of [`kithara::hls::KeyOptions`].
+///
+/// Holds domain-scoped DRM rules — providers with different key
+/// processors and headers can coexist.
+#[derive(Clone, Default)]
+#[cfg_attr(feature = "backend-uniffi", derive(uniffi::Record))]
+pub struct FfiKeyOptions {
+    pub rules: Vec<FfiKeyRule>,
+}
+
+impl std::fmt::Debug for FfiKeyOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FfiKeyOptions")
+            .field("rules", &self.rules.len())
+            .finish()
+    }
+}
+
+/// A single DRM rule: domain patterns + key processor + optional
+/// per-provider headers / query params.
+#[derive(Clone)]
+#[cfg_attr(feature = "backend-uniffi", derive(uniffi::Record))]
+pub struct FfiKeyRule {
+    pub processor: std::sync::Arc<dyn crate::observer::FfiKeyProcessor>,
+    /// Domain patterns — exact (`"example.com"`) or wildcard
+    /// subdomain (`"*.example.com"`).
+    pub domains: Vec<String>,
+    pub headers: Option<std::collections::HashMap<String, String>>,
+    pub query_params: Option<std::collections::HashMap<String, String>>,
+}
+
+impl std::fmt::Debug for FfiKeyRule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FfiKeyRule")
+            .field("domains", &self.domains)
+            .field("headers", &self.headers)
+            .field("query_params", &self.query_params)
+            .finish_non_exhaustive()
+    }
+}
+
+/// FFI-friendly per-item configuration. All fields immutable after
+/// [`crate::item::AudioPlayerItem::new`].
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "backend-uniffi", derive(uniffi::Record))]
+pub struct FfiItemConfig {
+    pub url: String,
+    pub headers: Option<std::collections::HashMap<String, String>>,
+    /// Peak bitrate ceiling in bits/sec. `0.0` means no cap.
+    pub preferred_peak_bitrate: f64,
+    /// Peak bitrate ceiling on expensive networks (cellular). `0.0`
+    /// means no cap.
+    pub preferred_peak_bitrate_expensive: f64,
+    pub abr_mode: Option<FfiAbrMode>,
+}
+
+impl FfiItemConfig {
+    #[must_use]
+    pub fn with_url(url: String) -> Self {
+        Self {
+            url,
+            headers: None,
+            preferred_peak_bitrate: 0.0,
+            preferred_peak_bitrate_expensive: 0.0,
+            abr_mode: None,
         }
     }
 }
@@ -194,6 +270,36 @@ impl From<TimeControlStatus> for FfiTimeControlStatus {
     }
 }
 
+/// FFI-friendly mirror of [`kithara_events::TrackStatus`].
+///
+/// Mirrors the Queue-side track lifecycle: pending -> loading -> slow ->
+/// loaded -> consumed, or `failed` on error.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "backend-uniffi", derive(uniffi::Enum))]
+pub enum FfiTrackStatus {
+    Pending,
+    Loading,
+    Slow,
+    Loaded,
+    Failed { reason: String },
+    Consumed,
+}
+
+impl From<kithara_events::TrackStatus> for FfiTrackStatus {
+    fn from(s: kithara_events::TrackStatus) -> Self {
+        match s {
+            TS::Loading => Self::Loading,
+            TS::Slow => Self::Slow,
+            TS::Loaded => Self::Loaded,
+            TS::Failed(reason) => Self::Failed { reason },
+            TS::Consumed => Self::Consumed,
+            // `TrackStatus` is `#[non_exhaustive]`; fall back to `Pending`
+            // for `Pending` itself + any future variants.
+            _ => Self::Pending,
+        }
+    }
+}
+
 /// FFI-friendly time range (seconds-based).
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "backend-uniffi", derive(uniffi::Record))]
@@ -234,6 +340,41 @@ pub enum FfiPlayerEvent {
     VolumeChanged { volume: f32 },
     MuteChanged { muted: bool },
     ItemDidPlayToEnd,
+    /// Queue-level: the loading/playback status of an item changed.
+    /// `item_id` matches `AudioPlayerItem::id()`.
+    TrackStatusChanged { item_id: String, status: FfiTrackStatus },
+    /// Queue reached the end with `RepeatMode::Off` active.
+    QueueEnded,
+    /// A crossfade between tracks just started. `duration_seconds` is
+    /// the configured crossfade window — UIs can drive progress from it.
+    CrossfadeStarted { duration_seconds: f32 },
+    /// The configured crossfade window changed at runtime.
+    CrossfadeDurationChanged { seconds: f32 },
+}
+
+/// Transition style for a track switch.
+///
+/// Mirrors [`kithara_queue::Transition`]. Use [`FfiTransition::None`]
+/// for immediate cuts (`AVQueuePlayer` user-initiated-selection idiom),
+/// [`FfiTransition::Crossfade`] to use the player's configured
+/// duration (typical for auto-advance and Next/Prev buttons), or
+/// [`FfiTransition::CrossfadeWith`] to override per-call.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "backend-uniffi", derive(uniffi::Enum))]
+pub enum FfiTransition {
+    None,
+    Crossfade,
+    CrossfadeWith { seconds: f32 },
+}
+
+impl From<FfiTransition> for kithara_queue::Transition {
+    fn from(t: FfiTransition) -> Self {
+        match t {
+            FfiTransition::None => Self::None,
+            FfiTransition::Crossfade => Self::Crossfade,
+            FfiTransition::CrossfadeWith { seconds } => Self::CrossfadeWith { seconds },
+        }
+    }
 }
 
 /// Typed item event dispatched through [`ItemObserver::on_event`].

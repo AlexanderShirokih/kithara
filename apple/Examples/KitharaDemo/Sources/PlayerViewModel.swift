@@ -3,16 +3,19 @@ import Foundation
 import Kithara
 
 struct PlaylistEntry: Identifiable, Equatable {
-    let id: UUID
+    /// Matches `KitharaPlayerItem.id` — stable across queue reorder.
+    let id: String
     let name: String
     let url: String
     var duration: TimeInterval?
+    var trackStatus: TrackStatus?
 
-    init(url: String, name: String? = nil, id: UUID = UUID()) {
-        self.id = id
-        self.url = url
-        self.name = name ?? trackName(for: url)
+    init(from item: KitharaPlayerItem) {
+        self.id = item.id
+        self.url = item.url
+        self.name = trackName(for: item.url)
         self.duration = nil
+        self.trackStatus = nil
     }
 
     static func == (lhs: PlaylistEntry, rhs: PlaylistEntry) -> Bool {
@@ -30,7 +33,7 @@ final class PlayerViewModel: ObservableObject {
     @Published var urlText = ""
     @Published var isSeeking = false
     @Published private(set) var playlist: [PlaylistEntry] = []
-    @Published private(set) var currentTrackId: UUID?
+    @Published private(set) var currentTrackId: String?
     @Published var volume: Float = 1.0
     @Published var isMuted = false
     @Published var selectedRate: Float = 1.0
@@ -41,11 +44,43 @@ final class PlayerViewModel: ObservableObject {
     @Published var selectedVariantIndex: UInt32?
     @Published var crossfadeDuration: Float = 0
 
-    private let player = KitharaPlayer()
+    private let player = KitharaPlayer(
+        config: KitharaPlayer.Config(
+            keyRules: makeZvukKeyRules(),
+            cacheDir: PlayerViewModel.defaultCacheDir
+        )
+    )
+
+    /// Self-managed cache directory: `~/Library/Application Support/kithara`.
+    ///
+    /// Uses Application Support instead of Caches because kithara runs
+    /// its own eviction; the system-managed `Caches/` dir can be purged
+    /// at any time, which would desync our on-disk bookkeeping. The
+    /// directory is created on demand and marked as excluded from iCloud
+    /// backup — cached media is large and regenerable.
+    private static var defaultCacheDir: String? {
+        let fm = FileManager.default
+        guard let base = fm
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first?
+            .appendingPathComponent("kithara", isDirectory: true)
+        else { return nil }
+
+        try? fm.createDirectory(at: base, withIntermediateDirectories: true)
+
+        var url = base
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
+
+        return url.path
+    }
     private var cancellables = Set<AnyCancellable>()
-    private var items: [UUID: KitharaPlayerItem] = [:]
-    private var itemCancellables: [UUID: AnyCancellable] = [:]
-    private var pendingSelectEntryId: UUID?
+    /// Per-item event subscriptions keyed by `KitharaPlayerItem.id`.
+    /// Variant discovery and item-level duration flow through here;
+    /// queue lifecycle (status/error/current-item) flows through
+    /// `player.eventPublisher` instead.
+    private var itemCancellables: [String: AnyCancellable] = [:]
 
     static let defaultCrossfadeSeconds: Float = 5.0
 
@@ -60,53 +95,17 @@ final class PlayerViewModel: ObservableObject {
     ]
 
     init() {
-        configureDrm(on: player)
         volume = player.volume
         isMuted = player.isMuted
         player.defaultRate = selectedRate
         eqGains = Array(repeating: 0, count: player.eqBandCount)
-        // Match kithara-app's AppConfig::DEFAULT_CROSSFADE_SECONDS (5.0s).
         player.crossfadeDuration = Self.defaultCrossfadeSeconds
         crossfadeDuration = Self.defaultCrossfadeSeconds
 
         player.eventPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] event in
-                guard let self else { return }
-                switch event {
-                case let .timeChanged(seconds):
-                    if !self.isSeeking { self.currentTime = seconds }
-                case let .rateChanged(rate):
-                    self.isPlaying = rate > 0
-                case let .statusChanged(ffiStatus):
-                    if self.errorMessage == nil {
-                        self.status = PlayerStatus(ffi: ffiStatus)
-                    }
-                case let .durationChanged(seconds):
-                    self.duration = seconds
-                case let .error(message):
-                    self.errorMessage = message
-                    self.status = .failed
-                case .currentItemChanged:
-                    break
-                case let .volumeChanged(vol):
-                    self.volume = vol
-                case let .muteChanged(muted):
-                    self.isMuted = muted
-                case .itemDidPlayToEnd:
-                    // kithara-play emits ItemDidPlayToEnd for ANY track stop,
-                    // including fade-out completion during crossfade. Only
-                    // auto-advance when the current track has really played
-                    // to (near) its end — otherwise a crossfade triggers a
-                    // cascade of false "ended" events.
-                    if let dur = self.duration, dur > 0, self.currentTime >= dur - 1.0 {
-                        self.playNext()
-                    }
-                case .bufferedDurationChanged:
-                    break
-                case .timeControlStatusChanged:
-                    break
-                }
+                self?.handlePlayerEvent(event)
             }
             .store(in: &cancellables)
 
@@ -172,30 +171,20 @@ final class PlayerViewModel: ObservableObject {
 
     @discardableResult
     private func appendTrack(url: String, autoPlay: Bool) -> PlaylistEntry? {
-        let entry = PlaylistEntry(url: url)
-
         let item = KitharaPlayerItem(url: url)
-        subscribeItem(entryId: entry.id, item: item)
-        items[entry.id] = item
-
-        playlist.append(entry)
-        item.load()
+        subscribeItem(item)
 
         do {
             try player.insert(item)
+            let entry = PlaylistEntry(from: item)
+            playlist.append(entry)
             if autoPlay {
-                currentTrackId = entry.id
-                status = .unknown
-                currentTime = 0
-                duration = nil
-                currentVariantLabel = nil
-                selectedVariantIndex = nil
-                abrIsAuto = true
-                discoveredVariants = []
+                try player.selectItem(item)
                 player.play()
             }
             return entry
         } catch {
+            itemCancellables.removeValue(forKey: item.id)
             print("[KitharaDemo] insert error: \(error)")
             errorMessage = "\(error)"
             status = .failed
@@ -260,8 +249,8 @@ final class PlayerViewModel: ObservableObject {
             player.pause()
         } else {
             if currentTrackId == nil, let first = playlist.first {
-                currentTrackId = first.id
-                player.play()
+                // First-time play on empty session → immediate cut.
+                switchTo(entryId: first.id, transition: .none)
                 return
             }
             player.play()
@@ -271,19 +260,34 @@ final class PlayerViewModel: ObservableObject {
     func playNext() {
         let nextIdx = currentTrackIndex + 1
         guard nextIdx < playlist.count else { return }
-        switchTo(index: nextIdx)
+        // Next button → crossfade, symmetric with auto-advance at
+        // track end.
+        switchTo(index: nextIdx, transition: .crossfade)
     }
 
     func playPrev() {
         let prevIdx = max(currentTrackIndex - 1, 0)
         guard prevIdx != currentTrackIndex else { return }
-        switchTo(index: prevIdx)
+        // Prev button → crossfade, symmetric with Next.
+        switchTo(index: prevIdx, transition: .crossfade)
     }
 
-    func selectTrack(_ trackId: UUID) {
+    func selectTrack(_ trackId: String) {
         guard let idx = playlist.firstIndex(where: { $0.id == trackId }) else { return }
         if idx == currentTrackIndex { return }
-        switchTo(index: idx)
+        // Tap on a track in the list → immediate cut (AVQueuePlayer idiom).
+        switchTo(index: idx, transition: .none)
+    }
+
+    func removeTrack(_ trackId: String) {
+        guard let item = player.items.first(where: { $0.id == trackId }) else { return }
+        do {
+            try player.remove(item)
+        } catch {
+            print("[KitharaDemo] remove failed: \(error)")
+        }
+        itemCancellables.removeValue(forKey: trackId)
+        playlist.removeAll { $0.id == trackId }
     }
 
     // MARK: - Seek
@@ -306,88 +310,149 @@ final class PlayerViewModel: ObservableObject {
 
     // MARK: - Private
 
-    private func switchTo(index: Int) {
+    private func switchTo(index: Int, transition: Transition) {
         guard let entry = playlist[safe: index] else { return }
+        switchTo(entryId: entry.id, transition: transition)
+    }
 
-        currentTime = 0
-        duration = entry.duration
+    private func switchTo(entryId: String, transition: Transition) {
+        guard let item = player.items.first(where: { $0.id == entryId }) else {
+            errorMessage = "item \(entryId) not in queue"
+            return
+        }
+        do {
+            try player.selectItem(item, transition: transition)
+            // Per-track UI reset happens on `.currentItemChanged` once the
+            // Queue actually switches (matches crossfade timing).
+        } catch {
+            print("[KitharaDemo] switch failed for \(trackLabel(entryId)): \(error)")
+            errorMessage = "\(error)"
+            status = .failed
+        }
+    }
+
+    private func handlePlayerEvent(_ event: PlayerEvent) {
+        switch event {
+        case let .timeChanged(seconds):
+            if !isSeeking { currentTime = seconds }
+        case let .rateChanged(rate):
+            isPlaying = rate > 0
+        case let .statusChanged(ffiStatus):
+            if errorMessage == nil {
+                status = PlayerStatus(ffi: ffiStatus)
+            }
+        case let .durationChanged(seconds):
+            duration = seconds
+        case let .error(message):
+            errorMessage = message
+            status = .failed
+        case let .currentItemChanged(itemId):
+            currentTrackId = itemId
+            resetPerTrackUi(trackId: itemId)
+        case let .volumeChanged(vol):
+            volume = vol
+        case let .muteChanged(muted):
+            isMuted = muted
+        case let .trackStatusChanged(itemId, trackStatus):
+            handleTrackStatus(itemId: itemId, status: trackStatus)
+        case .queueEnded:
+            isPlaying = false
+            errorMessage = "Playlist ended"
+        case .crossfadeStarted, .crossfadeDurationChanged:
+            // Queue drives auto-advance + crossfade timing; UI updates on
+            // the subsequent `.currentItemChanged`.
+            break
+        case .itemDidPlayToEnd, .bufferedDurationChanged, .timeControlStatusChanged:
+            break
+        @unknown default:
+            break
+        }
+    }
+
+    private func resetPerTrackUi(trackId: String?) {
+        // Don't reset `currentTime`, `status`, or `isPlaying` — the
+        // engine drives those via explicit events. Touching them here
+        // races with the engine's own updates and causes UI flicker
+        // (slider snap to 0 on pause/resume, "Not Ready" blink between
+        // tracks). Queue-owned values are the source of truth.
         errorMessage = nil
         isSeeking = false
         currentVariantLabel = nil
         selectedVariantIndex = nil
         abrIsAuto = true
         discoveredVariants = []
-        currentTrackId = entry.id
-
-        // Always swap in a fresh item. Resources are consumed by playback
-        // (`load_current_item` takes them), so re-selecting the same index
-        // with a stale item would be a no-op. A fresh item guarantees
-        // `LoadTrack + FadeIn` fire and crossfade kicks in.
-        itemCancellables[entry.id]?.cancel()
-        let fresh = KitharaPlayerItem(url: entry.url)
-        subscribeItem(entryId: entry.id, item: fresh)
-        items[entry.id] = fresh
-        fresh.load()
-        pendingSelectEntryId = entry.id
-    }
-
-    private func performDeferredSelect(entryId: UUID) {
-        guard let idx = playlist.firstIndex(where: { $0.id == entryId }),
-              let item = items[entryId]
-        else { return }
-        pendingSelectEntryId = nil
-        do {
-            try player.replaceItem(at: idx, with: item)
-            try player.selectItem(at: idx, autoplay: true)
-        } catch {
-            print("[KitharaDemo] replace/select error: \(error)")
-            errorMessage = "\(error)"
-            status = .failed
+        duration = trackId.flatMap { id in
+            playlist.first(where: { $0.id == id })?.duration
         }
     }
 
-    private func subscribeItem(entryId: UUID, item: KitharaPlayerItem) {
+    private func handleTrackStatus(itemId: String, status: TrackStatus) {
+        if let idx = playlist.firstIndex(where: { $0.id == itemId }) {
+            playlist[idx].trackStatus = status
+        }
+
+        switch status {
+        case let .failed(reason):
+            print("[KitharaDemo] \(trackLabel(itemId)) FAILED: \(reason)")
+            if itemId == currentTrackId {
+                errorMessage = reason
+                self.status = .failed
+            }
+        default:
+            break
+        }
+    }
+
+    private func subscribeItem(_ item: KitharaPlayerItem) {
+        let entryId = item.id
         itemCancellables[entryId] = item.eventPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] event in
-                guard let self else { return }
-                switch event {
-                case let .durationChanged(seconds):
-                    if let idx = self.playlist.firstIndex(where: { $0.id == entryId }) {
-                        self.playlist[idx].duration = seconds
-                        if entryId == self.currentTrackId {
-                            self.duration = seconds
-                        }
-                        if self.pendingSelectEntryId == entryId {
-                            self.performDeferredSelect(entryId: entryId)
-                        }
-                    }
-                case let .variantsDiscovered(variants):
-                    if entryId == self.currentTrackId {
-                        let sorted = variants.sorted { $0.bandwidthBps < $1.bandwidthBps }
-                        self.discoveredVariants = sorted.map { v in
-                            let label = v.name ?? "\(v.bandwidthBps / 1000)k"
-                            return (index: v.index, label: label)
-                        }
-                    }
-                case let .variantSelected(variant):
-                    if entryId == self.currentTrackId {
-                        self.selectedVariantIndex = variant.index
-                    }
-                case let .variantApplied(variant):
-                    if entryId == self.currentTrackId {
-                        let label = variant.name ?? "\(variant.bandwidthBps / 1000) kbps"
-                        self.currentVariantLabel = label
-                    }
-                case let .error(message):
-                    if entryId == self.currentTrackId {
-                        self.errorMessage = message
-                        self.status = .failed
-                    }
-                default:
-                    break
+                self?.handleItemEvent(entryId: entryId, event: event)
+            }
+    }
+
+    private func handleItemEvent(entryId: String, event: ItemEvent) {
+        switch event {
+        case let .durationChanged(seconds):
+            if let idx = playlist.firstIndex(where: { $0.id == entryId }) {
+                playlist[idx].duration = seconds
+                if entryId == currentTrackId {
+                    duration = seconds
                 }
             }
+        case let .variantsDiscovered(variants):
+            guard entryId == currentTrackId else { return }
+            let sorted = variants.sorted { $0.bandwidthBps < $1.bandwidthBps }
+            discoveredVariants = sorted.map { v in
+                let label = v.name ?? "\(v.bandwidthBps / 1000)k"
+                return (index: v.index, label: label)
+            }
+        case let .variantSelected(variant):
+            if entryId == currentTrackId {
+                selectedVariantIndex = variant.index
+            }
+        case let .variantApplied(variant):
+            if entryId == currentTrackId {
+                currentVariantLabel = variant.name ?? "\(variant.bandwidthBps / 1000) kbps"
+            }
+        case let .error(message):
+            print("[KitharaDemo] \(trackLabel(entryId)) item error: \(message)")
+            // Surface only the first error per track — the pipeline can
+            // retry internally and emit the same error many times.
+            if entryId == currentTrackId, errorMessage == nil {
+                errorMessage = message
+            }
+        case .statusChanged, .bufferedDurationChanged:
+            break
+        @unknown default:
+            break
+        }
+    }
+
+    private func trackLabel(_ entryId: String) -> String {
+        let name = playlist.first(where: { $0.id == entryId })?.name ?? "unknown"
+        return "[\(name)]"
     }
 }
 

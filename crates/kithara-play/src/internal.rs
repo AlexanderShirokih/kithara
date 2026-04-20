@@ -13,6 +13,30 @@ pub mod engine {
     }
 }
 
+/// Initialise the global session client with an offline (test-only)
+/// audio backend.
+///
+/// Must be called **before** any `PlayerImpl::new()` / `Queue::new()`.
+/// Idempotent: a second call is a no-op if the offline client is
+/// already set. If production code raced ahead and initialised the
+/// cpal client first, this panics — the caller should have called
+/// this function earlier in the test setup.
+///
+/// Available with the `test-utils` feature on both native and wasm.
+/// On wasm, offline mode is a thread-local opt-in; on native it swaps
+/// the global session client before first use.
+///
+/// # Panics
+///
+/// Panics if the global session client was already initialised with a
+/// non-offline backend (cpal on native, `WebAudio` on wasm). Call this
+/// before any `PlayerImpl::new()` or `Queue::new()` in the test binary.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn init_offline_backend() {
+    crate::impls::session_engine::try_init_offline_session()
+        .expect("failed to initialise offline session backend");
+}
+
 #[cfg(any(test, feature = "test-utils"))]
 pub mod offline {
     use std::sync::{Arc, atomic::Ordering};
@@ -33,17 +57,6 @@ pub mod offline {
         shared_player_state::SharedPlayerState,
     };
 
-    /// Offline audio block size in frames.
-    const OFFLINE_BLOCK_FRAMES: u32 = 512;
-
-    /// Capacity of the player command ring buffer.
-    const CMD_RINGBUF_CAPACITY: usize = 64;
-
-    /// A self-contained offline player for testing crossfade and mixing.
-    ///
-    /// Wraps [`FirewheelCtx<OfflineBackend>`] with a player node. Call
-    /// [`render`](Self::render) to step the audio graph and inspect
-    /// the rendered output for gaps.
     pub struct OfflinePlayer {
         ctx: FirewheelCtx<OfflineBackend>,
         cmd_tx: ringbuf::HeapProd<PlayerCmd>,
@@ -51,6 +64,12 @@ pub mod offline {
     }
 
     impl OfflinePlayer {
+        /// Offline audio block size in frames.
+        const OFFLINE_BLOCK_FRAMES: u32 = 512;
+
+        /// Capacity of the player command ring buffer.
+        const CMD_RINGBUF_CAPACITY: usize = 64;
+
         /// Create an offline player with stereo output at the given sample rate.
         ///
         /// # Panics
@@ -66,13 +85,13 @@ pub mod offline {
 
             let stream_config = OfflineConfig {
                 sample_rate,
-                block_frames: OFFLINE_BLOCK_FRAMES,
+                block_frames: Self::OFFLINE_BLOCK_FRAMES,
             };
             ctx.start_stream(stream_config)
                 .expect("start offline stream");
 
             let shared_state = Arc::new(SharedPlayerState::new());
-            let (cmd_tx, cmd_rx) = HeapRb::new(CMD_RINGBUF_CAPACITY).split();
+            let (cmd_tx, cmd_rx) = HeapRb::new(Self::CMD_RINGBUF_CAPACITY).split();
 
             let player_node = PlayerNode::with_channel(
                 cmd_rx,

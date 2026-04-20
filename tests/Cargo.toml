@@ -22,9 +22,10 @@ kithara-bufpool = { workspace = true, features = ["internal"] }
 kithara-drm = { workspace = true }
 kithara-events = { workspace = true }
 kithara-hls = { workspace = true, features = ["internal"] }
+kithara-queue = { workspace = true }
+kithara-app = { workspace = true, default-features = false, features = ["lib-only"] }
 kithara-test-utils = { workspace = true }
 rkyv = { workspace = true }
-bytecheck = { workspace = true }
 kithara-net = { workspace = true, features = ["test-utils"] }
 kithara-platform = { workspace = true }
 kithara-storage = { workspace = true }
@@ -53,13 +54,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 # Crypto (for HLS encryption tests)
-hex = { workspace = true }
 aes = { workspace = true }
 cbc = { workspace = true }
 
 # Misc
 futures = { workspace = true }
-uuid = { workspace = true }
 
 # Async traits
 async-trait = { workspace = true }
@@ -70,7 +69,7 @@ async-trait = { workspace = true }
 kithara = { workspace = true, features = ["rodio"] }
 kithara-decode = { workspace = true, features = ["test-utils"] }
 kithara-file = { workspace = true }
-kithara-play = { workspace = true, features = ["backend-cpal", "internal"] }
+kithara-play = { workspace = true, features = ["backend-cpal", "internal", "test-utils"] }
 
 # Additional tokio features (full runtime on native)
 tokio = { workspace = true, features = ["full"] }
@@ -106,9 +105,6 @@ tokio-stream = { workspace = true }
 # --- WASM-only dependencies ---
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 kithara-test-macros = { workspace = true }
-
-# uuid needs js feature on WASM
-uuid = { workspace = true, features = ["js"] }
 
 # WASM-specific
 js-sys = { workspace = true }
