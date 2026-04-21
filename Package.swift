@@ -35,7 +35,7 @@ func boolOverride(_ value: String?) -> Bool? {
     }
 }
 
-let localDevOverride = boolOverride(environment["KITHARA_LOCAL_DEV"])
+let localDevOverride = boolOverride(environment["KITHARA_LOCAL_DEV"]) ?? false
 let useLocalBinary = localDevOverride ?? localBinaryExists
 
 let binaryTarget: Target

@@ -626,6 +626,11 @@ public protocol AudioPlayerProtocol: AnyObject, Sendable {
      * Use before [`Self::select_item`] to re-play a track whose resource
      * was consumed by a prior playback. The new item must already have a
      * loaded resource (`item.load()` finished).
+     *
+     * # Errors
+     *
+     * Returns [`FfiError::InvalidArgument`] if `index` is out of range,
+     * or [`FfiError::NotReady`] if `item` has not finished loading.
      */
     func replaceItem(index: UInt32, item: AudioPlayerItem) throws 
     
@@ -648,6 +653,13 @@ public protocol AudioPlayerProtocol: AnyObject, Sendable {
      * Select an item in the queue and optionally start playback.
      *
      * Applies the configured crossfade duration during the transition.
+     *
+     * # Errors
+     *
+     * Returns [`FfiError::InvalidArgument`] if `index` is out of range,
+     * [`FfiError::NotReady`] if the item has not been inserted into the
+     * engine yet, or [`FfiError::Internal`] if the underlying player
+     * fails to select.
      */
     func selectItem(index: UInt32, autoplay: Bool) throws 
     
@@ -879,6 +891,11 @@ open func removeAllItems()  {try! rustCall() {
      * Use before [`Self::select_item`] to re-play a track whose resource
      * was consumed by a prior playback. The new item must already have a
      * loaded resource (`item.load()` finished).
+     *
+     * # Errors
+     *
+     * Returns [`FfiError::InvalidArgument`] if `index` is out of range,
+     * or [`FfiError::NotReady`] if `item` has not finished loading.
      */
 open func replaceItem(index: UInt32, item: AudioPlayerItem)throws   {try rustCallWithError(FfiConverterTypeFfiError_lift) {
     uniffi_kithara_ffi_fn_method_audioplayer_replace_item(
@@ -920,6 +937,13 @@ open func seek(toSeconds: Double, callback: SeekCallback)  {try! rustCall() {
      * Select an item in the queue and optionally start playback.
      *
      * Applies the configured crossfade duration during the transition.
+     *
+     * # Errors
+     *
+     * Returns [`FfiError::InvalidArgument`] if `index` is out of range,
+     * [`FfiError::NotReady`] if the item has not been inserted into the
+     * engine yet, or [`FfiError::Internal`] if the underlying player
+     * fails to select.
      */
 open func selectItem(index: UInt32, autoplay: Bool)throws   {try rustCallWithError(FfiConverterTypeFfiError_lift) {
     uniffi_kithara_ffi_fn_method_audioplayer_select_item(
@@ -3576,7 +3600,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_kithara_ffi_checksum_method_audioplayer_remove_all_items() != 32344) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_kithara_ffi_checksum_method_audioplayer_replace_item() != 34006) {
+    if (uniffi_kithara_ffi_checksum_method_audioplayer_replace_item() != 61142) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kithara_ffi_checksum_method_audioplayer_reset_eq() != 7094) {
@@ -3585,7 +3609,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_kithara_ffi_checksum_method_audioplayer_seek() != 62537) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_kithara_ffi_checksum_method_audioplayer_select_item() != 13809) {
+    if (uniffi_kithara_ffi_checksum_method_audioplayer_select_item() != 49640) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kithara_ffi_checksum_method_audioplayer_set_abr_mode() != 45428) {
