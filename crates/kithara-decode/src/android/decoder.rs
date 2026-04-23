@@ -33,7 +33,7 @@ use crate::{
     DecodeResult,
     hardware::{BoxedSource, RecoverableHardwareError, recoverable_hardware_error},
     traits::{Aac, CodecType, Flac, InnerDecoder, Mp3},
-    types::{PcmChunk, PcmSpec, TrackMetadata},
+    types::{DecoderTrackInfo, PcmChunk, PcmSpec, TrackMetadata},
 };
 
 const INPUT_DEQUEUE_TIMEOUT_US: i64 = 10_000;
@@ -47,6 +47,7 @@ struct AndroidInner {
     spec: PcmSpec,
     duration: Option<Duration>,
     metadata: TrackMetadata,
+    track_info: DecoderTrackInfo,
     byte_len_handle: Arc<AtomicU64>,
     pool: PcmPool,
     stream_ctx: Option<Arc<dyn StreamContext>>,
@@ -141,6 +142,7 @@ impl<C: CodecType> Android<C> {
                 spec: codec_bootstrap.spec,
                 duration: extractor_bootstrap.selected_track.duration,
                 metadata: TrackMetadata::default(),
+                track_info: DecoderTrackInfo::default(),
                 byte_len_handle,
                 pool,
                 stream_ctx: config.stream_ctx,
@@ -440,6 +442,10 @@ impl<C: CodecType> InnerDecoder for Android<C> {
 
     fn metadata(&self) -> TrackMetadata {
         self.inner.metadata.clone()
+    }
+
+    fn track_info(&self) -> DecoderTrackInfo {
+        self.inner.track_info.clone()
     }
 }
 

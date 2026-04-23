@@ -6,6 +6,7 @@ use std::{
 use crate::{
     DecodeResult, GaplessInfo,
     mp4::{ItunSmpb, Mp4EditListEntry, Mp4MediaTiming, Mp4Visitor, scan_mp4},
+    traits::DecoderInput,
 };
 
 /// Stream the MP4 boxes in `reader` and derive a [`GaplessInfo`] if any
@@ -19,6 +20,12 @@ use crate::{
 /// than propagated, so callers can fall back to other probes.
 pub fn probe_mp4_gapless<R: Read + Seek + Send + Sync>(
     reader: &mut R,
+) -> DecodeResult<Option<GaplessInfo>> {
+    probe_mp4_gapless_dyn(reader)
+}
+
+pub(crate) fn probe_mp4_gapless_dyn(
+    reader: &mut dyn DecoderInput,
 ) -> DecodeResult<Option<GaplessInfo>> {
     let mut probe = GaplessProbe::default();
     match scan_mp4(reader, &mut probe) {

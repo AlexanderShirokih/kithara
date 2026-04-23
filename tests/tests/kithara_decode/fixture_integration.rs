@@ -640,6 +640,107 @@ async fn test_packaged_hls_init_segment_exposes_configured_gapless_delays() {
     assert_eq!(gapless.trailing_frames, u64::from(trailing_delay));
 }
 
+#[kithara::test(
+    native,
+    tokio,
+    timeout(Duration::from_secs(10)),
+    env(KITHARA_HANG_TIMEOUT_SECS = "1")
+)]
+async fn test_symphonia_aac_decoder_exposes_gapless_metadata_only_when_enabled() {
+    let server = TestServerHelper::new().await;
+    let encoder_delay = 2_112;
+    let trailing_delay = 960;
+    let created = server
+        .create_hls(
+            HlsFixtureBuilder::new()
+                .variant_count(1)
+                .segments_per_variant(1)
+                .segment_duration_secs(1.0)
+                .packaged_audio(PackagedAudioRequest {
+                    codec: AudioCodec::AacLc,
+                    sample_rate: 48_000,
+                    channels: 2,
+                    timescale: Some(48_000),
+                    bit_rate: Some(128_000),
+                    encoder_delay: NonZeroU32::new(encoder_delay),
+                    trailing_delay: NonZeroU32::new(trailing_delay),
+                    source: PackagedAudioSource::Signal(PackagedSignal::Sawtooth),
+                    variant_overrides: Vec::new(),
+                }),
+        )
+        .await
+        .expect("create delayed packaged HLS fixture");
+
+    let client = Client::new();
+    let init = client
+        .get(created.init_url(0))
+        .send()
+        .await
+        .expect("fetch delayed init")
+        .bytes()
+        .await
+        .expect("read delayed init bytes");
+    let segment = client
+        .get(created.segment_url(0, 0))
+        .send()
+        .await
+        .expect("fetch delayed segment")
+        .bytes()
+        .await
+        .expect("read delayed segment bytes");
+
+    let mut mp4_bytes = Vec::with_capacity(init.len() + segment.len());
+    mp4_bytes.extend_from_slice(&init);
+    mp4_bytes.extend_from_slice(&segment);
+
+    let media_info = MediaInfo::new(Some(AudioCodec::AacLc), Some(ContainerFormat::Fmp4))
+        .with_sample_rate(48_000)
+        .with_channels(2);
+
+    let direct_decoder = DecoderFactory::create_from_media_info(
+        Cursor::new(mp4_bytes.clone()),
+        &media_info,
+        DecoderConfig::default(),
+    )
+    .expect("create Symphonia direct decoder");
+    let direct_gapless = direct_decoder.track_info().gapless;
+    assert_eq!(
+        direct_gapless.as_ref().map(|info| info.leading_frames),
+        Some(u64::from(encoder_delay))
+    );
+    assert_eq!(
+        direct_gapless.as_ref().map(|info| info.trailing_frames),
+        Some(u64::from(trailing_delay))
+    );
+
+    let probe_decoder = DecoderFactory::create_with_probe(
+        Cursor::new(mp4_bytes.clone()),
+        Some("m4a"),
+        DecoderConfig::default(),
+    )
+    .expect("create Symphonia probe decoder");
+    let probe_gapless = probe_decoder.track_info().gapless;
+    assert_eq!(
+        probe_gapless.as_ref().map(|info| info.leading_frames),
+        Some(u64::from(encoder_delay))
+    );
+    assert_eq!(
+        probe_gapless.as_ref().map(|info| info.trailing_frames),
+        Some(u64::from(trailing_delay))
+    );
+
+    let disabled_decoder = DecoderFactory::create_from_media_info(
+        Cursor::new(mp4_bytes),
+        &media_info,
+        DecoderConfig {
+            gapless: false,
+            ..DecoderConfig::default()
+        },
+    )
+    .expect("create Symphonia decoder with gapless disabled");
+    assert_eq!(disabled_decoder.track_info().gapless, None);
+}
+
 #[kithara::test]
 fn test_embedded_audio_contains_data() {
     let audio = EmbeddedAudio::get();

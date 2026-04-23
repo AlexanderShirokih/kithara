@@ -5,7 +5,7 @@ use kithara_bufpool::{PcmBuf, pcm_pool};
 
 use crate::GaplessInfo;
 
-/// Audio track metadata extracted from Symphonia tags.
+/// User-facing track metadata extracted from the container or tags.
 #[derive(Debug, Clone, Default)]
 pub struct TrackMetadata {
     /// Album name.
@@ -16,6 +16,12 @@ pub struct TrackMetadata {
     pub artwork: Option<Arc<Vec<u8>>>,
     /// Track title.
     pub title: Option<String>,
+}
+
+/// Decoder-owned per-track playback contract.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DecoderTrackInfo {
     /// Gapless trim information applied by the engine pipeline.
     pub gapless: Option<GaplessInfo>,
 }

@@ -49,4 +49,4 @@ pub use gapless::{GaplessInfo, GaplessTrimmer, probe_mp4_gapless};
 // Public traits
 pub use traits::InnerDecoder;
 // Core types
-pub use types::{PcmChunk, PcmMeta, PcmSpec, TrackMetadata};
+pub use types::{DecoderTrackInfo, PcmChunk, PcmMeta, PcmSpec, TrackMetadata};

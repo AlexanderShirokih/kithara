@@ -40,7 +40,7 @@ use crate::{
     error::{DecodeError, DecodeResult},
     hardware::{BoxedSource, RecoverableHardwareError, recoverable_hardware_error},
     traits::{Aac, Alac, AudioDecoder, CodecType, DecoderInput, Flac, InnerDecoder, Mp3},
-    types::{PcmChunk, PcmMeta, PcmSpec, TrackMetadata},
+    types::{DecoderTrackInfo, PcmChunk, PcmMeta, PcmSpec, TrackMetadata},
 };
 
 type OSStatus = i32;
@@ -411,6 +411,8 @@ struct AppleInner {
     duration: Option<Duration>,
     /// Track metadata.
     metadata: TrackMetadata,
+    /// Decoder-owned playback contract.
+    track_info: DecoderTrackInfo,
     /// Byte length handle for HLS.
     byte_len_handle: Arc<AtomicU64>,
     /// Buffer for PCM output.
@@ -806,6 +808,7 @@ impl AppleInner {
             frame_offset: 0,
             duration: cached_duration,
             metadata: TrackMetadata::default(),
+            track_info: DecoderTrackInfo::default(),
             byte_len_handle,
             pcm_buffer,
             source_eof: false,
@@ -1626,6 +1629,10 @@ impl<C: CodecType> InnerDecoder for Apple<C> {
 
     fn metadata(&self) -> TrackMetadata {
         self.inner.metadata.clone()
+    }
+
+    fn track_info(&self) -> DecoderTrackInfo {
+        self.inner.track_info.clone()
     }
 }
 
