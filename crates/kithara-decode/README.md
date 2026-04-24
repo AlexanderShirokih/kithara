@@ -55,6 +55,31 @@ while let Ok(Some(chunk)) = decoder.next_chunk() {
 - Fallback: native Symphonia probe on a fresh reader if metadata-driven creation fails.
 - If both fail, error is surfaced to caller; decoder layer does not silently switch to unrelated formats.
 
+## Gapless playback
+
+`DecoderConfig::gapless` is enabled by default. Decoders report engine-level trim
+metadata through `DecoderTrackInfo::gapless: Option<GaplessInfo>`, where
+`leading_frames` and `trailing_frames` are PCM frame counts.
+
+The contract has one owner for actual trimming:
+
+- `Some(GaplessInfo)` means the backend decoded the untrimmed PCM region and the
+  `kithara-audio` pipeline must apply `GaplessTrimmer` before effects.
+- `None` means no engine trim should run. This covers files with no gapless
+  metadata and backend paths that already applied gapless trim internally.
+- `GaplessTrimmer::notify_seek()` drops only the leading trim state; tail trim is
+  still applied at EOF for the current track.
+
+Current metadata sources:
+
+- AAC in MP4/M4A/fMP4: MP4 probe reads `edts/elst` first, then falls back to
+  `iTunSMPB`.
+- MP3, FLAC, Vorbis, and Opus through Symphonia rely on the backend's own
+  gapless behavior and therefore expose `None` for engine trim.
+- Apple AudioToolbox captures `AudioConverterPrimeInfo` when available.
+- Android MediaCodec reads `encoder-delay`/`encoder-padding` from `MediaFormat`
+  and falls back to the MP4 probe for AAC MP4 containers.
+
 ## Feature Flags
 
 <table>
