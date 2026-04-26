@@ -40,6 +40,20 @@ class KitharaPlayerTest {
     }
 
     @Test
+    fun crossfadeDurationRoundTrips() {
+        val player = KitharaPlayer()
+
+        player.crossfadeDuration = 2.5f
+        assertEquals(2.5f, player.crossfadeDuration, 0.0f)
+
+        player.crossfadeDuration = 0f
+        assertEquals(0f, player.crossfadeDuration, 0.0f)
+
+        player.crossfadeDuration = -1f
+        assertEquals(0f, player.crossfadeDuration, 0.0f)
+    }
+
+    @Test
     fun itemsStartsEmpty() {
         val player = KitharaPlayer()
 

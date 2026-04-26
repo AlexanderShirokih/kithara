@@ -104,6 +104,18 @@ class KitharaPlayer() {
         }
 
     /**
+     * Crossfade duration in seconds applied on item transitions.
+     *
+     * Set to `0f` to disable crossfade. Negative values are clamped to `0f`
+     * by the underlying engine.
+     */
+    var crossfadeDuration: Float
+        get() = inner.crossfadeDuration()
+        set(value) {
+            inner.setCrossfadeDuration(value)
+        }
+
+    /**
      * Starts or resumes playback.
      */
     fun play() {
