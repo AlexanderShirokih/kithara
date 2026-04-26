@@ -162,7 +162,12 @@ impl EventBridge {
                 FfiPlayerEvent::VolumeChanged { volume: *volume }
             }
             PlayerEvent::MuteChanged { muted } => FfiPlayerEvent::MuteChanged { muted: *muted },
-            PlayerEvent::ItemDidPlayToEnd => FfiPlayerEvent::ItemDidPlayToEnd,
+            PlayerEvent::ItemDidPlayToEnd { item_id } => {
+                let Some(item_id) = item_id.clone() else {
+                    return;
+                };
+                FfiPlayerEvent::ItemDidPlayToEnd { item_id }
+            }
             _ => return,
         };
         observer.on_event(ffi_event);

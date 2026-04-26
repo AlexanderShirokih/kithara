@@ -105,6 +105,10 @@ pub struct InitSegment {
 
 /// Parsed media playlist.
 #[derive(Debug, Clone)]
+#[expect(
+    dead_code,
+    reason = "fields mirror M3U8 tags; the in-crate loader and tests do not all read them yet"
+)]
 pub struct MediaPlaylist {
     /// List of segments in the order they appear.
     pub segments: Vec<MediaSegment>,
@@ -349,7 +353,7 @@ pub fn variant_info_from_master(master: &MasterPlaylist) -> Vec<VariantInfo> {
 }
 
 #[cfg(test)]
-#[allow(dead_code, unused_imports)]
+#[expect(dead_code, unused_imports)]
 mod tests {
     use kithara_test_utils::kithara;
 

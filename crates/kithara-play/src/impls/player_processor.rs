@@ -60,6 +60,7 @@ pub(crate) enum PlayerCmd {
     LoadTrack {
         #[derivative(Debug = "ignore")]
         resource: Arc<Mutex<PlayerResource>>,
+        item_id: Option<Arc<str>>,
         src: Arc<str>,
     },
     /// Unload a track by its source identifier.
@@ -117,8 +118,12 @@ impl PlayerNodeProcessor {
     fn drain_commands(&mut self) {
         while let Some(cmd) = self.cmd_rx.try_pop() {
             match cmd {
-                PlayerCmd::LoadTrack { resource, src } => {
-                    self.load_track(resource, src);
+                PlayerCmd::LoadTrack {
+                    resource,
+                    item_id,
+                    src,
+                } => {
+                    self.load_track(resource, item_id, src);
                 }
                 PlayerCmd::UnloadTrack { src } => {
                     self.unload_track(&src);
@@ -158,7 +163,12 @@ impl PlayerNodeProcessor {
     }
 
     /// Load a new track into the arena.
-    fn load_track(&mut self, resource: Arc<Mutex<PlayerResource>>, src: Arc<str>) {
+    fn load_track(
+        &mut self,
+        resource: Arc<Mutex<PlayerResource>>,
+        item_id: Option<Arc<str>>,
+        src: Arc<str>,
+    ) {
         if self.tracks.remove(&src).is_some() {
             self.shared_state
                 .notification_tx
@@ -175,6 +185,7 @@ impl PlayerNodeProcessor {
 
         let track = PlayerTrack::new(
             resource,
+            item_id,
             Arc::clone(&src),
             self.crossfade.duration,
             self.sample_rate,
@@ -635,6 +646,7 @@ mod tests {
         let mut tx = tx;
         tx.try_push(PlayerCmd::LoadTrack {
             resource: player_resource,
+            item_id: None,
             src: Arc::from("track.mp3"),
         })
         .ok();
@@ -663,6 +675,7 @@ mod tests {
 
         tx.try_push(PlayerCmd::LoadTrack {
             resource: create_mock_player_resource("track1.mp3"),
+            item_id: None,
             src: Arc::clone(&track_src),
         })
         .ok();
@@ -672,6 +685,7 @@ mod tests {
             TrackCommandScenario::DuplicateLoad => {
                 tx.try_push(PlayerCmd::LoadTrack {
                     resource: create_mock_player_resource("track1.mp3"),
+                    item_id: None,
                     src: Arc::clone(&track_src),
                 })
                 .ok();
@@ -747,6 +761,7 @@ mod tests {
 
         tx.try_push(PlayerCmd::LoadTrack {
             resource: create_mock_player_resource("track1.mp3"),
+            item_id: None,
             src: Arc::clone(&src),
         })
         .ok();
@@ -779,6 +794,7 @@ mod tests {
         let resource = create_mock_player_resource("track1.mp3");
         tx.try_push(PlayerCmd::LoadTrack {
             resource,
+            item_id: None,
             src: Arc::from("track1.mp3"),
         })
         .ok();
@@ -897,6 +913,7 @@ mod tests {
         let src = Arc::from("track1.mp3");
         tx.try_push(PlayerCmd::LoadTrack {
             resource,
+            item_id: None,
             src: Arc::clone(&src),
         })
         .ok();

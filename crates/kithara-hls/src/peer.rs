@@ -526,7 +526,7 @@ fn build_batch(
             let init_len = init_meta.as_ref().map_or(0, |m| m.len);
             let init_url = init_meta.map(|m| m.url);
 
-            let meta = match state.loader.complete_media(&prepared, cached_len) {
+            let meta = match SegmentLoader::complete_media(&prepared, cached_len) {
                 Ok(m) => m,
                 Err(e) => {
                     state
@@ -641,14 +641,7 @@ fn build_fetch_cmd(
                 }
                 return;
             }
-            let loader = {
-                let guard = state_arc.lock_sync();
-                let Some(ref st) = *guard else {
-                    return;
-                };
-                Arc::clone(&st.loader)
-            };
-            let meta = loader.complete_media(&prepared, bytes_written);
+            let meta = SegmentLoader::complete_media(&prepared, bytes_written);
             let mut guard = state_arc.lock_sync();
             let Some(ref mut st) = *guard else {
                 return;

@@ -233,7 +233,7 @@ pub enum FfiPlayerEvent {
     BufferedDurationChanged { seconds: f64 },
     VolumeChanged { volume: f32 },
     MuteChanged { muted: bool },
-    ItemDidPlayToEnd,
+    ItemDidPlayToEnd { item_id: String },
 }
 
 /// Typed item event dispatched through [`ItemObserver::on_event`].

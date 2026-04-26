@@ -38,6 +38,11 @@ use crate::{
 /// Minimum playback rate to prevent stalling.
 const MIN_PLAYBACK_RATE: f32 = 0.01;
 
+struct QueuedResource {
+    item_id: Option<Arc<str>>,
+    resource: Resource,
+}
+
 /// Configuration for the player.
 #[derive(Clone, Derivative, Setters)]
 #[derivative(Default, Debug)]
@@ -89,7 +94,7 @@ pub struct PlayerImpl {
     default_rate: AtomicF32,
     /// Items drop before engine — Audio tracks unregister from worker
     /// while it is still alive.
-    items: Mutex<Vec<Option<Resource>>>,
+    items: Mutex<Vec<Option<QueuedResource>>>,
     muted: AtomicBool,
     pcm_pool: PcmPool,
     /// Shared playback rate propagated to the audio pipeline resampler.
@@ -192,9 +197,14 @@ impl PlayerImpl {
     /// Use this to re-load a track that was previously played and consumed
     /// by [`load_current_item`]. Does nothing if `index` is out of bounds.
     pub fn replace_item(&self, index: usize, resource: Resource) {
+        self.replace_item_tagged(index, resource, None);
+    }
+
+    /// Replace a consumed (or existing) resource at the given index with item identity metadata.
+    pub fn replace_item_tagged(&self, index: usize, resource: Resource, item_id: Option<Arc<str>>) {
         let mut items = self.items.lock_sync();
         if index < items.len() {
-            items[index] = Some(resource);
+            items[index] = Some(QueuedResource { item_id, resource });
             drop(items);
             debug!(index, "item replaced");
         }
@@ -208,9 +218,19 @@ impl PlayerImpl {
 
     /// Insert a resource at a specific position, or append to the end.
     pub fn insert(&self, resource: Resource, at_position: Option<usize>) {
+        self.insert_tagged(resource, None, at_position);
+    }
+
+    /// Insert a resource with optional queue-item identity metadata.
+    pub fn insert_tagged(
+        &self,
+        resource: Resource,
+        item_id: Option<Arc<str>>,
+        at_position: Option<usize>,
+    ) {
         let mut items = self.items.lock_sync();
         let pos = at_position.map_or(items.len(), |i| i.min(items.len()));
-        items.insert(pos, Some(resource));
+        items.insert(pos, Some(QueuedResource { item_id, resource }));
         debug!(count = items.len(), pos, "item inserted");
     }
 
@@ -231,7 +251,7 @@ impl PlayerImpl {
             self.current_index.store(items.len() - 1, Ordering::Relaxed);
         }
         debug!(index, remaining = items.len(), "item removed");
-        removed
+        removed.map(|queued| queued.resource)
     }
 
     /// Remove all items from the queue.
@@ -504,7 +524,7 @@ impl PlayerImpl {
     }
 
     /// Process audio-thread notifications, emitting `ItemDidPlayToEnd`
-    /// when a track finishes via EOF.
+    /// only when a track finishes via natural EOF.
     pub fn process_notifications(&self) {
         let Some(slot_id) = *self.current_slot.lock_sync() else {
             return;
@@ -514,13 +534,10 @@ impl PlayerImpl {
         };
 
         while let Some(notification) = state.notification_rx.lock_sync().try_pop() {
-            match notification {
-                PlayerNotification::TrackPlaybackStopped(_) => {
-                    self.bus.publish(PlayerEvent::ItemDidPlayToEnd);
-                }
-                other => {
-                    tracing::trace!(?other, "unhandled player notification");
-                }
+            if let Some(event) = player_event_from_notification(notification.clone()) {
+                self.bus.publish(event);
+            } else {
+                tracing::trace!(?notification, "unhandled player notification");
             }
         }
     }
@@ -689,9 +706,10 @@ impl PlayerImpl {
         }
 
         // Take the resource out of the queue (if not already consumed).
-        let Some(resource) = items[index].take() else {
+        let Some(queued) = items[index].take() else {
             return; // Already loaded
         };
+        let QueuedResource { item_id, resource } = queued;
 
         // Propagate current playback rate to the resource's audio pipeline.
         let current_rate = self.playback_rate_shared.load(Ordering::Relaxed);
@@ -716,9 +734,22 @@ impl PlayerImpl {
         // Send LoadTrack and FadeIn to the processor.
         let _ = self.send_to_slot(PlayerCmd::LoadTrack {
             resource: arc_resource,
+            item_id,
             src: Arc::clone(&src),
         });
         let _ = self.send_to_slot(PlayerCmd::Transition(TrackTransition::FadeIn(src)));
+    }
+}
+
+fn player_event_from_notification(notification: PlayerNotification) -> Option<PlayerEvent> {
+    match notification {
+        PlayerNotification::TrackNaturalEnd { item_id, .. } => {
+            Some(PlayerEvent::ItemDidPlayToEnd {
+                item_id: item_id.map(|id| id.to_string()),
+            })
+        }
+        PlayerNotification::TrackPlaybackStopped(_) => None,
+        _ => None,
     }
 }
 
@@ -1087,5 +1118,25 @@ mod tests {
         let _w = player.worker();
         // Worker should be accessible and clonable.
         let _w2 = player.worker().clone();
+    }
+
+    #[kithara::test]
+    fn natural_end_notification_maps_to_item_end_event() {
+        let event = player_event_from_notification(PlayerNotification::TrackNaturalEnd {
+            src: Arc::from("track.mp3"),
+            item_id: Some(Arc::from("item-1")),
+        });
+        assert!(matches!(
+            event,
+            Some(PlayerEvent::ItemDidPlayToEnd { item_id: Some(id) }) if id == "item-1"
+        ));
+    }
+
+    #[kithara::test]
+    fn playback_stopped_notification_does_not_map_to_item_end_event() {
+        let event = player_event_from_notification(PlayerNotification::TrackPlaybackStopped(
+            Arc::from("track.mp3"),
+        ));
+        assert!(event.is_none());
     }
 }

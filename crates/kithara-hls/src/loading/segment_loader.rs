@@ -425,7 +425,6 @@ impl SegmentLoader {
     /// # Errors
     /// Returns an error when commit fails or zero bytes were written.
     pub fn complete_media(
-        &self,
         prepared: &PreparedMedia,
         bytes_written: u64,
     ) -> HlsResult<SegmentMeta> {

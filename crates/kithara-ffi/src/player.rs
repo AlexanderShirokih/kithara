@@ -142,7 +142,11 @@ impl AudioPlayer {
         match item.take_resource() {
             Ok(resource) => {
                 let eng_idx = engine_index(&queue, ffi_pos);
-                self.inner.lock_sync().insert(resource, Some(eng_idx));
+                self.inner.lock_sync().insert_tagged(
+                    resource,
+                    Some(Arc::from(item.id())),
+                    Some(eng_idx),
+                );
                 entry.inserted_into_engine.store(true, Ordering::Release);
                 queue.insert(ffi_pos, entry);
             }
@@ -238,9 +242,9 @@ impl AudioPlayer {
         {
             let player = self.inner.lock_sync();
             if was_inserted {
-                player.replace_item(eng_idx, resource);
+                player.replace_item_tagged(eng_idx, resource, Some(Arc::from(item.id())));
             } else {
-                player.insert(resource, Some(eng_idx));
+                player.insert_tagged(resource, Some(Arc::from(item.id())), Some(eng_idx));
             }
         }
 
@@ -476,7 +480,7 @@ impl AudioPlayer {
 
             let eng_idx = engine_index(&q, ffi_pos);
             let player = inner.lock_sync();
-            player.insert(resource, Some(eng_idx));
+            player.insert_tagged(resource, Some(Arc::from(entry.item.id())), Some(eng_idx));
             entry.inserted_into_engine.store(true, Ordering::Release);
             player.try_load_if_current(eng_idx);
             drop(player);

@@ -73,6 +73,6 @@ sealed interface KitharaPlayerEvent {
     /** The current item changed; [itemId] is null when the queue becomes empty. */
     data class CurrentItemChanged(val itemId: String?) : KitharaPlayerEvent
 
-    /** The current item played to its end successfully. */
-    data object PlayedToEnd : KitharaPlayerEvent
+    /** The item identified by [itemId] played to its natural end successfully. */
+    data class PlayedToEnd(val itemId: String) : KitharaPlayerEvent
 }

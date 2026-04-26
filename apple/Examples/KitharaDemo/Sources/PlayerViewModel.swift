@@ -93,15 +93,9 @@ final class PlayerViewModel: ObservableObject {
                     self.volume = vol
                 case let .muteChanged(muted):
                     self.isMuted = muted
-                case .itemDidPlayToEnd:
-                    // kithara-play emits ItemDidPlayToEnd for ANY track stop,
-                    // including fade-out completion during crossfade. Only
-                    // auto-advance when the current track has really played
-                    // to (near) its end — otherwise a crossfade triggers a
-                    // cascade of false "ended" events.
-                    if let dur = self.duration, dur > 0, self.currentTime >= dur - 1.0 {
-                        self.playNext()
-                    }
+                case let .itemDidPlayToEnd(itemId):
+                    _ = itemId
+                    self.playNext()
                 case .bufferedDurationChanged:
                     break
                 case .timeControlStatusChanged:

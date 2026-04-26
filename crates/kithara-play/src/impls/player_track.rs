@@ -91,6 +91,7 @@ pub(crate) struct PlayerTrack {
     ///
     /// This is a fallback value only. Source of truth is `PlayerResource`.
     observed_duration: f64,
+    item_id: Option<Arc<str>>,
     src: Arc<str>,
 }
 
@@ -101,6 +102,7 @@ impl PlayerTrack {
     /// `fade_in()` or `play()` is required to produce audio.
     pub(crate) fn new(
         resource: Arc<Mutex<PlayerResource>>,
+        item_id: Option<Arc<str>>,
         src: Arc<str>,
         fade_duration: f32,
         sample_rate: NonZeroU32,
@@ -120,6 +122,7 @@ impl PlayerTrack {
             fade_curve,
             observed_position: 0.0,
             observed_duration: 0.0,
+            item_id,
             src,
         };
         // Push initial ServiceClass::Warm for the Preloading state.
@@ -141,6 +144,12 @@ impl PlayerTrack {
         notification_tx: &Mutex<HeapProd<PlayerNotification>>,
     ) {
         // Read data from resource inside a scoped lock
+        enum TrackReadOutcome {
+            Read { position: f64, duration: f64 },
+            Eof,
+            Error(crate::error::PlayError),
+        }
+
         let read_outcome = {
             let Some(mut guard) = self.resource.try_lock().ok() else {
                 return; // Can't lock, skip this cycle
@@ -150,14 +159,17 @@ impl PlayerTrack {
                     let position = guard.position();
                     let duration = guard.duration();
                     drop(guard);
-                    Ok((position, duration))
+                    TrackReadOutcome::Read { position, duration }
                 }
-                Err(e) => Err(e),
+                Err(crate::error::PlayError::Internal(reason)) if reason == "eof" => {
+                    TrackReadOutcome::Eof
+                }
+                Err(e) => TrackReadOutcome::Error(e),
             }
         };
 
         // Process outcome outside the lock
-        if let Ok((position, duration)) = read_outcome {
+        if let TrackReadOutcome::Read { position, duration } = read_outcome {
             self.observed_position = position;
             self.observed_duration = duration;
 
@@ -177,7 +189,13 @@ impl PlayerTrack {
 
             self.check_notifications(notification_tx);
         } else {
-            self.handle_eof(notification_tx);
+            match read_outcome {
+                TrackReadOutcome::Eof => self.handle_natural_end(notification_tx),
+                TrackReadOutcome::Error(error) => {
+                    self.handle_read_error(notification_tx, error);
+                }
+                TrackReadOutcome::Read { .. } => {}
+            }
             return;
         }
 
@@ -191,12 +209,41 @@ impl PlayerTrack {
         }
     }
 
-    /// Handle EOF or read error.
-    fn handle_eof(&mut self, notification_tx: &Mutex<HeapProd<PlayerNotification>>) {
+    /// Handle natural EOF.
+    fn handle_natural_end(&mut self, notification_tx: &Mutex<HeapProd<PlayerNotification>>) {
         if self.state == TrackState::Finished {
             return;
         }
         self.set_state(TrackState::Finished);
+        notification_tx
+            .lock_sync()
+            .try_push(PlayerNotification::TrackNaturalEnd {
+                src: Arc::clone(&self.src),
+                item_id: self.item_id.clone(),
+            })
+            .ok();
+        notification_tx
+            .lock_sync()
+            .try_push(PlayerNotification::TrackPlaybackStopped(Arc::clone(
+                &self.src,
+            )))
+            .ok();
+    }
+
+    /// Handle a terminal read error that is not EOF.
+    fn handle_read_error(
+        &mut self,
+        notification_tx: &Mutex<HeapProd<PlayerNotification>>,
+        error: crate::error::PlayError,
+    ) {
+        if self.state == TrackState::Finished {
+            return;
+        }
+        self.set_state(TrackState::Finished);
+        notification_tx
+            .lock_sync()
+            .try_push(PlayerNotification::TrackError(Arc::clone(&self.src), error))
+            .ok();
         notification_tx
             .lock_sync()
             .try_push(PlayerNotification::TrackPlaybackStopped(Arc::clone(
@@ -419,6 +466,10 @@ mod tests {
     use kithara_audio::mock::TestPcmReader;
     use kithara_decode::PcmSpec;
     use kithara_test_utils::kithara;
+    use ringbuf::{
+        HeapRb,
+        traits::{Consumer, Split},
+    };
 
     use super::*;
     use crate::impls::resource::Resource;
@@ -442,14 +493,25 @@ mod tests {
     // Note: `make_track()` requires a tokio runtime because `Resource::from_reader()`
     // internally calls `tokio::spawn()` to forward audio events. All tests using
     // this helper must use `#[kithara::test(tokio)]`.
-    fn make_track() -> PlayerTrack {
+    fn make_track_with(duration_secs: f64, item_id: Option<Arc<str>>) -> PlayerTrack {
         let src: Arc<str> = Arc::from("test.mp3");
-        let resource = Resource::from_reader(TestPcmReader::new(mock_spec(), 60.0));
+        let resource = Resource::from_reader(TestPcmReader::new(mock_spec(), duration_secs));
         let player_resource =
             PlayerResource::new(resource, Arc::clone(&src), kithara_bufpool::pcm_pool());
         let arc_resource = Arc::new(Mutex::new(player_resource));
         let sample_rate = NonZeroU32::new(44100).expect("non-zero sample rate");
-        PlayerTrack::new(arc_resource, src, 1.0, sample_rate, FadeCurve::SquareRoot)
+        PlayerTrack::new(
+            arc_resource,
+            item_id,
+            src,
+            1.0,
+            sample_rate,
+            FadeCurve::SquareRoot,
+        )
+    }
+
+    fn make_track() -> PlayerTrack {
+        make_track_with(60.0, None)
     }
 
     #[kithara::test(tokio)]
@@ -510,6 +572,38 @@ mod tests {
         let track = make_track();
         assert_eq!(track.position(), 0.0);
         assert!((track.duration() - 60.0).abs() < f64::EPSILON);
+    }
+
+    #[kithara::test(tokio)]
+    async fn track_natural_end_notification_carries_item_id() {
+        let mut track = make_track_with(0.01, Some(Arc::from("item-1")));
+        let (tx, mut rx) = HeapRb::<PlayerNotification>::new(8).split();
+        let notification_tx = Mutex::new(tx);
+        let mut scratch_l = [0.0; 512];
+        let mut scratch_r = [0.0; 512];
+        let mut mix_l = [0.0; 512];
+        let mut mix_r = [0.0; 512];
+        let mut scratch_bufs = [&mut scratch_l[..], &mut scratch_r[..]];
+        let mut mix_bufs = [&mut mix_l[..], &mut mix_r[..]];
+
+        track.play();
+
+        let mut saw_natural_end = false;
+        for _ in 0..4 {
+            track.read(&mut scratch_bufs, &mut mix_bufs, 0..512, &notification_tx);
+
+            while let Some(notification) = rx.try_pop() {
+                if let PlayerNotification::TrackNaturalEnd { item_id, .. } = notification {
+                    saw_natural_end = matches!(item_id, Some(id) if id.as_ref() == "item-1");
+                }
+            }
+
+            if saw_natural_end {
+                break;
+            }
+        }
+
+        assert!(saw_natural_end);
     }
 
     #[kithara::test]

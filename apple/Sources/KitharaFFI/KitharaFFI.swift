@@ -3037,7 +3037,8 @@ public enum FfiPlayerEvent: Equatable, Hashable {
     )
     case muteChanged(muted: Bool
     )
-    case itemDidPlayToEnd
+    case itemDidPlayToEnd(itemId: String
+    )
 
 
 
@@ -3089,7 +3090,8 @@ public struct FfiConverterTypeFfiPlayerEvent: FfiConverterRustBuffer {
         case 10: return .muteChanged(muted: try FfiConverterBool.read(from: &buf)
         )
         
-        case 11: return .itemDidPlayToEnd
+        case 11: return .itemDidPlayToEnd(itemId: try FfiConverterString.read(from: &buf)
+        )
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -3149,9 +3151,10 @@ public struct FfiConverterTypeFfiPlayerEvent: FfiConverterRustBuffer {
             FfiConverterBool.write(muted, into: &buf)
             
         
-        case .itemDidPlayToEnd:
+        case let .itemDidPlayToEnd(itemId):
             writeInt(&buf, Int32(11))
-        
+            FfiConverterString.write(itemId, into: &buf)
+            
         }
     }
 }

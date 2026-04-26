@@ -27,6 +27,11 @@ pub(crate) enum PlayerNotification {
     TrackAboutToEnd(Arc<str>),
     /// A track started audible playback (fade-in completed or `play()`).
     TrackPlaybackStarted(Arc<str>),
+    /// A track naturally reached EOF.
+    TrackNaturalEnd {
+        src: Arc<str>,
+        item_id: Option<Arc<str>>,
+    },
     /// A track stopped playback (EOF or `stop()`).
     TrackPlaybackStopped(Arc<str>),
     /// A track was paused (fade-out completed).

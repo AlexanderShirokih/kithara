@@ -25,6 +25,10 @@ pub struct SegmentState {
     /// Duration of the segment.
     pub duration: Duration,
     /// Encryption key for this segment (if encrypted).
+    #[expect(
+        dead_code,
+        reason = "key is not read in-crate until per-segment decryption is wired into this state"
+    )]
     pub key: Option<SegmentKey>,
 }
 
@@ -48,10 +52,22 @@ pub struct VariantSizeMap {
 #[derive(Debug)]
 pub struct VariantState {
     /// Variant index in the master playlist.
+    #[expect(
+        dead_code,
+        reason = "set from the master; ABR in this crate uses [parsing::VariantStream] at build time"
+    )]
     pub id: VariantIndex,
     /// Absolute URL of the variant's media playlist.
+    #[expect(
+        dead_code,
+        reason = "set from the master; segment URLs and playlist cache own active resolution paths"
+    )]
     pub uri: Url,
     /// Advertised bandwidth in bits per second.
+    #[expect(
+        dead_code,
+        reason = "set from the master; ABR in this crate uses [parsing::VariantStream] at build time"
+    )]
     pub bandwidth: Option<u64>,
     /// Audio codec (parsed from CODECS attribute).
     pub codec: Option<AudioCodec>,

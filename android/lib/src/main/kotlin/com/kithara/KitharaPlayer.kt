@@ -214,7 +214,7 @@ class KitharaPlayer() {
                 eventsFlow.tryEmit(KitharaPlayerEvent.CurrentItemChanged(event.itemId))
 
             is FfiPlayerEvent.ItemDidPlayToEnd ->
-                eventsFlow.tryEmit(KitharaPlayerEvent.PlayedToEnd)
+                eventsFlow.tryEmit(KitharaPlayerEvent.PlayedToEnd(event.itemId))
 
             is FfiPlayerEvent.TimeControlStatusChanged,
             is FfiPlayerEvent.VolumeChanged,

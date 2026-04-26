@@ -116,6 +116,7 @@ pub mod offline {
             self.cmd_tx
                 .try_push(PlayerCmd::LoadTrack {
                     resource: Arc::new(Mutex::new(pr)),
+                    item_id: None,
                     src: Arc::clone(&src),
                 })
                 .expect("send LoadTrack");
