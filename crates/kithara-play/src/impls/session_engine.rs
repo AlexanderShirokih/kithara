@@ -1,5 +1,11 @@
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-utils")))]
+use portable_atomic::{AtomicU64, Ordering as AtomicOrdering};
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-utils")))]
+use std::cell::RefCell;
 #[cfg(target_arch = "wasm32")]
 use std::cell::RefCell;
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-utils")))]
+use std::collections::HashMap;
 #[cfg(target_arch = "wasm32")]
 use std::num::NonZeroU32;
 #[cfg(target_arch = "wasm32")]
@@ -33,6 +39,8 @@ use ringbuf::{
 use ringbuf::{HeapProd, HeapRb, traits::Split};
 use tracing::warn;
 
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-utils")))]
+use super::offline_backend::{OfflineBackend, OfflineConfig};
 use super::{
     master_eq_node::MasterEqNode, player_node::PlayerNode, player_processor::PlayerCmd,
     shared_eq::SharedEq, shared_player_state::SharedPlayerState,
@@ -266,11 +274,23 @@ pub(crate) enum Reply {
     Err(String),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+enum SessionTransport<B: AudioBackend + 'static> {
+    BackgroundThread {
+        cmd_tx: Mutex<HeapProd<CmdMsg>>,
+        engine_thread: Thread,
+        marker: PhantomData<fn() -> B>,
+    },
+    #[cfg(any(test, feature = "test-utils"))]
+    LocalSync {
+        session_id: u64,
+        marker: PhantomData<fn() -> B>,
+    },
+}
+
 pub(crate) struct SessionClient<B: AudioBackend + 'static = DefaultBackend> {
     #[cfg(not(target_arch = "wasm32"))]
-    cmd_tx: Mutex<HeapProd<CmdMsg>>,
-    #[cfg(not(target_arch = "wasm32"))]
-    engine_thread: Thread,
+    transport: SessionTransport<B>,
     /// `true` = main thread (direct state access via thread-local).
     /// `false` = Worker (remote channel proxy).
     #[cfg(target_arch = "wasm32")]
@@ -289,11 +309,24 @@ pub(crate) trait SessionCaller<B: AudioBackend + 'static> {
 #[cfg(not(target_arch = "wasm32"))]
 impl<B: AudioBackend + 'static> SessionClient<B> {
     fn push_cmd(&self, msg: CmdMsg) -> Result<(), PlayError> {
+        let (cmd_tx, engine_thread) = match &self.transport {
+            SessionTransport::BackgroundThread {
+                cmd_tx,
+                engine_thread,
+                ..
+            } => (cmd_tx, engine_thread),
+            #[cfg(any(test, feature = "test-utils"))]
+            SessionTransport::LocalSync { .. } => {
+                return Err(PlayError::Internal(
+                    "background session transport not available".into(),
+                ));
+            }
+        };
         let mut pending = msg;
         loop {
-            match self.cmd_tx.lock_sync().try_push(pending) {
+            match cmd_tx.lock_sync().try_push(pending) {
                 Ok(()) => {
-                    self.engine_thread.unpark();
+                    engine_thread.unpark();
                     return Ok(());
                 }
                 Err(returned) => {
@@ -308,12 +341,65 @@ impl<B: AudioBackend + 'static> SessionClient<B> {
 #[cfg(not(target_arch = "wasm32"))]
 impl<B: AudioBackend + 'static> SessionCaller<B> for SessionClient<B> {
     fn call(&self, cmd: Cmd) -> Result<Reply, PlayError> {
-        let (reply_tx, reply_rx) = mpsc::channel();
-        self.push_cmd(CmdMsg { cmd, reply_tx })
-            .map_err(|_| PlayError::Internal("session thread gone".into()))?;
-        reply_rx
-            .recv_sync()
-            .map_err(|_| PlayError::Internal("session thread gone (reply)".into()))
+        match &self.transport {
+            SessionTransport::BackgroundThread { .. } => {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                self.push_cmd(CmdMsg { cmd, reply_tx })
+                    .map_err(|_| PlayError::Internal("session thread gone".into()))?;
+                reply_rx
+                    .recv_sync()
+                    .map_err(|_| PlayError::Internal("session thread gone (reply)".into()))
+            }
+            #[cfg(any(test, feature = "test-utils"))]
+            SessionTransport::LocalSync { session_id, .. } => {
+                with_local_session_state(*session_id, |state| session_step(state, cmd))
+            }
+        }
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-utils")))]
+thread_local! {
+    static LOCAL_SESSION_STATES: RefCell<HashMap<u64, SessionState<OfflineBackend>>> =
+        RefCell::new(HashMap::new());
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-utils")))]
+static NEXT_LOCAL_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-utils")))]
+fn with_local_session_state<R>(
+    session_id: u64,
+    f: impl FnOnce(&mut SessionState<OfflineBackend>) -> R,
+) -> Result<R, PlayError> {
+    LOCAL_SESSION_STATES.with(|states| {
+        let mut states = states.borrow_mut();
+        let state = states
+            .get_mut(&session_id)
+            .ok_or_else(|| PlayError::Internal(format!("local session not found: {session_id}")))?;
+        Ok(f(state))
+    })
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-utils")))]
+impl SessionClient<OfflineBackend> {
+    pub(crate) fn new_local<F>(make_config: F) -> Arc<Self>
+    where
+        F: Fn(u32) -> OfflineConfig + Send + Sync + 'static,
+    {
+        let session_id = NEXT_LOCAL_SESSION_ID.fetch_add(1, AtomicOrdering::Relaxed);
+        LOCAL_SESSION_STATES.with(|states| {
+            states
+                .borrow_mut()
+                .insert(session_id, SessionState::new(make_config));
+        });
+        Arc::new(Self {
+            transport: SessionTransport::LocalSync {
+                session_id,
+                marker: PhantomData,
+            },
+            marker: PhantomData,
+        })
     }
 }
 
@@ -623,8 +709,11 @@ pub(crate) fn session_client() -> Arc<DefaultSessionClient> {
                 });
                 let engine_thread = handle.thread().clone();
                 Arc::new(SessionClient {
-                    cmd_tx: Mutex::new(cmd_tx),
-                    engine_thread,
+                    transport: SessionTransport::BackgroundThread {
+                        cmd_tx: Mutex::new(cmd_tx),
+                        engine_thread,
+                        marker: PhantomData,
+                    },
                     marker: PhantomData,
                 })
             })
@@ -1318,4 +1407,40 @@ fn set_session_ducking<B: AudioBackend + 'static>(
     memo.volume = Volume::Linear(ducking_gain(mode));
     let mut queue = fw_ctx.event_queue(session_id);
     memo.update_memo(&mut queue);
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use kithara_bufpool::pcm_pool;
+
+    use super::*;
+
+    #[test]
+    fn local_session_runs_cmds_synchronously() {
+        let client = SessionClient::<OfflineBackend>::new_local(|_| OfflineConfig {
+            sample_rate: 48_000,
+            ..OfflineConfig::default()
+        });
+
+        let session_id = match &client.transport {
+            SessionTransport::LocalSync { session_id, .. } => *session_id,
+            _ => panic!("expected local sync transport"),
+        };
+
+        let player_id = match client
+            .call(Cmd::RegisterPlayer {
+                eq_layout: Vec::new(),
+                pcm_pool: pcm_pool().clone(),
+            })
+            .expect("register player")
+        {
+            Reply::PlayerRegistered(player_id) => player_id,
+            _ => panic!("unexpected reply for player registration"),
+        };
+
+        assert_eq!(player_id, 1);
+        let player_count = with_local_session_state(session_id, |state| state.players.len())
+            .expect("player count");
+        assert_eq!(player_count, 1);
+    }
 }
