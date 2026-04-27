@@ -3,7 +3,7 @@
 //! Drives the Firewheel audio graph without a real audio device.
 //! Call [`OfflineBackend::render`] to manually step the graph.
 
-#![cfg(any(test, feature = "test-utils"))]
+#![cfg(any(test, feature = "backend-offline"))]
 
 use std::{num::NonZeroU32, time::Duration};
 

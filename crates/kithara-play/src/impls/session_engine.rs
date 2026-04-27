@@ -1,10 +1,10 @@
-#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-utils")))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "backend-offline")))]
 use portable_atomic::{AtomicU64, Ordering as AtomicOrdering};
-#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-utils")))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "backend-offline")))]
 use std::cell::RefCell;
 #[cfg(target_arch = "wasm32")]
 use std::cell::RefCell;
-#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-utils")))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "backend-offline")))]
 use std::collections::HashMap;
 #[cfg(target_arch = "wasm32")]
 use std::num::NonZeroU32;
@@ -39,7 +39,7 @@ use ringbuf::{
 use ringbuf::{HeapProd, HeapRb, traits::Split};
 use tracing::warn;
 
-#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-utils")))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "backend-offline")))]
 use super::offline_backend::{OfflineBackend, OfflineConfig};
 use super::{
     master_eq_node::MasterEqNode, player_node::PlayerNode, player_processor::PlayerCmd,
@@ -136,6 +136,13 @@ pub(crate) trait EngineSession: Send + Sync {
     fn stop_player(&self, player_id: PlayerId) -> Result<(), PlayError>;
     fn tick(&self) -> Result<(), PlayError>;
     fn unregister_player(&self, player_id: PlayerId) -> Result<(), PlayError>;
+
+    #[cfg(any(test, feature = "backend-offline"))]
+    fn render_offline(&self, _frames: usize) -> Result<Vec<f32>, PlayError> {
+        Err(PlayError::Internal(
+            "offline rendering is not available for this session".into(),
+        ))
+    }
 }
 
 #[derive(Debug)]
@@ -281,9 +288,10 @@ enum SessionTransport<B: AudioBackend + 'static> {
         engine_thread: Thread,
         marker: PhantomData<fn() -> B>,
     },
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(any(test, feature = "backend-offline"))]
     LocalSync {
         session_id: u64,
+        drop_state: fn(u64),
         marker: PhantomData<fn() -> B>,
     },
 }
@@ -315,7 +323,7 @@ impl<B: AudioBackend + 'static> SessionClient<B> {
                 engine_thread,
                 ..
             } => (cmd_tx, engine_thread),
-            #[cfg(any(test, feature = "test-utils"))]
+            #[cfg(any(test, feature = "backend-offline"))]
             SessionTransport::LocalSync { .. } => {
                 return Err(PlayError::Internal(
                     "background session transport not available".into(),
@@ -350,7 +358,7 @@ impl<B: AudioBackend + 'static> SessionCaller<B> for SessionClient<B> {
                     .recv_sync()
                     .map_err(|_| PlayError::Internal("session thread gone (reply)".into()))
             }
-            #[cfg(any(test, feature = "test-utils"))]
+            #[cfg(any(test, feature = "backend-offline"))]
             SessionTransport::LocalSync { session_id, .. } => {
                 with_local_session_state(*session_id, |state| session_step(state, cmd))
             }
@@ -358,16 +366,16 @@ impl<B: AudioBackend + 'static> SessionCaller<B> for SessionClient<B> {
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-utils")))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "backend-offline")))]
 thread_local! {
     static LOCAL_SESSION_STATES: RefCell<HashMap<u64, SessionState<OfflineBackend>>> =
         RefCell::new(HashMap::new());
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-utils")))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "backend-offline")))]
 static NEXT_LOCAL_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
-#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-utils")))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "backend-offline")))]
 fn with_local_session_state<R>(
     session_id: u64,
     f: impl FnOnce(&mut SessionState<OfflineBackend>) -> R,
@@ -381,7 +389,30 @@ fn with_local_session_state<R>(
     })
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-utils")))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "backend-offline")))]
+fn remove_local_session_state(session_id: u64) {
+    LOCAL_SESSION_STATES.with(|states| {
+        states.borrow_mut().remove(&session_id);
+    });
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "backend-offline")))]
+fn render_local_session(session_id: u64, frames: usize) -> Result<Vec<f32>, PlayError> {
+    with_local_session_state(session_id, |state| {
+        let Some(ref mut ctx) = state.ctx else {
+            return Err(PlayError::EngineNotRunning);
+        };
+
+        ctx.update()
+            .map_err(|err| PlayError::Internal(format!("offline graph update failed: {err:?}")))?;
+
+        ctx.active_backend_mut()
+            .map(|backend| backend.render(frames))
+            .ok_or_else(|| PlayError::Internal("offline backend not active".into()))
+    })?
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "backend-offline")))]
 impl SessionClient<OfflineBackend> {
     pub(crate) fn new_local<F>(make_config: F) -> Arc<Self>
     where
@@ -396,10 +427,26 @@ impl SessionClient<OfflineBackend> {
         Arc::new(Self {
             transport: SessionTransport::LocalSync {
                 session_id,
+                drop_state: remove_local_session_state,
                 marker: PhantomData,
             },
             marker: PhantomData,
         })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<B: AudioBackend + 'static> Drop for SessionClient<B> {
+    fn drop(&mut self) {
+        #[cfg(any(test, feature = "backend-offline"))]
+        if let SessionTransport::LocalSync {
+            session_id,
+            drop_state,
+            ..
+        } = self.transport
+        {
+            drop_state(session_id);
+        }
     }
 }
 
@@ -673,6 +720,30 @@ where
 
     fn unregister_player(&self, player_id: PlayerId) -> Result<(), PlayError> {
         Self::unregister_player(self, player_id)
+    }
+
+    #[cfg(any(test, feature = "backend-offline"))]
+    fn render_offline(&self, frames: usize) -> Result<Vec<f32>, PlayError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            match &self.transport {
+                SessionTransport::BackgroundThread { .. } => Err(PlayError::Internal(
+                    "offline rendering is not available for background sessions".into(),
+                )),
+                #[cfg(any(test, feature = "backend-offline"))]
+                SessionTransport::LocalSync { session_id, .. } => {
+                    render_local_session(*session_id, frames)
+                }
+            }
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = frames;
+            Err(PlayError::Internal(
+                "offline rendering is not available for wasm sessions".into(),
+            ))
+        }
     }
 }
 
@@ -1424,18 +1495,19 @@ mod tests {
 
         let session_id = match &client.transport {
             SessionTransport::LocalSync { session_id, .. } => *session_id,
-            _ => panic!("expected local sync transport"),
+            SessionTransport::BackgroundThread { .. } => {
+                panic!("expected local sync transport")
+            }
         };
 
-        let player_id = match client
+        let Reply::PlayerRegistered(player_id) = client
             .call(Cmd::RegisterPlayer {
                 eq_layout: Vec::new(),
                 pcm_pool: pcm_pool().clone(),
             })
             .expect("register player")
-        {
-            Reply::PlayerRegistered(player_id) => player_id,
-            _ => panic!("unexpected reply for player registration"),
+        else {
+            panic!("unexpected reply for player registration");
         };
 
         assert_eq!(player_id, 1);

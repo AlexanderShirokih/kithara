@@ -22,6 +22,10 @@ use portable_atomic::AtomicF32;
 use ringbuf::{HeapProd, traits::Producer};
 use tracing::{debug, info, warn};
 
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "backend-offline")))]
+use super::offline_backend::{OfflineBackend, OfflineConfig};
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "backend-offline")))]
+use super::session_engine::SessionClient;
 use super::{
     arena_registry::ArenaRegistry,
     player_processor::PlayerCmd,
@@ -115,6 +119,13 @@ impl EngineImpl {
     #[must_use]
     pub fn new(config: EngineConfig, bus: EventBus) -> Self {
         Self::new_with_session(config, bus, session_client())
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "backend-offline")))]
+    #[must_use]
+    pub fn new_offline(config: EngineConfig, bus: EventBus, offline_config: OfflineConfig) -> Self {
+        let session = SessionClient::<OfflineBackend>::new_local(move |_| offline_config.clone());
+        Self::new_with_session(config, bus, session)
     }
 
     #[must_use]
@@ -228,6 +239,11 @@ impl EngineImpl {
 
     pub(crate) fn tick(&self) -> Result<(), PlayError> {
         self.session.tick()
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "backend-offline")))]
+    pub fn render_offline(&self, frames: usize) -> Result<Vec<f32>, PlayError> {
+        self.session.render_offline(frames)
     }
 
     pub(crate) fn set_slot_volume(&self, slot: SlotId, volume: f32) -> Result<(), PlayError> {
@@ -446,15 +462,26 @@ pub(crate) fn ducking_test_lock() -> &'static Mutex<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        panic::{AssertUnwindSafe, catch_unwind},
+        sync::{Arc, atomic::Ordering},
+    };
 
-    use kithara_audio::EqBandConfig;
+    use kithara_audio::{EqBandConfig, mock::TestPcmReader};
     use kithara_bufpool::PcmPool;
+    use kithara_decode::PcmSpec;
     use kithara_platform::Mutex;
     use kithara_test_utils::kithara;
     use ringbuf::HeapProd;
 
     use super::*;
+    use crate::{
+        Resource,
+        impls::{
+            offline_backend::OfflineConfig, player_resource::PlayerResource,
+            player_track::TrackTransition,
+        },
+    };
 
     struct TestSession {
         ducking: Mutex<SessionDuckingMode>,
@@ -557,6 +584,22 @@ mod tests {
         }
     }
 
+    fn mock_spec() -> PcmSpec {
+        PcmSpec {
+            channels: 2,
+            sample_rate: 44_100,
+        }
+    }
+
+    fn make_test_player_resource(
+        src: Arc<str>,
+        pool: &PcmPool,
+        duration_secs: f64,
+    ) -> Arc<Mutex<PlayerResource>> {
+        let resource = Resource::from_reader(TestPcmReader::new(mock_spec(), duration_secs));
+        Arc::new(Mutex::new(PlayerResource::new(resource, src, pool)))
+    }
+
     #[kithara::test]
     fn engine_creates_worker() {
         let engine = EngineImpl::new(EngineConfig::default(), EventBus::default());
@@ -603,5 +646,86 @@ mod tests {
         b.set_session_ducking(SessionDuckingMode::Hard).unwrap();
         assert_eq!(a.session_ducking(), SessionDuckingMode::Soft);
         assert_eq!(b.session_ducking(), SessionDuckingMode::Hard);
+    }
+
+    #[kithara::test]
+    fn engine_offline_render_drives_slot() {
+        let engine = EngineImpl::new_offline(
+            EngineConfig::default(),
+            EventBus::default(),
+            OfflineConfig::default(),
+        );
+        engine.start().unwrap();
+        let slot = engine.allocate_slot().unwrap();
+
+        let src: Arc<str> = Arc::from("offline-track");
+        let resource = make_test_player_resource(Arc::clone(&src), &engine.pcm_pool, 1.0);
+
+        engine
+            .send_slot_cmd(
+                slot,
+                PlayerCmd::LoadTrack {
+                    resource,
+                    item_id: None,
+                    src: Arc::clone(&src),
+                },
+            )
+            .unwrap();
+        engine
+            .send_slot_cmd(slot, PlayerCmd::Transition(TrackTransition::FadeIn(src)))
+            .unwrap();
+        engine
+            .send_slot_cmd(slot, PlayerCmd::SetPaused(false))
+            .unwrap();
+
+        let mut rendered = Vec::new();
+        for _ in 0..4 {
+            rendered.extend(engine.render_offline(512).unwrap());
+        }
+
+        assert!(rendered.iter().any(|sample| sample.abs() > 0.0));
+        let shared_state = engine.slot_shared_state(slot).unwrap();
+        assert!(shared_state.process_count.load(Ordering::Relaxed) > 0);
+    }
+
+    #[kithara::test]
+    fn engine_offline_isolated_per_instance() {
+        let a = EngineImpl::new_offline(
+            EngineConfig::default(),
+            EventBus::default(),
+            OfflineConfig::default(),
+        );
+        let b = EngineImpl::new_offline(
+            EngineConfig::default(),
+            EventBus::default(),
+            OfflineConfig::default(),
+        );
+
+        a.start().unwrap();
+        b.start().unwrap();
+
+        let slot_a = a.allocate_slot().unwrap();
+        let slot_b = b.allocate_slot().unwrap();
+
+        assert_eq!(slot_a, SlotId::new(1));
+        assert_eq!(slot_b, SlotId::new(1));
+        assert_eq!(a.active_slots(), vec![slot_a]);
+        assert_eq!(b.active_slots(), vec![slot_b]);
+
+        a.release_slot(slot_a).unwrap();
+        assert!(a.active_slots().is_empty());
+        assert_eq!(b.active_slots(), vec![slot_b]);
+    }
+
+    #[kithara::test]
+    fn engine_default_path_unchanged() {
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let engine = EngineImpl::new(EngineConfig::default(), EventBus::default());
+            if engine.start().is_ok() {
+                let _ = engine.stop();
+            }
+        }));
+
+        assert!(result.is_ok());
     }
 }
