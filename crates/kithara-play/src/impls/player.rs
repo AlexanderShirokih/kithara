@@ -348,14 +348,14 @@ impl PlayerImpl {
             .publish(PlayerEvent::VolumeChanged { volume: clamped });
     }
 
-    /// Get process-wide session ducking mode.
+    /// Get ducking mode for this player's engine session.
     pub fn session_ducking(&self) -> SessionDuckingMode {
-        EngineImpl::session_ducking()
+        self.engine.session_ducking()
     }
 
-    /// Set process-wide session ducking mode.
+    /// Set ducking mode for this player's engine session.
     pub fn set_session_ducking(&self, mode: SessionDuckingMode) -> Result<(), PlayError> {
-        EngineImpl::set_session_ducking(mode)
+        self.engine.set_session_ducking(mode)
     }
 
     /// Returns `true` if the player is muted.

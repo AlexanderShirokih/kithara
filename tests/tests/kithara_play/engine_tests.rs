@@ -156,24 +156,28 @@ fn engine_master_channels_returns_config() {
 #[kithara::test]
 fn engine_session_ducking_roundtrip() {
     let _lock = session_ducking_lock().lock().unwrap();
-    EngineImpl::set_session_ducking(SessionDuckingMode::Soft).unwrap();
-    assert_eq!(EngineImpl::session_ducking(), SessionDuckingMode::Soft);
-    EngineImpl::set_session_ducking(SessionDuckingMode::Hard).unwrap();
-    assert_eq!(EngineImpl::session_ducking(), SessionDuckingMode::Hard);
-    EngineImpl::set_session_ducking(SessionDuckingMode::Off).unwrap();
-    assert_eq!(EngineImpl::session_ducking(), SessionDuckingMode::Off);
+    let engine = make_engine();
+    engine.set_session_ducking(SessionDuckingMode::Soft).unwrap();
+    assert_eq!(engine.session_ducking(), SessionDuckingMode::Soft);
+    engine.set_session_ducking(SessionDuckingMode::Hard).unwrap();
+    assert_eq!(engine.session_ducking(), SessionDuckingMode::Hard);
+    engine.set_session_ducking(SessionDuckingMode::Off).unwrap();
+    assert_eq!(engine.session_ducking(), SessionDuckingMode::Off);
 }
 
 #[kithara::test]
 fn engine_instances_share_session_ducking() {
     let _lock = session_ducking_lock().lock().unwrap();
-    let _a = make_engine();
-    let _b = make_engine();
+    let a = make_engine();
+    let b = make_engine();
 
-    EngineImpl::set_session_ducking(SessionDuckingMode::Soft).unwrap();
-    assert_eq!(EngineImpl::session_ducking(), SessionDuckingMode::Soft);
+    a.set_session_ducking(SessionDuckingMode::Soft).unwrap();
+    assert_eq!(a.session_ducking(), SessionDuckingMode::Soft);
+    assert_eq!(b.session_ducking(), SessionDuckingMode::Soft);
 
-    EngineImpl::set_session_ducking(SessionDuckingMode::Off).unwrap();
+    b.set_session_ducking(SessionDuckingMode::Off).unwrap();
+    assert_eq!(a.session_ducking(), SessionDuckingMode::Off);
+    assert_eq!(b.session_ducking(), SessionDuckingMode::Off);
 }
 
 // Tests that require actual audio hardware should be marked #[ignore].

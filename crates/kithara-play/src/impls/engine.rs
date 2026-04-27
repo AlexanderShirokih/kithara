@@ -1,4 +1,4 @@
-//! Engine implementation backed by a process-wide Firewheel session.
+//! Engine implementation backed by a Firewheel session.
 //!
 //! Graph topology (per player):
 //! ```text
@@ -25,7 +25,7 @@ use tracing::{debug, info, warn};
 use super::{
     arena_registry::ArenaRegistry,
     player_processor::PlayerCmd,
-    session_engine::{PlayerId, SessionLike, session_client},
+    session_engine::{EngineSession, PlayerId, session_client},
     shared_eq::SharedEq,
     shared_player_state::SharedPlayerState,
 };
@@ -69,10 +69,10 @@ pub(crate) struct SlotHandle {
     pub(crate) shared_state: Arc<SharedPlayerState>,
 }
 
-/// Concrete [`Engine`] implementation backed by a process-wide session.
+/// Concrete [`Engine`] implementation backed by a Firewheel session.
 ///
-/// Multiple `EngineImpl` instances share one CPAL/Firewheel stream while
-/// retaining independent per-player graph controls.
+/// Default-constructed engines share one CPAL/Firewheel stream while retaining
+/// independent per-player graph controls.
 pub struct EngineImpl {
     config: EngineConfig,
 
@@ -94,8 +94,8 @@ pub struct EngineImpl {
     /// Whether this engine/player instance is currently running.
     running: AtomicBool,
 
-    /// Process-wide shared session backend.
-    session: Arc<dyn SessionLike>,
+    /// Shared session backend for this engine instance.
+    session: Arc<dyn EngineSession>,
 
     /// Per-slot command channels and shared state.
     slot_registry: Mutex<ArenaRegistry<SlotId, SlotHandle>>,
@@ -121,7 +121,7 @@ impl EngineImpl {
     pub(crate) fn new_with_session(
         config: EngineConfig,
         bus: EventBus,
-        session: Arc<dyn SessionLike>,
+        session: Arc<dyn EngineSession>,
     ) -> Self {
         let max_slots = config.max_slots;
         let resolved_pool = config
@@ -144,10 +144,10 @@ impl EngineImpl {
         }
     }
 
-    /// Process-wide session ducking mode.
+    /// Ducking mode for this engine session.
     #[must_use]
-    pub fn session_ducking() -> SessionDuckingMode {
-        match session_client().ducking() {
+    pub fn session_ducking(&self) -> SessionDuckingMode {
+        match self.session.ducking() {
             Ok(mode) => mode,
             Err(err) => {
                 warn!(?err, "failed to query session ducking");
@@ -156,9 +156,9 @@ impl EngineImpl {
         }
     }
 
-    /// Set process-wide session ducking mode.
-    pub fn set_session_ducking(mode: SessionDuckingMode) -> Result<(), PlayError> {
-        session_client().set_ducking(mode)
+    /// Set ducking mode for this engine session.
+    pub fn set_session_ducking(&self, mode: SessionDuckingMode) -> Result<(), PlayError> {
+        self.session.set_ducking(mode)
     }
 
     fn emit(&self, event: EngineEvent) {
@@ -446,9 +446,116 @@ pub(crate) fn ducking_test_lock() -> &'static Mutex<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use kithara_audio::EqBandConfig;
+    use kithara_bufpool::PcmPool;
+    use kithara_platform::Mutex;
     use kithara_test_utils::kithara;
+    use ringbuf::HeapProd;
 
     use super::*;
+
+    struct TestSession {
+        ducking: Mutex<SessionDuckingMode>,
+    }
+
+    impl TestSession {
+        fn new() -> Self {
+            Self {
+                ducking: Mutex::new(SessionDuckingMode::Off),
+            }
+        }
+    }
+
+    impl EngineSession for TestSession {
+        fn allocate_slot(
+            &self,
+            _player_id: PlayerId,
+        ) -> Result<
+            (
+                SlotId,
+                HeapProd<PlayerCmd>,
+                Arc<SharedPlayerState>,
+                SharedEq,
+            ),
+            PlayError,
+        > {
+            Err(PlayError::NotReady)
+        }
+
+        fn query_sample_rate(&self, fallback: u32) -> u32 {
+            fallback
+        }
+
+        fn ducking(&self) -> Result<SessionDuckingMode, PlayError> {
+            Ok(*self.ducking.lock_sync())
+        }
+
+        fn register_player(
+            &self,
+            _eq_layout: Vec<EqBandConfig>,
+            _pcm_pool: PcmPool,
+        ) -> Result<PlayerId, PlayError> {
+            Err(PlayError::NotReady)
+        }
+
+        fn set_ducking(&self, mode: SessionDuckingMode) -> Result<(), PlayError> {
+            *self.ducking.lock_sync() = mode;
+            Ok(())
+        }
+
+        fn release_slot(&self, _player_id: PlayerId, _slot: SlotId) -> Result<(), PlayError> {
+            Err(PlayError::NotReady)
+        }
+
+        fn set_player_eq_gain(
+            &self,
+            _player_id: PlayerId,
+            _band: usize,
+            _gain_db: f32,
+        ) -> Result<(), PlayError> {
+            Err(PlayError::NotReady)
+        }
+
+        fn set_player_master_volume(
+            &self,
+            _player_id: PlayerId,
+            _volume: f32,
+        ) -> Result<(), PlayError> {
+            Err(PlayError::NotReady)
+        }
+
+        fn set_player_slot_volume(
+            &self,
+            _player_id: PlayerId,
+            _slot: SlotId,
+            _volume: f32,
+        ) -> Result<(), PlayError> {
+            Err(PlayError::NotReady)
+        }
+
+        fn start_player(
+            &self,
+            _player_id: PlayerId,
+            _sample_rate: u32,
+            _master_volume: f32,
+        ) -> Result<(), PlayError> {
+            Err(PlayError::NotReady)
+        }
+
+        fn stop_player(&self, _player_id: PlayerId) -> Result<(), PlayError> {
+            Err(PlayError::NotReady)
+        }
+
+        fn tick(&self) -> Result<(), PlayError> {
+            Ok(())
+        }
+
+        fn unregister_player(&self, _player_id: PlayerId) -> Result<(), PlayError> {
+            Err(PlayError::NotReady)
+        }
+    }
 
     #[kithara::test]
     fn engine_creates_worker() {
@@ -474,5 +581,27 @@ mod tests {
         drop(engine);
         // Worker should be shut down — wake() is harmless on a dead worker.
         worker_clone.wake();
+    }
+
+    #[kithara::test]
+    fn injected_sessions_keep_ducking_isolated() {
+        let a = EngineImpl::new_with_session(
+            EngineConfig::default(),
+            EventBus::default(),
+            Arc::new(TestSession::new()),
+        );
+        let b = EngineImpl::new_with_session(
+            EngineConfig::default(),
+            EventBus::default(),
+            Arc::new(TestSession::new()),
+        );
+
+        a.set_session_ducking(SessionDuckingMode::Soft).unwrap();
+        assert_eq!(a.session_ducking(), SessionDuckingMode::Soft);
+        assert_eq!(b.session_ducking(), SessionDuckingMode::Off);
+
+        b.set_session_ducking(SessionDuckingMode::Hard).unwrap();
+        assert_eq!(a.session_ducking(), SessionDuckingMode::Soft);
+        assert_eq!(b.session_ducking(), SessionDuckingMode::Hard);
     }
 }

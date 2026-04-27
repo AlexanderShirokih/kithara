@@ -79,7 +79,11 @@ pub(crate) type DefaultSessionClient = SessionClient<DefaultBackend>;
 #[cfg(target_arch = "wasm32")]
 type DefaultSessionState = SessionState<DefaultBackend>;
 
-pub(crate) trait SessionLike: Send + Sync {
+/// Engine-facing session API used by [`crate::EngineImpl`].
+///
+/// This keeps the default process-wide runtime session and future
+/// test/offline session implementations behind one cold-path boundary.
+pub(crate) trait EngineSession: Send + Sync {
     fn allocate_slot(
         &self,
         player_id: PlayerId,
@@ -93,11 +97,14 @@ pub(crate) trait SessionLike: Send + Sync {
         PlayError,
     >;
     fn query_sample_rate(&self, fallback: u32) -> u32;
+    fn ducking(&self) -> Result<SessionDuckingMode, PlayError>;
+
     fn register_player(
         &self,
         eq_layout: Vec<EqBandConfig>,
         pcm_pool: PcmPool,
     ) -> Result<PlayerId, PlayError>;
+    fn set_ducking(&self, mode: SessionDuckingMode) -> Result<(), PlayError>;
     fn release_slot(&self, player_id: PlayerId, slot: SlotId) -> Result<(), PlayError>;
     fn set_player_eq_gain(
         &self,
@@ -271,6 +278,10 @@ pub(crate) struct SessionClient<B: AudioBackend + 'static = DefaultBackend> {
     marker: PhantomData<fn() -> B>,
 }
 
+/// Low-level command transport for a concrete session client.
+///
+/// Native builds route commands through a background thread; wasm can
+/// execute them against thread-local state or a worker bridge.
 pub(crate) trait SessionCaller<B: AudioBackend + 'static> {
     fn call(&self, cmd: Cmd) -> Result<Reply, PlayError>;
 }
@@ -307,6 +318,10 @@ impl<B: AudioBackend + 'static> SessionCaller<B> for SessionClient<B> {
 }
 
 #[cfg(target_arch = "wasm32")]
+/// Accessor for the wasm-side session state backing a concrete backend.
+///
+/// This lets the generic session client reach backend-specific thread-local
+/// state without hard-coding `DefaultBackend` into the call path.
 trait WasmSessionAccess: AudioBackend + 'static {
     fn with_state<R>(f: impl FnOnce(&mut SessionState<Self>) -> R) -> Option<R>;
 }
@@ -487,7 +502,7 @@ where
     }
 }
 
-impl<B> SessionLike for SessionClient<B>
+impl<B> EngineSession for SessionClient<B>
 where
     B: AudioBackend + 'static,
     Self: SessionCaller<B>,
@@ -504,11 +519,15 @@ where
         ),
         PlayError,
     > {
-        SessionClient::allocate_slot(self, player_id)
+        Self::allocate_slot(self, player_id)
     }
 
     fn query_sample_rate(&self, fallback: u32) -> u32 {
-        SessionClient::query_sample_rate(self, fallback)
+        Self::query_sample_rate(self, fallback)
+    }
+
+    fn ducking(&self) -> Result<SessionDuckingMode, PlayError> {
+        Self::ducking(self)
     }
 
     fn register_player(
@@ -516,11 +535,15 @@ where
         eq_layout: Vec<EqBandConfig>,
         pcm_pool: PcmPool,
     ) -> Result<PlayerId, PlayError> {
-        SessionClient::register_player(self, eq_layout, pcm_pool)
+        Self::register_player(self, eq_layout, pcm_pool)
+    }
+
+    fn set_ducking(&self, mode: SessionDuckingMode) -> Result<(), PlayError> {
+        Self::set_ducking(self, mode)
     }
 
     fn release_slot(&self, player_id: PlayerId, slot: SlotId) -> Result<(), PlayError> {
-        SessionClient::release_slot(self, player_id, slot)
+        Self::release_slot(self, player_id, slot)
     }
 
     fn set_player_eq_gain(
@@ -529,11 +552,11 @@ where
         band: usize,
         gain_db: f32,
     ) -> Result<(), PlayError> {
-        SessionClient::set_player_eq_gain(self, player_id, band, gain_db)
+        Self::set_player_eq_gain(self, player_id, band, gain_db)
     }
 
     fn set_player_master_volume(&self, player_id: PlayerId, volume: f32) -> Result<(), PlayError> {
-        SessionClient::set_player_master_volume(self, player_id, volume)
+        Self::set_player_master_volume(self, player_id, volume)
     }
 
     fn set_player_slot_volume(
@@ -542,7 +565,7 @@ where
         slot: SlotId,
         volume: f32,
     ) -> Result<(), PlayError> {
-        SessionClient::set_player_slot_volume(self, player_id, slot, volume)
+        Self::set_player_slot_volume(self, player_id, slot, volume)
     }
 
     fn start_player(
@@ -551,19 +574,19 @@ where
         sample_rate: u32,
         master_volume: f32,
     ) -> Result<(), PlayError> {
-        SessionClient::start_player(self, player_id, sample_rate, master_volume)
+        Self::start_player(self, player_id, sample_rate, master_volume)
     }
 
     fn stop_player(&self, player_id: PlayerId) -> Result<(), PlayError> {
-        SessionClient::stop_player(self, player_id)
+        Self::stop_player(self, player_id)
     }
 
     fn tick(&self) -> Result<(), PlayError> {
-        SessionClient::tick(self)
+        Self::tick(self)
     }
 
     fn unregister_player(&self, player_id: PlayerId) -> Result<(), PlayError> {
-        SessionClient::unregister_player(self, player_id)
+        Self::unregister_player(self, player_id)
     }
 }
 
