@@ -25,9 +25,12 @@ pub struct SegmentState {
     /// Duration of the segment.
     pub duration: Duration,
     /// Encryption key for this segment (if encrypted).
-    #[expect(
-        dead_code,
-        reason = "key is not read in-crate until per-segment decryption is wired into this state"
+    #[cfg_attr(
+        not(clippy),
+        allow(
+            dead_code,
+            reason = "segment encryption metadata is retained until per-segment decryption wiring lands"
+        )
     )]
     pub key: Option<SegmentKey>,
 }
@@ -52,21 +55,30 @@ pub struct VariantSizeMap {
 #[derive(Debug)]
 pub struct VariantState {
     /// Variant index in the master playlist.
-    #[expect(
-        dead_code,
-        reason = "set from the master; ABR in this crate uses [parsing::VariantStream] at build time"
+    #[cfg_attr(
+        not(clippy),
+        allow(
+            dead_code,
+            reason = "variant identity is retained even when current in-crate readers use derived maps"
+        )
     )]
     pub id: VariantIndex,
     /// Absolute URL of the variant's media playlist.
-    #[expect(
-        dead_code,
-        reason = "set from the master; segment URLs and playlist cache own active resolution paths"
+    #[cfg_attr(
+        not(clippy),
+        allow(
+            dead_code,
+            reason = "playlist URI is retained for diagnostics and future resolution paths"
+        )
     )]
     pub uri: Url,
     /// Advertised bandwidth in bits per second.
-    #[expect(
-        dead_code,
-        reason = "set from the master; ABR in this crate uses [parsing::VariantStream] at build time"
+    #[cfg_attr(
+        not(clippy),
+        allow(
+            dead_code,
+            reason = "bandwidth metadata is retained for ABR-adjacent policy even when not read directly"
+        )
     )]
     pub bandwidth: Option<u64>,
     /// Audio codec (parsed from CODECS attribute).

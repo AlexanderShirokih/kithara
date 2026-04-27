@@ -105,28 +105,59 @@ pub struct InitSegment {
 
 /// Parsed media playlist.
 #[derive(Debug, Clone)]
-#[expect(
-    dead_code,
-    reason = "fields mirror M3U8 tags; the in-crate loader and tests do not all read them yet"
-)]
 pub struct MediaPlaylist {
     /// List of segments in the order they appear.
     pub segments: Vec<MediaSegment>,
     /// Target segment duration if present.
+    #[cfg_attr(
+        not(clippy),
+        allow(
+            dead_code,
+            reason = "retained from playlist parsing for future HLS policy and diagnostics"
+        )
+    )]
     pub target_duration: Option<Duration>,
     /// Optional initialization segment (for fMP4 streams).
     pub init_segment: Option<InitSegment>,
     /// Media sequence number of the first segment.
+    #[cfg_attr(
+        not(clippy),
+        allow(
+            dead_code,
+            reason = "retained from playlist parsing for future HLS policy and diagnostics"
+        )
+    )]
     pub media_sequence: u64,
     /// Whether the playlist is finished (VOD or live that ended).
+    #[cfg_attr(
+        not(clippy),
+        allow(
+            dead_code,
+            reason = "retained from playlist parsing for future HLS policy and diagnostics"
+        )
+    )]
     pub end_list: bool,
     /// Informational: first key found in the playlist (if any).
+    #[cfg_attr(
+        not(clippy),
+        allow(
+            dead_code,
+            reason = "retained from playlist parsing for future HLS policy and diagnostics"
+        )
+    )]
     pub current_key: Option<KeyInfo>,
     /// Container format detected from segment/init URIs.
     pub detected_container: Option<ContainerFormat>,
     /// Whether the playlist allows caching.
     ///
     /// `false` when the playlist contains `#EXT-X-ALLOW-CACHE:NO` (HLS v3, deprecated in v7).
+    #[cfg_attr(
+        not(clippy),
+        allow(
+            dead_code,
+            reason = "retained from playlist parsing for future HLS policy and diagnostics"
+        )
+    )]
     pub allow_cache: bool,
 }
 
