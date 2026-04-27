@@ -17,7 +17,10 @@ use kithara_audio::ServiceClass;
 use kithara_platform::Mutex;
 use ringbuf::{HeapProd, traits::Producer};
 
-use super::{player_notification::PlayerNotification, player_resource::PlayerResource};
+use super::{
+    player_notification::PlayerNotification,
+    player_resource::{PlayerResource, ReadOutcome},
+};
 
 /// Minimum number of channels required for stereo processing.
 const MIN_STEREO_CHANNELS: usize = 2;
@@ -69,6 +72,34 @@ pub(crate) enum TrackTransition {
     FadeIn(Arc<str>),
     /// Start fading out the track with the given source identifier.
     FadeOut(Arc<str>),
+}
+
+/// Result of a single track render attempt.
+#[derive(Debug)]
+pub(crate) enum TrackReadOutcome {
+    /// The full requested block was written into the mix buffer.
+    Full {
+        /// Playback position snapshot after the read.
+        position: f64,
+        /// Duration snapshot associated with the current resource.
+        duration: f64,
+    },
+    /// Only the first `frames` samples were written; EOF was reached in-block.
+    ///
+    /// `PlayerTrack::read` emits `TrackNaturalEnd`/`TrackPlaybackStopped` in
+    /// the same call so notification ordering matches the last written frame.
+    Partial {
+        /// Number of frames written into the destination block.
+        frames: usize,
+        /// Playback position snapshot after the partial read.
+        position: f64,
+        /// Duration snapshot associated with the current resource.
+        duration: f64,
+    },
+    /// No frames were written because the track is already finished.
+    Eof,
+    /// A terminal decoder/resource error stopped the track.
+    Error(crate::error::PlayError),
 }
 
 /// Per-track state in the processor arena.
@@ -136,76 +167,133 @@ impl PlayerTrack {
     /// 2. Reads PCM into `scratch_bufs`.
     /// 3. Mixes through `MixDSP` into `mix_bufs`.
     /// 4. Detects fade completion and updates state.
+    ///
+    /// On [`TrackReadOutcome::Partial`], the last written frame belongs to this
+    /// track and natural-end notifications are emitted immediately in the same
+    /// call. The caller owns any remaining tail in the destination block.
+    ///
+    /// `range` selects the destination subrange inside `scratch_bufs` and
+    /// `mix_bufs` that this read may fill.
     pub(crate) fn read(
         &mut self,
         scratch_bufs: &mut [&mut [f32]],
         mix_bufs: &mut [&mut [f32]],
         range: Range<usize>,
         notification_tx: &Mutex<HeapProd<PlayerNotification>>,
-    ) {
-        // Read data from resource inside a scoped lock
-        enum TrackReadOutcome {
-            Read { position: f64, duration: f64 },
-            Eof,
-            Error(crate::error::PlayError),
+    ) -> TrackReadOutcome {
+        if self.state == TrackState::Finished {
+            return TrackReadOutcome::Eof;
         }
 
         let read_outcome = {
             let Some(mut guard) = self.resource.try_lock().ok() else {
-                return; // Can't lock, skip this cycle
+                return TrackReadOutcome::Full {
+                    position: self.observed_position,
+                    duration: self.observed_duration,
+                };
             };
-            match guard.read(scratch_bufs, range.clone()) {
-                Ok(()) => {
+            let (scratch_left, scratch_right) = scratch_bufs.split_at_mut(1);
+            let mut scratch_window = [
+                &mut scratch_left[0][range.clone()],
+                &mut scratch_right[0][range.clone()],
+            ];
+
+            match guard.read(&mut scratch_window, 0..range.len()) {
+                Ok(ReadOutcome::Full) => {
                     let position = guard.position();
                     let duration = guard.duration();
                     drop(guard);
-                    TrackReadOutcome::Read { position, duration }
+                    TrackReadOutcome::Full { position, duration }
                 }
-                Err(crate::error::PlayError::Internal(reason)) if reason == "eof" => {
-                    TrackReadOutcome::Eof
+                Ok(ReadOutcome::Partial(frames)) => {
+                    let position = guard.position();
+                    let duration = guard.duration();
+                    drop(guard);
+                    TrackReadOutcome::Partial {
+                        frames,
+                        position,
+                        duration,
+                    }
                 }
+                Ok(ReadOutcome::Eof) => TrackReadOutcome::Eof,
                 Err(e) => TrackReadOutcome::Error(e),
             }
         };
 
-        // Process outcome outside the lock
-        if let TrackReadOutcome::Read { position, duration } = read_outcome {
-            self.observed_position = position;
-            self.observed_duration = duration;
+        match read_outcome {
+            TrackReadOutcome::Full { position, duration } => {
+                self.observed_position = position;
+                self.observed_duration = duration;
 
-            if scratch_bufs.len() >= MIN_STEREO_CHANNELS && mix_bufs.len() >= MIN_STEREO_CHANNELS {
-                let (output_l_slice, output_r_slice) = mix_bufs.split_at_mut(1);
-                let output_l = &mut output_l_slice[0];
-                let output_r = &mut output_r_slice[0];
+                if scratch_bufs.len() >= MIN_STEREO_CHANNELS
+                    && mix_bufs.len() >= MIN_STEREO_CHANNELS
+                {
+                    let (output_l_slice, output_r_slice) = mix_bufs.split_at_mut(1);
+                    let output_l = &mut output_l_slice[0][range.clone()];
+                    let output_r = &mut output_r_slice[0][range.clone()];
 
-                self.mix.mix_dry_into_wet_stereo(
-                    scratch_bufs[0],
-                    scratch_bufs[1],
-                    output_l,
-                    output_r,
-                    range.len(),
-                );
-            }
-
-            self.check_notifications(notification_tx);
-        } else {
-            match read_outcome {
-                TrackReadOutcome::Eof => self.handle_natural_end(notification_tx),
-                TrackReadOutcome::Error(error) => {
-                    self.handle_read_error(notification_tx, error);
+                    self.mix.mix_dry_into_wet_stereo(
+                        &scratch_bufs[0][range.clone()],
+                        &scratch_bufs[1][range.clone()],
+                        output_l,
+                        output_r,
+                        range.len(),
+                    );
                 }
-                TrackReadOutcome::Read { .. } => {}
+
+                self.check_notifications(notification_tx);
+
+                if self.mix.has_settled() {
+                    self.update_state_after_fade();
+                }
+
+                if self.state_dirty {
+                    self.notify_state_change(notification_tx);
+                }
+
+                TrackReadOutcome::Full { position, duration }
             }
-            return;
-        }
+            TrackReadOutcome::Partial {
+                frames,
+                position,
+                duration,
+            } => {
+                self.observed_position = position;
+                self.observed_duration = duration;
 
-        // Post-processing: check if fade settled
-        if self.mix.has_settled() {
-            self.update_state_after_fade();
-        }
+                if scratch_bufs.len() >= MIN_STEREO_CHANNELS
+                    && mix_bufs.len() >= MIN_STEREO_CHANNELS
+                {
+                    let (output_l_slice, output_r_slice) = mix_bufs.split_at_mut(1);
+                    let output_l = &mut output_l_slice[0][range.start..range.start + frames];
+                    let output_r = &mut output_r_slice[0][range.start..range.start + frames];
 
-        if self.state_dirty {
-            self.notify_state_change(notification_tx);
+                    self.mix.mix_dry_into_wet_stereo(
+                        &scratch_bufs[0][range.start..range.start + frames],
+                        &scratch_bufs[1][range.start..range.start + frames],
+                        output_l,
+                        output_r,
+                        frames,
+                    );
+                }
+
+                self.check_notifications(notification_tx);
+                self.handle_natural_end(notification_tx);
+
+                TrackReadOutcome::Partial {
+                    frames,
+                    position,
+                    duration,
+                }
+            }
+            TrackReadOutcome::Eof => {
+                self.handle_natural_end(notification_tx);
+                TrackReadOutcome::Eof
+            }
+            TrackReadOutcome::Error(error) => {
+                self.handle_read_error(notification_tx, error.clone());
+                TrackReadOutcome::Error(error)
+            }
         }
     }
 
@@ -228,6 +316,7 @@ impl PlayerTrack {
                 &self.src,
             )))
             .ok();
+        self.state_dirty = false;
     }
 
     /// Handle a terminal read error that is not EOF.
@@ -250,6 +339,7 @@ impl PlayerTrack {
                 &self.src,
             )))
             .ok();
+        self.state_dirty = false;
     }
 
     /// Check position-based notifications.
@@ -590,7 +680,7 @@ mod tests {
 
         let mut saw_natural_end = false;
         for _ in 0..4 {
-            track.read(&mut scratch_bufs, &mut mix_bufs, 0..512, &notification_tx);
+            let _ = track.read(&mut scratch_bufs, &mut mix_bufs, 0..512, &notification_tx);
 
             while let Some(notification) = rx.try_pop() {
                 if let PlayerNotification::TrackNaturalEnd { item_id, .. } = notification {
@@ -604,6 +694,108 @@ mod tests {
         }
 
         assert!(saw_natural_end);
+    }
+
+    #[kithara::test(tokio)]
+    async fn read_outcome_full_on_normal_read() {
+        let mut track = make_track_with(60.0, None);
+        let (tx, _) = HeapRb::<PlayerNotification>::new(8).split();
+        let notification_tx = Mutex::new(tx);
+        let mut scratch_l = [0.0; 512];
+        let mut scratch_r = [0.0; 512];
+        let mut mix_l = [0.0; 512];
+        let mut mix_r = [0.0; 512];
+        let mut scratch_bufs = [&mut scratch_l[..], &mut scratch_r[..]];
+        let mut mix_bufs = [&mut mix_l[..], &mut mix_r[..]];
+
+        track.play();
+
+        let outcome = track.read(&mut scratch_bufs, &mut mix_bufs, 0..512, &notification_tx);
+
+        assert!(matches!(
+            outcome,
+            TrackReadOutcome::Full {
+                position,
+                duration
+            } if position >= 0.0 && duration > 0.0
+        ));
+    }
+
+    #[kithara::test(tokio)]
+    async fn read_outcome_partial_then_eof() {
+        let mut track = make_track_with(0.01, Some(Arc::from("item-1")));
+        let (tx, mut rx) = HeapRb::<PlayerNotification>::new(16).split();
+        let notification_tx = Mutex::new(tx);
+        let mut scratch_l = [0.0; 512];
+        let mut scratch_r = [0.0; 512];
+        let mut mix_l = [0.0; 512];
+        let mut mix_r = [0.0; 512];
+        let mut scratch_bufs = [&mut scratch_l[..], &mut scratch_r[..]];
+        let mut mix_bufs = [&mut mix_l[..], &mut mix_r[..]];
+
+        track.play();
+
+        let mut saw_partial = false;
+        let mut saw_eof_after_partial = false;
+        let mut natural_end_count = 0;
+
+        for _ in 0..8 {
+            let outcome = track.read(&mut scratch_bufs, &mut mix_bufs, 0..512, &notification_tx);
+
+            match outcome {
+                TrackReadOutcome::Partial { frames, .. } => {
+                    assert!(!saw_partial, "expected exactly one Partial outcome");
+                    assert!(frames > 0);
+                    saw_partial = true;
+                }
+                TrackReadOutcome::Eof => {
+                    if saw_partial {
+                        saw_eof_after_partial = true;
+                        break;
+                    }
+                }
+                TrackReadOutcome::Full { .. } | TrackReadOutcome::Error(_) => {}
+            }
+
+            while let Some(notification) = rx.try_pop() {
+                if let PlayerNotification::TrackNaturalEnd { item_id, .. } = notification {
+                    assert!(saw_partial, "TrackNaturalEnd must not precede Partial");
+                    assert!(matches!(item_id, Some(id) if id.as_ref() == "item-1"));
+                    natural_end_count += 1;
+                }
+            }
+        }
+
+        while let Some(notification) = rx.try_pop() {
+            if let PlayerNotification::TrackNaturalEnd { item_id, .. } = notification {
+                assert!(saw_partial, "TrackNaturalEnd must not precede Partial");
+                assert!(matches!(item_id, Some(id) if id.as_ref() == "item-1"));
+                natural_end_count += 1;
+            }
+        }
+
+        assert!(saw_partial, "expected a Partial outcome before EOF");
+        assert!(saw_eof_after_partial, "expected EOF after Partial");
+        assert_eq!(natural_end_count, 1, "expected exactly one TrackNaturalEnd");
+    }
+
+    #[kithara::test(tokio)]
+    async fn read_outcome_eof_when_track_finished() {
+        let mut track = make_track();
+        let (tx, _) = HeapRb::<PlayerNotification>::new(8).split();
+        let notification_tx = Mutex::new(tx);
+        let mut scratch_l = [0.0; 512];
+        let mut scratch_r = [0.0; 512];
+        let mut mix_l = [0.0; 512];
+        let mut mix_r = [0.0; 512];
+        let mut scratch_bufs = [&mut scratch_l[..], &mut scratch_r[..]];
+        let mut mix_bufs = [&mut mix_l[..], &mut mix_r[..]];
+
+        track.stop();
+
+        let outcome = track.read(&mut scratch_bufs, &mut mix_bufs, 0..512, &notification_tx);
+
+        assert!(matches!(outcome, TrackReadOutcome::Eof));
     }
 
     #[kithara::test]

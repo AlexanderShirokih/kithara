@@ -31,7 +31,7 @@ use super::{
     crossfade::CrossfadeSettings,
     player_notification::PlayerNotification,
     player_resource::PlayerResource,
-    player_track::{PlayerTrack, TrackState, TrackTransition},
+    player_track::{PlayerTrack, TrackReadOutcome, TrackState, TrackTransition},
     shared_player_state::SharedPlayerState,
 };
 use crate::traits::dj::crossfade::CrossfadeCurve;
@@ -415,30 +415,87 @@ impl PlayerNodeProcessor {
         let (mix_buf0, mix_buf1) = right.split_at_mut(1);
         let mut read_bufs = [&mut read_buf0[0][..frames], &mut read_buf1[0][..frames]];
         let mut mix_bufs = [&mut mix_buf0[0][..frames], &mut mix_buf1[0][..frames]];
+        let active_tracks = if is_playing {
+            self.tracks
+                .iter()
+                .filter_map(|(_, track)| {
+                    track
+                        .state()
+                        .is_playing()
+                        .then(|| (Arc::clone(track.src()), track.state().is_leading()))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let mut skip_tracks = vec![false; active_tracks.len()];
 
-        for (_, track) in self.tracks.iter_mut() {
-            if is_playing && track.state().is_playing() {
-                // Clear mix_bufs (wet signal) before each track
-                for ch_buffer in &mut mix_bufs {
-                    ch_buffer.fill(0.0);
-                }
+        for (track_idx, (track_src, was_leading)) in active_tracks.iter().enumerate() {
+            if skip_tracks[track_idx] {
+                continue;
+            }
 
-                track.read(
+            // Clear mix_bufs (wet signal) before each logical render pass.
+            for ch_buffer in &mut mix_bufs {
+                ch_buffer.fill(0.0);
+            }
+
+            let mut read_outcome = {
+                let Some(track) = self.tracks.get_mut(track_src) else {
+                    continue;
+                };
+                let outcome = track.read(
                     &mut read_bufs,
                     &mut mix_bufs,
                     0..frames,
                     &self.shared_state.notification_tx,
                 );
-
-                // Additively mix into main output
-                for (out_ch, mix_ch) in buffers.outputs.iter_mut().zip(mix_bufs.iter()) {
-                    for (out_sample, &mix_sample) in
-                        out_ch.iter_mut().zip(mix_ch.iter()).take(frames)
-                    {
-                        *out_sample += mix_sample;
-                    }
-                }
                 playback_started = true;
+                outcome
+            };
+
+            if *was_leading {
+                let mut handover_offset = match read_outcome {
+                    TrackReadOutcome::Partial { frames, .. } => Some(frames),
+                    _ => None,
+                };
+
+                for (next_idx, (next_src, _)) in
+                    active_tracks.iter().enumerate().skip(track_idx + 1)
+                {
+                    let Some(offset) = handover_offset else {
+                        break;
+                    };
+                    if offset >= frames || skip_tracks[next_idx] {
+                        break;
+                    }
+
+                    let Some(next_track) = self.tracks.get_mut(next_src) else {
+                        continue;
+                    };
+                    read_outcome = next_track.read(
+                        &mut read_bufs,
+                        &mut mix_bufs,
+                        offset..frames,
+                        &self.shared_state.notification_tx,
+                    );
+                    skip_tracks[next_idx] = true;
+
+                    handover_offset = match read_outcome {
+                        TrackReadOutcome::Full { .. } => None,
+                        TrackReadOutcome::Partial {
+                            frames: written, ..
+                        } => Some(offset + written),
+                        TrackReadOutcome::Eof | TrackReadOutcome::Error(_) => Some(offset),
+                    };
+                }
+            }
+
+            // Additively mix into main output
+            for (out_ch, mix_ch) in buffers.outputs.iter_mut().zip(mix_bufs.iter()) {
+                for (out_sample, &mix_sample) in out_ch.iter_mut().zip(mix_ch.iter()).take(frames) {
+                    *out_sample += mix_sample;
+                }
             }
         }
 
@@ -811,11 +868,19 @@ mod tests {
     }
 
     fn create_mock_player_resource(src: &str) -> Arc<PlatformMutex<PlayerResource>> {
+        create_mock_player_resource_with_duration(src, 60.0)
+    }
+
+    /// Create a mock player resource backed by a `TestPcmReader` of the given duration.
+    fn create_mock_player_resource_with_duration(
+        src: &str,
+        duration_secs: f64,
+    ) -> Arc<PlatformMutex<PlayerResource>> {
         let spec = PcmSpec {
             channels: 2,
             sample_rate: 44100,
         };
-        let reader = TestPcmReader::new(spec, 60.0);
+        let reader = TestPcmReader::new(spec, duration_secs);
 
         let resource = Resource::from_reader(reader);
         Arc::new(PlatformMutex::new(PlayerResource::new(
@@ -823,6 +888,62 @@ mod tests {
             Arc::from(src),
             kithara_bufpool::pcm_pool(),
         )))
+    }
+
+    #[kithara::test(tokio)]
+    async fn render_audio_handover_fills_tail_from_next_playing_track() {
+        let (mut processor, mut tx) = make_processor();
+        let short_src = Arc::from("short.mp3");
+        let long_src = Arc::from("long.mp3");
+        let frames = 1024usize;
+
+        tx.try_push(PlayerCmd::LoadTrack {
+            resource: create_mock_player_resource_with_duration("short.mp3", 0.01),
+            item_id: None,
+            src: Arc::clone(&short_src),
+        })
+        .ok();
+        tx.try_push(PlayerCmd::LoadTrack {
+            resource: create_mock_player_resource("long.mp3"),
+            item_id: None,
+            src: Arc::clone(&long_src),
+        })
+        .ok();
+        processor.drain_commands();
+
+        processor
+            .tracks
+            .get_mut(&short_src)
+            .expect("short track must be loaded")
+            .play();
+        processor
+            .tracks
+            .get_mut(&long_src)
+            .expect("long track must be loaded")
+            .play();
+
+        let inputs: [&[f32]; 0] = [];
+        let mut out_l = vec![99.0f32; frames];
+        let mut out_r = vec![99.0f32; frames];
+        let mut outputs = [&mut out_l[..], &mut out_r[..]];
+        let mut buffers = ProcBuffers {
+            inputs: &inputs,
+            outputs: &mut outputs,
+        };
+
+        let rendered = processor.render_audio(&mut buffers, frames, true);
+
+        assert!(rendered);
+        assert!(
+            out_l
+                .iter()
+                .all(|sample| (*sample - 0.5).abs() < f32::EPSILON)
+        );
+        assert!(
+            out_r
+                .iter()
+                .all(|sample| (*sample - 0.5).abs() < f32::EPSILON)
+        );
     }
 
     fn create_tracking_player_resource(
