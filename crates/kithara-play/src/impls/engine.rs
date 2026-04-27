@@ -25,7 +25,7 @@ use tracing::{debug, info, warn};
 use super::{
     arena_registry::ArenaRegistry,
     player_processor::PlayerCmd,
-    session_engine::{PlayerId, SessionClient, session_client},
+    session_engine::{PlayerId, SessionLike, session_client},
     shared_eq::SharedEq,
     shared_player_state::SharedPlayerState,
 };
@@ -95,7 +95,7 @@ pub struct EngineImpl {
     running: AtomicBool,
 
     /// Process-wide shared session backend.
-    session: Arc<SessionClient>,
+    session: Arc<dyn SessionLike>,
 
     /// Per-slot command channels and shared state.
     slot_registry: Mutex<ArenaRegistry<SlotId, SlotHandle>>,
@@ -114,12 +114,20 @@ impl EngineImpl {
     /// to begin audio processing.
     #[must_use]
     pub fn new(config: EngineConfig, bus: EventBus) -> Self {
+        Self::new_with_session(config, bus, session_client())
+    }
+
+    #[must_use]
+    pub(crate) fn new_with_session(
+        config: EngineConfig,
+        bus: EventBus,
+        session: Arc<dyn SessionLike>,
+    ) -> Self {
         let max_slots = config.max_slots;
         let resolved_pool = config
             .pcm_pool
             .clone()
             .unwrap_or_else(|| pcm_pool().clone());
-        let session = session_client();
 
         Self {
             config,

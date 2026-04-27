@@ -79,6 +79,50 @@ pub(crate) type DefaultSessionClient = SessionClient<DefaultBackend>;
 #[cfg(target_arch = "wasm32")]
 type DefaultSessionState = SessionState<DefaultBackend>;
 
+pub(crate) trait SessionLike: Send + Sync {
+    fn allocate_slot(
+        &self,
+        player_id: PlayerId,
+    ) -> Result<
+        (
+            SlotId,
+            HeapProd<PlayerCmd>,
+            Arc<SharedPlayerState>,
+            SharedEq,
+        ),
+        PlayError,
+    >;
+    fn query_sample_rate(&self, fallback: u32) -> u32;
+    fn register_player(
+        &self,
+        eq_layout: Vec<EqBandConfig>,
+        pcm_pool: PcmPool,
+    ) -> Result<PlayerId, PlayError>;
+    fn release_slot(&self, player_id: PlayerId, slot: SlotId) -> Result<(), PlayError>;
+    fn set_player_eq_gain(
+        &self,
+        player_id: PlayerId,
+        band: usize,
+        gain_db: f32,
+    ) -> Result<(), PlayError>;
+    fn set_player_master_volume(&self, player_id: PlayerId, volume: f32) -> Result<(), PlayError>;
+    fn set_player_slot_volume(
+        &self,
+        player_id: PlayerId,
+        slot: SlotId,
+        volume: f32,
+    ) -> Result<(), PlayError>;
+    fn start_player(
+        &self,
+        player_id: PlayerId,
+        sample_rate: u32,
+        master_volume: f32,
+    ) -> Result<(), PlayError>;
+    fn stop_player(&self, player_id: PlayerId) -> Result<(), PlayError>;
+    fn tick(&self) -> Result<(), PlayError>;
+    fn unregister_player(&self, player_id: PlayerId) -> Result<(), PlayError>;
+}
+
 #[derive(Debug)]
 struct SlotNodes {
     slot_id: SlotId,
@@ -440,6 +484,86 @@ where
     pub(crate) fn unregister_player(&self, player_id: PlayerId) -> Result<(), PlayError> {
         self.call_ok(Cmd::UnregisterPlayer { player_id })
             .map(|_| ())
+    }
+}
+
+impl<B> SessionLike for SessionClient<B>
+where
+    B: AudioBackend + 'static,
+    Self: SessionCaller<B>,
+{
+    fn allocate_slot(
+        &self,
+        player_id: PlayerId,
+    ) -> Result<
+        (
+            SlotId,
+            HeapProd<PlayerCmd>,
+            Arc<SharedPlayerState>,
+            SharedEq,
+        ),
+        PlayError,
+    > {
+        SessionClient::allocate_slot(self, player_id)
+    }
+
+    fn query_sample_rate(&self, fallback: u32) -> u32 {
+        SessionClient::query_sample_rate(self, fallback)
+    }
+
+    fn register_player(
+        &self,
+        eq_layout: Vec<EqBandConfig>,
+        pcm_pool: PcmPool,
+    ) -> Result<PlayerId, PlayError> {
+        SessionClient::register_player(self, eq_layout, pcm_pool)
+    }
+
+    fn release_slot(&self, player_id: PlayerId, slot: SlotId) -> Result<(), PlayError> {
+        SessionClient::release_slot(self, player_id, slot)
+    }
+
+    fn set_player_eq_gain(
+        &self,
+        player_id: PlayerId,
+        band: usize,
+        gain_db: f32,
+    ) -> Result<(), PlayError> {
+        SessionClient::set_player_eq_gain(self, player_id, band, gain_db)
+    }
+
+    fn set_player_master_volume(&self, player_id: PlayerId, volume: f32) -> Result<(), PlayError> {
+        SessionClient::set_player_master_volume(self, player_id, volume)
+    }
+
+    fn set_player_slot_volume(
+        &self,
+        player_id: PlayerId,
+        slot: SlotId,
+        volume: f32,
+    ) -> Result<(), PlayError> {
+        SessionClient::set_player_slot_volume(self, player_id, slot, volume)
+    }
+
+    fn start_player(
+        &self,
+        player_id: PlayerId,
+        sample_rate: u32,
+        master_volume: f32,
+    ) -> Result<(), PlayError> {
+        SessionClient::start_player(self, player_id, sample_rate, master_volume)
+    }
+
+    fn stop_player(&self, player_id: PlayerId) -> Result<(), PlayError> {
+        SessionClient::stop_player(self, player_id)
+    }
+
+    fn tick(&self) -> Result<(), PlayError> {
+        SessionClient::tick(self)
+    }
+
+    fn unregister_player(&self, player_id: PlayerId) -> Result<(), PlayError> {
+        SessionClient::unregister_player(self, player_id)
     }
 }
 
