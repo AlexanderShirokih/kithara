@@ -13,7 +13,7 @@ pub mod engine {
     }
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(any(test, feature = "backend-offline"))]
 pub mod offline {
     use std::sync::{Arc, atomic::Ordering};
 

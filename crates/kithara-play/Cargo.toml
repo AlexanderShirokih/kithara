@@ -64,7 +64,7 @@ backend-offline = []
 rodio = ["dep:rodio", "kithara-audio/rodio"]
 wasm-bindgen = ["firewheel/wasm-bindgen"]
 apple = ["kithara-audio/apple"]
-test-utils = ["unimock"]
+test-utils = ["unimock", "backend-offline"]
 internal = []
 
 [dev-dependencies]

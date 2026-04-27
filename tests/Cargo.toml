@@ -70,7 +70,7 @@ async-trait = { workspace = true }
 kithara = { workspace = true, features = ["rodio"] }
 kithara-decode = { workspace = true, features = ["test-utils"] }
 kithara-file = { workspace = true }
-kithara-play = { workspace = true, features = ["backend-cpal", "internal"] }
+kithara-play = { workspace = true, features = ["backend-cpal", "internal", "backend-offline"] }
 
 # Additional tokio features (full runtime on native)
 tokio = { workspace = true, features = ["full"] }

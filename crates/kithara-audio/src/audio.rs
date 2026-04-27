@@ -89,7 +89,7 @@ enum RecvOutcome {
 /// ```
 pub struct Audio<S> {
     /// PCM chunk receiver.
-    pcm_rx: crate::runtime::Inlet<Fetch<PcmChunk>>,
+    pub(crate) pcm_rx: crate::runtime::Inlet<Fetch<PcmChunk>>,
 
     /// Shared epoch counter with worker (kept alive for `Arc` shared ownership).
     _epoch: Arc<AtomicU64>,
