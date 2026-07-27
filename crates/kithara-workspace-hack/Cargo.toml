@@ -38,7 +38,6 @@ portable-atomic = { version = "1", default-features = false, features = ["fallba
 rangemap = { version = "1", default-features = false, features = ["serde1"] }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa-build", "meta", "std"] }
 regex-syntax = { version = "0.8" }
-reqwest = { version = "0.13", default-features = false, features = ["brotli", "cookies", "deflate", "gzip", "native-tls", "rustls", "stream", "zstd"] }
 ringbuf = { version = "0.4", features = ["portable-atomic"] }
 serde = { version = "1", features = ["alloc", "derive"] }
 serde_core = { version = "1", default-features = false, features = ["alloc", "result", "std"] }
@@ -76,7 +75,6 @@ portable-atomic = { version = "1", default-features = false, features = ["fallba
 rangemap = { version = "1", default-features = false, features = ["serde1"] }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa-build", "meta", "std"] }
 regex-syntax = { version = "0.8" }
-reqwest = { version = "0.13", default-features = false, features = ["brotli", "cookies", "deflate", "gzip", "native-tls", "rustls", "stream", "zstd"] }
 ringbuf = { version = "0.4", features = ["portable-atomic"] }
 serde = { version = "1", features = ["alloc", "derive"] }
 serde_core = { version = "1", default-features = false, features = ["alloc", "result", "std"] }

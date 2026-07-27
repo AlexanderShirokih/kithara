@@ -7,6 +7,7 @@ use iced::{
         canvas::{self, Frame, Geometry, Path, Stroke},
         column, container,
         container::Style as ContainerStyle,
+        mouse_area,
     },
 };
 
@@ -18,10 +19,8 @@ use crate::{
     widgets::Widget,
 };
 
-/// Framed module shell shared by renderer and application surfaces.
 #[derive(bon::Builder)]
-#[non_exhaustive]
-pub struct ModuleChrome<'a, 'skin, Content, Message> {
+pub(crate) struct ModuleChrome<'a, 'skin, Content, Message> {
     content: Content,
     title: Option<&'a str>,
     chip: Option<&'a str>,
@@ -30,13 +29,30 @@ pub struct ModuleChrome<'a, 'skin, Content, Message> {
     style: ChromeStyle,
     #[builder(default)]
     frame: FrameSides,
-    #[builder(default = true)]
+    #[builder(default)]
     corners: bool,
     footer: Option<String>,
     on_toggle: Option<Message>,
+    drop: Option<DropZone<Message>>,
     #[builder(default)]
     collapsed: bool,
     skin: &'skin Skin,
+}
+
+pub(crate) struct DropZone<Message> {
+    pub(crate) on_enter: Message,
+    pub(crate) on_exit: Message,
+    pub(crate) active: bool,
+}
+
+impl<Message> DropZone<Message> {
+    pub(crate) const fn new(on_enter: Message, on_exit: Message, active: bool) -> Self {
+        Self {
+            on_enter,
+            on_exit,
+            active,
+        }
+    }
 }
 
 impl<'a, Content, Message> ModuleChrome<'a, '_, Content, Message>
@@ -44,8 +60,7 @@ where
     Content: Into<Element<'a, Message>>,
     Message: Clone + 'a,
 {
-    #[must_use]
-    pub fn view(self) -> Element<'a, Message> {
+    pub(crate) fn view(self) -> Element<'a, Message> {
         module_view(self)
     }
 }
@@ -60,13 +75,16 @@ where
 }
 
 fn module_view<'a, Content, Message>(
-    chrome: ModuleChrome<'a, '_, Content, Message>,
+    mut chrome: ModuleChrome<'a, '_, Content, Message>,
 ) -> Element<'a, Message>
 where
     Content: Into<Element<'a, Message>>,
     Message: Clone + 'a,
 {
-    match chrome.style {
+    let drop = chrome.drop.take();
+    let accent = chrome.skin.palette.accent;
+    let border_width = chrome.skin.chrome.frame.border_width;
+    let shell = match chrome.style {
         ChromeStyle::Full => full(chrome),
         ChromeStyle::Frame => framed(
             chrome.content.into(),
@@ -77,7 +95,41 @@ where
             chrome.corners,
         ),
         ChromeStyle::Plain => chrome.content.into(),
+    };
+    match drop {
+        Some(zone) => drop_zone(shell, zone, accent, border_width),
+        None => shell,
     }
+}
+
+/// Reports the pointer crossing the module and outlines it while a drag is
+/// over it. The area publishes without capturing, so the controls inside keep
+/// every event they would have had.
+fn drop_zone<'a, Message>(
+    content: Element<'a, Message>,
+    zone: DropZone<Message>,
+    accent: Color,
+    border_width: f32,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    let active = zone.active;
+    let outlined = container(content)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(move |_| {
+            let border = if active {
+                Border::default().color(accent).width(border_width)
+            } else {
+                Border::default()
+            };
+            ContainerStyle::default().border(border)
+        });
+    mouse_area(outlined)
+        .on_enter(zone.on_enter)
+        .on_exit(zone.on_exit)
+        .into()
 }
 
 fn full<'a, Content, Message>(
@@ -266,11 +318,7 @@ where
         sides,
         frame_color: skin.color(skin.chrome.frame.border),
         frame_width: skin.chrome.frame.border_width,
-        corners,
-        corner_color: skin.color(skin.chrome.corner_color),
-        corner_size: skin.chrome.corner_size,
-        corner_width: skin.chrome.corner_width,
-        corner_offset: skin.chrome.corner_offset,
+        corners: corners.then(|| CornerTicks::from(skin)),
     })
     .width(Length::Fill)
     .height(height);
@@ -360,15 +408,74 @@ fn panel_style(background: Color) -> ContainerStyle {
     ContainerStyle::default().background(Background::Color(background))
 }
 
+/// Border overlay for a container: hairlines on the requested sides.
+pub(crate) fn frame_overlay<'a, Message>(
+    content: Element<'a, Message>,
+    sides: FrameSides,
+    size: (Length, Length),
+    skin: &Skin,
+) -> Element<'a, Message>
+where
+    Message: 'a,
+{
+    let (width, height) = size;
+    let frame = Canvas::new(FrameChrome {
+        sides,
+        frame_color: skin.color(skin.divider.color),
+        frame_width: skin.divider.width,
+        corners: None,
+    })
+    .width(Length::Fill)
+    .height(Length::Fill);
+    let body = container(content).width(width).height(height);
+    Stack::with_children([body.into(), frame.into()])
+        .width(width)
+        .height(height)
+        .into()
+}
+
 struct FrameChrome {
     sides: FrameSides,
     frame_color: Color,
     frame_width: f32,
-    corners: bool,
-    corner_color: Color,
-    corner_size: f32,
-    corner_width: f32,
-    corner_offset: f32,
+    corners: Option<CornerTicks>,
+}
+
+#[derive(Clone, Copy)]
+struct CornerTicks {
+    color: Color,
+    size: f32,
+    width: f32,
+    offset: f32,
+}
+
+impl From<&Skin> for CornerTicks {
+    fn from(skin: &Skin) -> Self {
+        Self {
+            color: skin.color(skin.chrome.corner_color),
+            size: skin.chrome.corner_size,
+            width: skin.chrome.corner_width,
+            offset: skin.chrome.corner_offset,
+        }
+    }
+}
+
+impl CornerTicks {
+    fn marks(self, bounds: Rectangle) -> [(Point, Size); 4] {
+        let along = Size::new(self.size, self.width);
+        let across = Size::new(self.width, self.size);
+        let near = Point::new(self.offset, self.offset);
+        let far_x = (bounds.width - self.offset - self.width).max(0.0);
+        let far_y = (bounds.height - self.offset - self.width).max(0.0);
+        let tail_x = (bounds.width - self.offset - self.size).max(0.0);
+        let tail_y = (bounds.height - self.offset - self.size).max(0.0);
+        [
+            (near, along),
+            (near, across),
+            (Point::new(tail_x, far_y), along),
+            (Point::new(far_x, tail_y), across),
+        ]
+    }
 }
 
 impl<Message> canvas::Program<Message> for FrameChrome {
@@ -413,40 +520,11 @@ impl<Message> canvas::Program<Message> for FrameChrome {
                 self.frame_color,
             );
         }
-        if self.corners {
-            self.draw_corners(&mut frame, bounds);
+        if let Some(ticks) = self.corners {
+            for (origin, size) in ticks.marks(bounds) {
+                frame.fill_rectangle(origin, size, ticks.color);
+            }
         }
-
         vec![frame.into_geometry()]
-    }
-}
-
-impl FrameChrome {
-    fn draw_corners(&self, frame: &mut Frame, bounds: Rectangle) {
-        let right = (bounds.width - self.corner_offset - self.corner_width).max(0.0);
-        let bottom = (bounds.height - self.corner_offset - self.corner_width).max(0.0);
-        let right_tick = (bounds.width - self.corner_offset - self.corner_size).max(0.0);
-        let bottom_tick = (bounds.height - self.corner_offset - self.corner_size).max(0.0);
-
-        frame.fill_rectangle(
-            Point::new(self.corner_offset, self.corner_offset),
-            Size::new(self.corner_size, self.corner_width),
-            self.corner_color,
-        );
-        frame.fill_rectangle(
-            Point::new(self.corner_offset, self.corner_offset),
-            Size::new(self.corner_width, self.corner_size),
-            self.corner_color,
-        );
-        frame.fill_rectangle(
-            Point::new(right_tick, bottom),
-            Size::new(self.corner_size, self.corner_width),
-            self.corner_color,
-        );
-        frame.fill_rectangle(
-            Point::new(right, bottom_tick),
-            Size::new(self.corner_width, self.corner_size),
-            self.corner_color,
-        );
     }
 }

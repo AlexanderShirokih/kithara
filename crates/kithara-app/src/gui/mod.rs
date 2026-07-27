@@ -1,16 +1,12 @@
 mod app;
-mod dj;
-mod fonts;
+mod deck;
 mod frontend;
-mod icons;
 mod message;
-mod studio;
+mod mix;
+mod studio_ui;
 mod subscription;
 mod theme;
-mod tokens;
 mod update;
-mod url_bar;
 mod view;
-mod widgets;
 
 pub use frontend::GuiFrontend;

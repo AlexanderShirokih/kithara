@@ -7,7 +7,7 @@ use iced::{
     Color, Element, Event, Font, Length, Point, Rectangle, Renderer, Size, Theme,
     alignment::Vertical,
     keyboard::{Event as KeyboardEvent, Modifiers},
-    mouse::{self, Cursor, ScrollDelta},
+    mouse::{self, Cursor},
     widget::{
         canvas::{self, Action, Canvas, Frame, Geometry, Path, Stroke},
         text,
@@ -17,13 +17,15 @@ use num_traits::cast::AsPrimitive;
 
 use crate::{
     module::WaveStyle,
-    render::{ReadValue, Reads, Skin, UiEvent, WaveBucket, fonts, theme::RenderPalette},
+    render::{
+        ReadValue, Reads, Skin, UiEvent, WaveBucket, fonts, model::derived, theme::RenderPalette,
+    },
     skin::{FontSkin, FrameSkin, WaveOverlaySkin, WaveSkin},
     widgets::{
         Widget,
-        behavior::{HoverState, ScalarDrag, ScalarDragMode, ScalarDragState},
-        deck::format_time,
+        behavior::{HoverState, ScalarDrag, ScalarDragMode, ScalarDragState, scroll_y},
         wave::{
+            bars,
             hero::{HeroPalette, HeroWave, draw as draw_hero_wave},
             zoom_math::{clamp_zoom, window_bounds, x_to_norm, zoom_for_wheel},
         },
@@ -31,24 +33,28 @@ use crate::{
 };
 
 #[derive(bon::Builder)]
-pub(crate) struct MiniWave<'path, 'value, 'data, 'reads, 'skin> {
+pub(crate) struct MiniWave<'path, 'value, 'data, 'scope, 'reads, 'skin> {
     path: &'path str,
     style: WaveStyle,
     badge: Option<&'path str>,
     value: Option<&'value ReadValue<'data>>,
+    scope: &'scope str,
     reads: &'reads dyn Reads,
     skin: &'skin Skin,
     zoom: f32,
 }
 
-impl<'a> Widget<'a> for MiniWave<'_, '_, '_, '_, '_> {
+impl<'a> Widget<'a> for MiniWave<'_, '_, '_, '_, '_, '_> {
     fn view(self) -> Element<'a, UiEvent> {
         let waveform = match self.value {
             Some(ReadValue::Waveform(waveform)) => Some(*waveform),
             _ => None,
         };
         let bpm = waveform.and_then(|view| view.bpm);
-        let progress = match self.reads.get("deck.playback.position_normalized") {
+        let progress = match self
+            .reads
+            .get(&derived("deck.playback.position_normalized", self.scope))
+        {
             Some(ReadValue::Scalar(value)) => value.as_(),
             _ => 0.0,
         };
@@ -63,25 +69,25 @@ impl<'a> Widget<'a> for MiniWave<'_, '_, '_, '_, '_> {
         let show_beats = self.style == WaveStyle::Hero;
         let wave_revision = show_beats.then(|| wave_revision(waveform.as_ref(), progress, zoom));
         let overlay = show_beats.then(|| OverlayData {
-            title: read_text(self.reads, "deck.track.title")
+            title: read_text(self.reads, &derived("deck.track.title", self.scope))
                 .filter(|title| !title.is_empty())
                 .unwrap_or("No track loaded")
                 .to_owned(),
-            artist: read_text(self.reads, "deck.track.source_kind")
+            artist: read_text(self.reads, &derived("deck.track.source_kind", self.scope))
                 .unwrap_or("no source")
                 .to_owned(),
             bpm: bpm.map_or_else(|| em_dash().to_owned(), |value| format!("{value:.2}")),
-            key: read_text(self.reads, "deck.track.key")
+            key: read_text(self.reads, &derived("deck.track.key", self.scope))
                 .unwrap_or(em_dash())
                 .to_owned(),
-            remain: format!(
-                "\u{2212}{}",
-                format_time(read_scalar(self.reads, "deck.playback.remaining_secs").unwrap_or(0.0))
-            ),
+            remain: read_text(self.reads, &derived("deck.playback.remain", self.scope))
+                .unwrap_or(em_dash())
+                .to_owned(),
             badge: self.badge.unwrap_or_default().to_owned(),
         });
         Canvas::new(MiniWaveCanvas {
             metrics: self.skin.wave,
+            background: self.skin.color(self.skin.wave.background),
             border_color: self.skin.color(self.skin.wave.frame.border),
             cue_badge_background: self.skin.color(self.skin.wave.cue_badge_background),
             cue_badge_text_color: self.skin.color(self.skin.wave.cue_badge_text_color),
@@ -104,9 +110,9 @@ impl<'a> Widget<'a> for MiniWave<'_, '_, '_, '_, '_> {
             overlay,
             overlay_palette: OverlayPalette::new(self.skin),
             palette: self.skin.palette,
+            style: self.style,
             waveform,
             progress,
-            show_beats,
             wave_revision,
             zoom,
         })
@@ -118,6 +124,7 @@ impl<'a> Widget<'a> for MiniWave<'_, '_, '_, '_, '_> {
 
 struct MiniWaveCanvas {
     metrics: WaveSkin,
+    background: Color,
     border_color: Color,
     cue_badge_background: Color,
     cue_badge_text_color: Color,
@@ -125,9 +132,9 @@ struct MiniWaveCanvas {
     overlay: Option<OverlayData>,
     overlay_palette: OverlayPalette,
     palette: RenderPalette,
+    style: WaveStyle,
     waveform: Option<WaveformData>,
     progress: f32,
-    show_beats: bool,
     wave_revision: Option<u64>,
     zoom: f32,
 }
@@ -249,7 +256,7 @@ impl canvas::Program<UiEvent> for MiniWaveCanvas {
         );
 
         let mut layers = vec![wave];
-        if !self.show_beats {
+        if !self.hero() {
             let mut frame = Frame::new(renderer, bounds.size());
             let head_x = self.progress.clamp(0.0, 1.0) * bounds.width;
             frame.stroke(
@@ -260,7 +267,8 @@ impl canvas::Program<UiEvent> for MiniWaveCanvas {
             );
             layers.push(frame.into_geometry());
         }
-        if let Some(overlay) = self.overlay.as_ref().filter(|_| !cursor.is_over(bounds)) {
+        let header = overlay_strip(bounds, self.metrics.overlay);
+        if let Some(overlay) = self.overlay.as_ref().filter(|_| !cursor.is_over(header)) {
             let mut frame = Frame::new(renderer, bounds.size());
             draw_overlay(
                 &mut frame,
@@ -301,7 +309,7 @@ impl canvas::Program<UiEvent> for MiniWaveCanvas {
         if !self.has_waveform() {
             return None;
         }
-        if self.show_beats {
+        if self.hero() {
             match event {
                 Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
                     if state.modifiers.shift() && cursor.is_over(bounds) =>
@@ -322,7 +330,7 @@ impl canvas::Program<UiEvent> for MiniWaveCanvas {
                 _ => {}
             }
         }
-        if self.show_beats
+        if self.hero()
             && let Event::Mouse(mouse::Event::WheelScrolled { delta }) = event
             && cursor.is_over(bounds)
         {
@@ -334,6 +342,10 @@ impl canvas::Program<UiEvent> for MiniWaveCanvas {
 }
 
 impl MiniWaveCanvas {
+    const fn hero(&self) -> bool {
+        matches!(self.style, WaveStyle::Hero)
+    }
+
     fn has_waveform(&self) -> bool {
         self.waveform
             .as_ref()
@@ -341,12 +353,21 @@ impl MiniWaveCanvas {
     }
 
     fn draw_wave(&self, frame: &mut Frame, bounds: Rectangle) {
-        frame.fill_rectangle(Point::ORIGIN, bounds.size(), self.palette.bg_deep);
+        frame.fill_rectangle(Point::ORIGIN, bounds.size(), self.background);
         if let Some(waveform) = &self.waveform {
-            if self.show_beats {
+            if self.hero() {
                 self.draw_zoom_wave(frame, bounds, waveform);
             } else {
                 draw_bars(frame, bounds, &waveform.buckets, self.metrics, self.palette);
+                if self.style == WaveStyle::Default {
+                    bars::draw_played(
+                        frame,
+                        bounds,
+                        self.progress.clamp(0.0, 1.0) * bounds.width,
+                        self.metrics.overview_played_alpha,
+                        self.palette,
+                    );
+                }
             }
         }
         draw_border(frame, bounds, self.metrics.frame, self.border_color);
@@ -406,10 +427,11 @@ fn wave_revision(waveform: Option<&WaveformData>, progress: f32, zoom: f32) -> u
     hasher.finish()
 }
 
-fn scroll_y(delta: ScrollDelta) -> f32 {
-    match delta {
-        ScrollDelta::Lines { y, .. } | ScrollDelta::Pixels { y, .. } => y,
-    }
+fn overlay_strip(bounds: Rectangle, metrics: WaveOverlaySkin) -> Rectangle {
+    Rectangle::new(
+        bounds.position(),
+        Size::new(bounds.width, metrics.height.min(bounds.height)),
+    )
 }
 
 fn draw_overlay(
@@ -419,7 +441,7 @@ fn draw_overlay(
     metrics: WaveOverlaySkin,
     palette: OverlayPalette,
 ) {
-    let height = metrics.height.min(bounds.height);
+    let height = overlay_strip(bounds, metrics).height;
     frame.fill_rectangle(
         Point::ORIGIN,
         Size::new(bounds.width, height),
@@ -634,7 +656,7 @@ fn draw_readout(
     let total_height =
         metrics.readout_label.size + metrics.readout_gap + metrics.readout_value.size;
     let label_y = bounds.y + metrics.readout_padding_y + (inner_height - total_height) / 2.0;
-    let x = bounds.center_x();
+    let x = bounds.x + bounds.width - metrics.readout_padding_x;
     draw_text(
         frame,
         CanvasText {
@@ -644,7 +666,7 @@ fn draw_readout(
             color: palette.readout_label,
             skin: metrics.readout_label,
             font: fonts::mono(metrics.readout_label.weight),
-            align_x: text::Alignment::Center,
+            align_x: text::Alignment::Right,
             align_y: Vertical::Top,
         },
     );
@@ -660,7 +682,7 @@ fn draw_readout(
             color: data.value_color,
             skin: metrics.readout_value,
             font: fonts::mono(metrics.readout_value.weight),
-            align_x: text::Alignment::Center,
+            align_x: text::Alignment::Right,
             align_y: Vertical::Top,
         },
     );
@@ -711,13 +733,6 @@ fn read_text<'a>(reads: &'a dyn Reads, endpoint: &str) -> Option<&'a str> {
     }
 }
 
-fn read_scalar(reads: &dyn Reads, endpoint: &str) -> Option<f64> {
-    match reads.get(endpoint) {
-        Some(ReadValue::Scalar(value)) => Some(value),
-        _ => None,
-    }
-}
-
 fn draw_bars(
     frame: &mut Frame,
     bounds: Rectangle,
@@ -725,7 +740,7 @@ fn draw_bars(
     metrics: WaveSkin,
     palette: RenderPalette,
 ) {
-    let step = metrics.low_bar_width + metrics.bar_gap;
+    let step = bars::step(metrics);
     let content_width = (bounds.width - metrics.content_inset * 2.0).max(0.0);
     let max_columns: usize = ((content_width + metrics.bar_gap) / step).floor().as_();
     let columns = max_columns.min(buckets.len());
@@ -739,66 +754,30 @@ fn draw_bars(
         let end = ((column + 1) * buckets.len() / columns)
             .max(start + 1)
             .min(buckets.len());
-        let (low, mid, high) = buckets[start..end].iter().fold(
-            (0.0_f32, 0.0_f32, 0.0_f32),
-            |(low, mid, high), bucket| {
-                (
-                    low.max(bucket.low),
-                    mid.max(bucket.mid),
-                    high.max(bucket.high),
-                )
+        let peak = buckets[start..end].iter().fold(
+            WaveBucket {
+                low: 0.0,
+                mid: 0.0,
+                high: 0.0,
+            },
+            |peak, bucket| WaveBucket {
+                low: peak.low.max(bucket.low),
+                mid: peak.mid.max(bucket.mid),
+                high: peak.high.max(bucket.high),
             },
         );
         let column_x: f32 = column.as_();
-        let center_x = metrics.content_inset + column_x * step + metrics.low_bar_width / 2.0;
-        draw_band(
+        let center_x = metrics.content_inset + column_x * step + metrics.bar_width / 2.0;
+        bars::draw_column(
             frame,
             bounds,
             center_x,
-            low,
+            peak,
             available_height,
-            metrics.low_bar_width,
-            palette.wave_low,
-        );
-        draw_band(
-            frame,
-            bounds,
-            center_x,
-            mid,
-            available_height,
-            metrics.mid_bar_width,
-            palette.wave_mid,
-        );
-        draw_band(
-            frame,
-            bounds,
-            center_x,
-            high,
-            available_height,
-            metrics.high_bar_width,
-            palette.wave_high,
+            metrics,
+            palette,
         );
     }
-}
-
-fn draw_band(
-    frame: &mut Frame,
-    bounds: Rectangle,
-    center_x: f32,
-    level: f32,
-    available_height: f32,
-    width: f32,
-    color: Color,
-) {
-    let height = level.clamp(0.0, 1.0) * available_height;
-    if height <= 0.0 {
-        return;
-    }
-    frame.fill_rectangle(
-        Point::new(center_x - width / 2.0, (bounds.height - height) / 2.0),
-        Size::new(width, height),
-        color,
-    );
 }
 
 fn with_alpha(color: Color, alpha: f32) -> Color {
@@ -824,4 +803,30 @@ fn draw_border(frame: &mut Frame, bounds: Rectangle, skin: FrameSkin, color: Col
             .with_color(color)
             .with_width(skin.border_width),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use kithara_test_utils::kithara;
+
+    use super::*;
+
+    #[kithara::test]
+    fn overlay_hides_only_when_the_cursor_is_inside_the_header_strip() {
+        let metrics = crate::builtin::skin_doc().wave.overlay;
+        let bounds = Rectangle::new(Point::new(100.0, 50.0), Size::new(400.0, 300.0));
+        let strip = overlay_strip(bounds, metrics);
+
+        let inside = Cursor::Available(Point::new(150.0, 50.0 + metrics.height / 2.0));
+        let below = Cursor::Available(Point::new(150.0, 50.0 + metrics.height + 40.0));
+        assert!(inside.is_over(strip));
+        assert!(!below.is_over(strip));
+    }
+
+    #[kithara::test]
+    fn overlay_strip_clamps_to_short_bounds() {
+        let metrics = crate::builtin::skin_doc().wave.overlay;
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(200.0, metrics.height / 2.0));
+        assert_eq!(overlay_strip(bounds, metrics).height, bounds.height);
+    }
 }

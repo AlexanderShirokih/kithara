@@ -5,6 +5,7 @@ use crate::{
     envelope::{self, DocKind},
     error::UiDocError,
     ids::{DocId, SourceUri},
+    layout::FrameSides,
     module::WindowControlsStyle,
     size::SizeSpec,
 };
@@ -43,6 +44,9 @@ pub struct SkinDoc {
     pub wave: WaveSkin,
     pub deck: DeckSkin,
     pub global_bar: GlobalBarSkin,
+    pub divider: DividerSkin,
+    pub drag: DragSkin,
+    pub meter: MeterSkin,
     pub telemetry: TelemetrySkin,
     pub tree: TreeSkin,
     pub track_list: TrackListSkin,
@@ -184,6 +188,22 @@ pub struct FrameSkin {
     pub border: ColorRole,
 }
 
+/// Scale beside a fader: hairlines with a longer, brighter one at centre.
+/// `thickness` runs along the scale, `length` across it, whatever the axis.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct TickSkin {
+    pub count: usize,
+    pub thickness: f32,
+    pub length: f32,
+    pub center_length: f32,
+    pub gap: f32,
+    pub inset: f32,
+    pub color: ColorRole,
+    pub center_color: ColorRole,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -239,8 +259,9 @@ pub struct ChromeSkin {
 #[non_exhaustive]
 pub struct WindowSkin {
     pub titlebar_height: f32,
+    /// Thickness of the drag zones framing a window that draws its own chrome.
+    pub resize_edge: f32,
     pub titlebar_padding_x: f32,
-    pub titlebar_background: ColorRole,
     pub titlebar_text: TextRoleSkin,
     pub icon_color: ColorRole,
     pub icon_hover_color: ColorRole,
@@ -348,6 +369,7 @@ pub struct KnobSkin {
     pub value_color: ColorRole,
     pub indicator_color: ColorRole,
     pub drag_range: f32,
+    pub wheel_step: f32,
     pub indicator_width: f32,
     pub outer_inset: f32,
     pub start_angle: f32,
@@ -356,6 +378,9 @@ pub struct KnobSkin {
     pub track_width: f32,
     pub track_alpha: f32,
     pub body_border_width: f32,
+    pub label_text: TextRoleSkin,
+    pub label_gap: f32,
+    pub label_height: f32,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -363,15 +388,27 @@ pub struct KnobSkin {
 #[non_exhaustive]
 pub struct CrossfaderSkin {
     pub size: SizeSpec,
+    pub padding_x: f32,
+    pub padding_top: f32,
+    pub padding_bottom: f32,
     pub rail_height: f32,
     pub rail_frame: FrameSkin,
     pub rail_background: ColorRole,
     pub thumb_width: f32,
     pub thumb_height: f32,
     pub thumb_color: ColorRole,
+    pub thumb_notch_width: f32,
+    pub thumb_notch_height: f32,
+    pub thumb_notch_color: ColorRole,
+    pub ticks: TickSkin,
     pub label_text: FontSkin,
     pub label_color: ColorRole,
     pub label_gap: f32,
+    pub letter_text: FontSkin,
+    pub letter_color: ColorRole,
+    pub arrow_size: f32,
+    pub arrow_color: ColorRole,
+    pub arrow_gap: f32,
     pub left_label: String,
     pub center_label: String,
     pub right_label: String,
@@ -398,11 +435,16 @@ pub struct VuStereoSkin {
 #[non_exhaustive]
 pub struct VuVerticalSkin {
     pub size: SizeSpec,
+    pub fader_width: f32,
     pub segment_gap: f32,
     pub segment_height: f32,
     pub segment_inset_x: f32,
+    pub ticks: TickSkin,
     pub thumb_height: f32,
     pub thumb_color: ColorRole,
+    pub thumb_notch_offset: f32,
+    pub thumb_notch_height: f32,
+    pub thumb_notch_color: ColorRole,
     pub warning_threshold: f32,
     pub danger_threshold: f32,
 }
@@ -484,7 +526,9 @@ pub struct ButtonSkin {
     pub size: SizeSpec,
     pub frame: FrameSkin,
     pub primary_frame: FrameSkin,
-    pub height: f32,
+    /// A transport cell draws no border of its own; these sides say where the
+    /// seam between neighbouring cells goes.
+    pub transport_sides: FrameSides,
     pub padding_x: f32,
     pub padding_y: f32,
     pub text: FontSkin,
@@ -532,6 +576,8 @@ pub struct TextSkin {
     pub size: SizeSpec,
     pub brand: TextRoleSkin,
     pub deck_letter: TextRoleSkin,
+    /// Tone the deck letter takes while its `Text.active` binding reads true.
+    pub deck_letter_active: ColorRole,
     pub track_title: TextRoleSkin,
     pub body: TextRoleSkin,
     pub telemetry: TextRoleSkin,
@@ -643,7 +689,10 @@ pub struct WaveSkin {
     pub size: SizeSpec,
     pub frame: FrameSkin,
     pub overlay: WaveOverlaySkin,
+    pub background: ColorRole,
     pub bar_gap: f32,
+    /// Width of every band bar; bands nest by level, not by width.
+    pub bar_width: f32,
     pub content_inset: f32,
     pub cue_badge_background: ColorRole,
     pub cue_badge_size: f32,
@@ -653,12 +702,11 @@ pub struct WaveSkin {
     pub downbeat_alpha: f32,
     pub grid_alpha: f32,
     pub grid_width: f32,
-    pub high_bar_width: f32,
-    pub low_bar_width: f32,
     pub loop_bound_width: f32,
     pub loop_fill_alpha: f32,
-    pub mid_bar_width: f32,
     pub played_alpha: f32,
+    /// Overview strips dim harder than the hero wave.
+    pub overview_played_alpha: f32,
     pub playhead_marker_height: f32,
     pub playhead_marker_width: f32,
     pub playhead_width: f32,
@@ -728,7 +776,6 @@ pub struct DeckSkin {
     pub time_padding_y: f32,
     pub time_text: FontSkin,
     pub title: FontSkin,
-    pub transport_height: f32,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -757,6 +804,40 @@ pub struct GlobalBarSkin {
     pub selector_padding_y: f32,
     pub brand_width: f32,
     pub selector_width: f32,
+}
+
+/// Horizontal fill bar reporting one scalar, as the design's CPU cell draws it:
+/// an inset track with a hairline frame, filled from the left.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct MeterSkin {
+    pub size: SizeSpec,
+    pub frame: FrameSkin,
+    pub background: ColorRole,
+    pub fill: ColorRole,
+}
+
+/// Hairline between adjacent cells or control sections.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct DividerSkin {
+    pub width: f32,
+    pub color: ColorRole,
+}
+
+/// The label the pointer carries while it drags an item.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct DragSkin {
+    pub frame: FrameSkin,
+    pub background: ColorRole,
+    pub text: TextRoleSkin,
+    pub width: f32,
+    pub height: f32,
+    pub pad_x: f32,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -896,9 +977,7 @@ pub struct TrackListLabels {
     pub time: String,
     pub energy: String,
     pub transition: String,
-    pub footer_component: String,
     pub footer_tracks: String,
-    pub footer_usage: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]

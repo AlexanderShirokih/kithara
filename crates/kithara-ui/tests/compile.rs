@@ -79,7 +79,7 @@ fn crossfader_compiles_with_scalar_read_and_write_bindings() {
         panic!("expected module root");
     };
     let ExpandedNode::Control {
-        spec: ControlSpec::Crossfader,
+        spec: ControlSpec::Crossfader { ticks: false },
         read: Some(Binding::Parameter { .. }),
         write: Some(Binding::Parameter { .. }),
         ..
@@ -87,6 +87,61 @@ fn crossfader_compiles_with_scalar_read_and_write_bindings() {
     else {
         panic!("expected compiled crossfader");
     };
+}
+
+#[kithara::test]
+fn meter_reads_a_scalar_and_refuses_any_other_kind() {
+    let module = |endpoint| {
+        format!(
+            r#"(schema: "kithara.module", version: 1, id: "bar",
+                root: Meter(id: "load", read: Telemetry(id: "{endpoint}")))"#
+        )
+    };
+    let mut resolver = MemResolver::default();
+    resolver.insert(
+        "bar.klayout.ron",
+        r#"(schema: "kithara.layout", version: 1, id: "bar",
+            root: Module(instance: "bar", source: "bar.kmodule.ron"))"#,
+    );
+    let mut registry = common::player_registry();
+    registry.insert(
+        EndpointCategory::Telemetry,
+        "engine.load",
+        EndpointDesc::new(ValueKind::Scalar),
+    );
+
+    resolver.insert("bar.kmodule.ron", &module("engine.load"));
+    let ui = compile(
+        "bar.klayout.ron",
+        &resolver,
+        &registry,
+        builtin::skin_doc(),
+        &UiConfig::default(),
+    )
+    .unwrap();
+    let CompiledNode::Module { root, .. } = &ui.root else {
+        panic!("expected module root");
+    };
+    assert!(matches!(
+        &**root,
+        ExpandedNode::Control {
+            spec: ControlSpec::Meter,
+            read: Some(Binding::Telemetry { .. }),
+            ..
+        }
+    ));
+
+    resolver.insert("bar.kmodule.ron", &module("deck.playback.playing"));
+    let error = compile(
+        "bar.klayout.ron",
+        &resolver,
+        &registry,
+        builtin::skin_doc(),
+        &UiConfig::default(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, UiDocError::BindingType { .. }));
 }
 
 #[kithara::test]
@@ -259,10 +314,12 @@ fn track_list_compiles_typed_columns_and_optional_state_prefix() {
         panic!("expected module root");
     };
     let ExpandedNode::Control {
-        spec: ControlSpec::TrackList {
-            columns,
-            columns_state,
-        },
+        spec:
+            ControlSpec::TrackList {
+                columns,
+                columns_state,
+                ..
+            },
         ..
     } = &**root
     else {
@@ -359,7 +416,7 @@ fn module_shell_metadata_compiles_into_the_module_node() {
                 source: "shell.kmodule.ron",
                 with: { "deck": "a" },
                 frame: (top: true, right: false, bottom: true, left: false),
-                corners: false,
+                corners: true,
             ))"#,
     );
     resolver.insert(
@@ -406,12 +463,13 @@ fn module_shell_metadata_compiles_into_the_module_node() {
     assert!(!frame.right);
     assert!(frame.bottom);
     assert!(!frame.left);
-    assert!(!corners);
+    assert!(*corners);
     assert_eq!(ui.resolve(*collapsed), "ui.module.deck.collapsed");
-    let Some(Binding::Telemetry { id, with }) = footer else {
+    let Some(Binding::Telemetry { id, key, with }) = footer else {
         panic!("expected telemetry footer");
     };
     assert_eq!(ui.resolve(*id), "deck.track.title");
+    assert_eq!(ui.resolve(*key), "deck.track.title@deck=a");
     assert_eq!(
         with.iter()
             .map(|(key, value)| (ui.resolve(*key), ui.resolve(*value)))
@@ -631,4 +689,52 @@ fn fifty_empty_columns_exceed_node_limit() {
         ),
         "{error:?}"
     );
+}
+
+#[kithara::test]
+fn knob_caption_is_document_text_and_optional() {
+    let mut resolver = MemResolver::default();
+    resolver.insert(
+        "knobs.klayout.ron",
+        r#"(schema: "kithara.layout", version: 1, id: "knobs",
+            root: Module(instance: "deck-a", source: "knobs.kmodule.ron"))"#,
+    );
+    resolver.insert(
+        "knobs.kmodule.ron",
+        r#"(schema: "kithara.module", version: 1, id: "knobs",
+            root: Row(children: [
+                Knob(id: "low", label: Some("LOW")),
+                Knob(id: "mid"),
+            ]))"#,
+    );
+
+    let ui = compile(
+        "knobs.klayout.ron",
+        &resolver,
+        &common::player_registry(),
+        builtin::skin_doc(),
+        &UiConfig::default(),
+    )
+    .unwrap();
+    let CompiledNode::Module { root, .. } = &ui.root else {
+        panic!("expected module");
+    };
+    let ExpandedNode::Row { children, .. } = &**root else {
+        panic!("expected row");
+    };
+    let captions: Vec<Option<&str>> = children
+        .iter()
+        .map(|child| {
+            let ExpandedNode::Control {
+                spec: ControlSpec::Knob { label },
+                ..
+            } = child
+            else {
+                panic!("expected knob");
+            };
+            label.map(|id| ui.resolve(id))
+        })
+        .collect();
+
+    assert_eq!(captions, vec![Some("LOW"), None]);
 }
