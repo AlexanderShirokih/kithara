@@ -1,5 +1,11 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
+# Without this a shebang recipe is handed no positional arguments at all, so
+# every `${1:-default}` in one silently resolves to its default and the caller's
+# argument is dropped. Note the offset it implies: `$1` is the recipe's first
+# *parameter*, so for `apple MODE *ARGS` the first `ARGS` entry is `$2`.
+set positional-arguments
+
 # Show available commands.
 default:
     @just --list
@@ -600,10 +606,8 @@ depgraph:
 mutants TARGET="" *ARGS:
     #!/usr/bin/env bash
     set -uo pipefail
-    target=$1
-    shift
-    if [[ "$target" == "ci" ]]; then
-      OUTPUT="${1:-target/mutants-ci}"
+    if [[ "{{TARGET}}" == "ci" ]]; then
+      OUTPUT="${2:-target/mutants-ci}"
       DEFAULT_JOBS=$(( $(nproc) - 1 ))
       if [ "$DEFAULT_JOBS" -gt 12 ]; then DEFAULT_JOBS=12; fi
       if [ "$DEFAULT_JOBS" -lt 1 ]; then DEFAULT_JOBS=1; fi
@@ -627,12 +631,12 @@ mutants TARGET="" *ARGS:
         --exclude-re 'src/.*test.*\.rs' \
         -j "$JOBS" --timeout 900 --minimum-test-timeout 300 \
         --no-shuffle $RESUME_FLAG --output "$OUTPUT"
-    elif [[ -z "$target" ]]; then
+    elif [[ -z "{{TARGET}}" ]]; then
       cargo mutants --workspace --test-workspace=true --profile test-release \
-        --test-tool=nextest --timeout 120 --no-shuffle "$@"
+        --test-tool=nextest --timeout 120 --no-shuffle {{ARGS}}
     else
-      cargo mutants -p "$target" --test-workspace=true --profile test-release \
-        --test-tool=nextest --timeout 120 --no-shuffle "$@"
+      cargo mutants -p "{{TARGET}}" --test-workspace=true --profile test-release \
+        --test-tool=nextest --timeout 120 --no-shuffle {{ARGS}}
     fi
 
 # --- perf & benchmarks ---
@@ -807,29 +811,49 @@ android MODE="build" *ARGS:
 # --- apple ---
 
 # Apple tasks.
+# `test` and `integration-regressions` resolve the iOS simulator themselves; set
+# KITHARA_IOS_DESTINATION to an xcodebuild -destination string to pick one.
 #   just apple                          # build XCFramework (default)
 #   just apple xcframework --profile debug
 #   just apple single                   # build single binary Kithara.xcframework
 #   just apple demo                     # XCFramework + run KitharaDemo
 #   just apple xcode                    # XCFramework + open xcodeproj
 #   just apple ios SCHEME [DESTINATION] # build for iOS Simulator
+#   just apple test                     # test hosted unit target on iOS Simulator
+#   just apple integration-regressions [TEST]
+#                                       # integration regressions, one process
 #   just apple doc                      # combined Kithara+KitharaRx .doccarchive
 #   just apple release                  # XCFramework + strip + zip + checksum
 [positional-arguments]
 apple MODE="xcframework" *ARGS:
     #!/usr/bin/env bash
-    set -euo pipefail
-    mode=$1
-    shift
-    case "$mode" in
+    set -uo pipefail
+
+    # Resolve a concrete iOS simulator instead of naming one. Simulator names
+    # are per-machine, so any hardcoded `name=` destination is a machine-local
+    # accident; `KITHARA_IOS_DESTINATION` overrides for the rare case where the
+    # preference below picks the wrong device.
+    ios_destination() {
+      if [[ -n "${KITHARA_IOS_DESTINATION:-}" ]]; then
+        printf '%s' "$KITHARA_IOS_DESTINATION"
+        return 0
+      fi
+      # `name` + `OS` rather than the device identifier so the destination
+      # names what a human would recognise. The runtime's own `version` is the
+      # only source of the patch component xcodebuild matches on: the runtime
+      # key says `iOS-26-3` where the device really is on 26.3.1.
+      xcrun simctl list --json | python3 -c 'import json, sys; data = json.load(sys.stdin); version = {r["identifier"]: r["version"] for r in data["runtimes"] if r.get("isAvailable")}; found = sorted((0 if d["state"] == "Booted" else 1, 0 if "iPhone" in d["deviceTypeIdentifier"] else 1, d["name"], version[runtime]) for runtime, devices in data["devices"].items() if ".SimRuntime.iOS-" in runtime and runtime in version for d in devices if d.get("isAvailable")); print("platform=iOS Simulator,name={},OS={}".format(found[0][2], found[0][3])) if found else sys.exit("no usable iOS simulator: searched every com.apple.CoreSimulator.SimRuntime.iOS-* runtime reported by `xcrun simctl list --json` for an available device on an available runtime, and found none. Create one under Xcode > Window > Devices and Simulators, or set KITHARA_IOS_DESTINATION to an xcodebuild -destination string.")'
+    }
+
+    case "{{MODE}}" in
       xcframework)
-        just xtask apple build "$@"
+        just xtask apple build {{ARGS}}
         ;;
       single)
-        just xtask apple single "$@"
+        just xtask apple single {{ARGS}}
         ;;
       demo)
-        just xtask apple run "$@"
+        just xtask apple run {{ARGS}}
         ;;
       xcode)
         just apple xcframework --profile debug
@@ -837,12 +861,82 @@ apple MODE="xcframework" *ARGS:
         open apple/Examples/KitharaDemo/KitharaDemo.xcodeproj
         ;;
       ios)
-        scheme="${1:-KitharaDemo_iOS}"
-        destination="${2:-generic/platform=iOS Simulator}"
+        scheme="${2:-KitharaDemo_iOS}"
+        destination="${3:-generic/platform=iOS Simulator}"
         just apple xcframework --profile debug
         just _xcodegen-local
         KITHARA_LOCAL_DEV=1 xcodebuild -project apple/Examples/KitharaDemo/KitharaDemo.xcodeproj \
             -scheme "$scheme" -destination "$destination" build
+        ;;
+      test)
+        destination=$(ios_destination) || exit 1
+        test_server_url="${KITHARA_TEST_SERVER_URL:-}"
+        if [[ -z "$test_server_url" ]]; then
+          echo "KITHARA_TEST_SERVER_URL must name the running hermetic test server"
+          exit 2
+        fi
+        just apple xcframework --profile debug
+        just _xcodegen-local
+        KITHARA_LOCAL_DEV=1 \
+        TEST_RUNNER_KITHARA_TEST_SERVER_URL="$test_server_url" \
+          xcodebuild test \
+            -project apple/Examples/KitharaDemo/KitharaDemo.xcodeproj \
+            -scheme KitharaDemoUnitTests_iOS \
+            -destination "$destination"
+        ;;
+      integration-regressions)
+        # One `xcodebuild` invocation for the whole suite: the tests share a
+        # process. Naming a test runs only that one.
+        only_test="${2:-}"
+        destination=$(ios_destination) || exit 1
+        test_server_url="${KITHARA_TEST_SERVER_URL:-}"
+        if [[ -z "$test_server_url" ]]; then
+          echo "KITHARA_TEST_SERVER_URL must name the running hermetic test server"
+          exit 2
+        fi
+        known=$(grep -l 'IntegrationRegressionsIOS' \
+              apple/Examples/KitharaDemo/UnitTests/*.swift \
+            | xargs grep -h -A1 '@Test(' \
+            | grep -o 'func [A-Za-z0-9]*' | sed 's/^func //' | sort)
+        if [[ -n "$only_test" ]]; then
+          if ! grep -qxF "$only_test" <<< "$known"; then
+            echo "unknown integration regression test: $only_test"
+            echo "known tests:"
+            sed 's/^/  /' <<< "$known"
+            exit 2
+          fi
+        fi
+        just apple xcframework --profile debug
+        just _xcodegen-local
+        KITHARA_LOCAL_DEV=1 xcodebuild build-for-testing \
+            -project apple/Examples/KitharaDemo/KitharaDemo.xcodeproj \
+            -scheme KitharaDemoUnitTests_iOS \
+            -destination "$destination" || exit 1
+        selection=(-only-testing:KitharaDemoUnitTests_iOS/IntegrationRegressionsIOS)
+        log="$TMPDIR/kithara-integration-regressions.log"
+        if [[ -n "$only_test" ]]; then
+          selection=(
+            "-only-testing:KitharaDemoUnitTests_iOS/IntegrationRegressionsIOS/${only_test}()"
+          )
+          log="$TMPDIR/kithara-integration-regressions-$only_test.log"
+        fi
+        rc=0
+        KITHARA_LOCAL_DEV=1 TEST_RUNNER_KITHARA_TEST_SERVER_URL="$test_server_url" \
+          xcodebuild test-without-building \
+            -project apple/Examples/KitharaDemo/KitharaDemo.xcodeproj \
+            -scheme KitharaDemoUnitTests_iOS \
+            -destination "$destination" \
+            "${selection[@]}" \
+          > "$log" 2>&1 || rc=1
+        grep -E '✔ Test "|✘ Test "|↳ ' "$log" || true
+        echo "=== summary ==="
+        echo "log: $log"
+        if [[ $rc -eq 0 ]]; then
+          echo "all regressions green"
+        else
+          echo "red — see the ✘ lines above"
+          exit 1
+        fi
         ;;
       doc)
         just xtask apple docgen
@@ -857,7 +951,7 @@ apple MODE="xcframework" *ARGS:
         just xtask apple release
         ;;
       *)
-        echo "unknown apple mode: $mode (use xcframework|single|demo|xcode|ios|doc|release)"
+        echo "unknown apple mode: {{MODE}} (use xcframework|single|demo|xcode|ios|test|integration-regressions|doc|release)"
         exit 2
         ;;
     esac
