@@ -41,7 +41,8 @@ e2e = []
 # moves to `suite_light.rs` and leaves this lane.
 integration-regressions = []
 # Selenium-driven WebDriver tests. Gated off by default so `just test`
-# doesn't try to spin up trunk + chromedriver. Run via `just test-selenium`.
+# doesn't try to spin up trunk + chromedriver. Run via
+# `just test run --lane=selenium`.
 selenium = []
 # Deterministic virtual-clock test mode. Routes the platform's blocking waits
 # (`thread::park_timeout`, `sync::Condvar`) onto the quiescence engine so timed
@@ -49,7 +50,7 @@ selenium = []
 # path-dep against the virtual `kithara::platform::time::Instant`. Used by the
 # phase-continuity equivalence proof.
 flash = ["kithara/flash", "kithara-test-utils/flash"]
-# Poll-blocking detector; enabled by `just test --no-block=on`.
+# Poll-blocking detector; enabled by `just test run --no-block=on`.
 no-block = ["kithara/no-block", "kithara-test-utils/no-block"]
 # Run integration tests with the native Apple HTTP backend (`NSURLSession`).
 # This is separate from `apple`, which only brings Apple decode/audio variants
@@ -60,12 +61,14 @@ apple-fused-src = ["kithara/apple-fused-src"]
 # Cross-platform dependencies (used by both native and WASM tests)
 [dependencies]
 kithara = { workspace = true, features = ["full", "queue", "probe", "mock", "symphonia", "stretch-signalsmith", "stretch-bungee"] }
+kithara-devtools = { workspace = true }
 kithara-test-utils = { workspace = true, features = ["mock", "probe", "hang"] }
 
 # Crypto (for HLS encryption tests)
 aes = { workspace = true }
 
 # Async traits
+anyhow = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 
