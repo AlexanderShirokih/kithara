@@ -2,12 +2,12 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     controls::{
-        ButtonSkin, CellSkin, CheckboxSkin, ChipSkin, CrossfaderSkin, FaderSkin, KnobSkin, NavSkin,
-        ReadoutSkin, SegmentedSkin, SelectSkin, StatusDotSkin, SwatchSkin, TabLargeSkin,
-        TextInputSkin, TextSkin, ToggleSkin, VisSkin, VuStereoSkin, VuVerticalSkin,
+        ButtonSkin, CellSkin, CheckboxSkin, ChipSkin, CrossfaderSkin, FaderSkin, KnobSkin,
+        MenuSkin, NavSkin, ReadoutSkin, SegmentedSkin, SelectSkin, StatusDotSkin, SwatchSkin,
+        TabLargeSkin, TextInputSkin, TextSkin, ToggleSkin, VisSkin, VuStereoSkin, VuVerticalSkin,
     },
     panels::{
-        DeckSkin, DividerSkin, DragSkin, GlobalBarSkin, LayoutPreviewSkin, MeterSkin,
+        DeckSkin, DividerSkin, DragSkin, GlobalBarSkin, LayoutPreviewSkin, MeterSkin, PopSkin,
         TelemetrySkin, TrackListSkin, TreeSkin, WaveSkin,
     },
     primitives::{ChromeSkin, LayoutSkin, WindowSkin},
@@ -44,6 +44,8 @@ pub struct SkinDoc {
     pub nav: NavSkin,
     pub tab_large: TabLargeSkin,
     pub text: TextSkin,
+    pub menu: MenuSkin,
+    pub pop: PopSkin,
     pub segmented: SegmentedSkin,
     pub select: SelectSkin,
     pub status_dot: StatusDotSkin,
@@ -77,6 +79,8 @@ pub struct PaletteDoc {
     pub line_dim: String,
     pub line_inner: String,
     pub line_soft: String,
+    pub line_hi: String,
+    pub line_pop: String,
     pub text: String,
     pub text_dim: String,
     pub muted: String,
@@ -89,6 +93,7 @@ pub struct PaletteDoc {
     pub wave_low: String,
     pub wave_mid: String,
     pub wave_high: String,
+    pub shadow: String,
 }
 
 impl PaletteDoc {
@@ -105,6 +110,8 @@ impl PaletteDoc {
             &self.line_dim,
             &self.line_inner,
             &self.line_soft,
+            &self.line_hi,
+            &self.line_pop,
             &self.text,
             &self.text_dim,
             &self.muted,
@@ -117,6 +124,7 @@ impl PaletteDoc {
             &self.wave_low,
             &self.wave_mid,
             &self.wave_high,
+            &self.shadow,
         ] {
             parse_color(value, origin)?;
         }
@@ -138,6 +146,8 @@ pub enum ColorRole {
     LineDim,
     LineInner,
     LineSoft,
+    LineHi,
+    LinePop,
     Text,
     TextDim,
     Muted,
@@ -150,6 +160,7 @@ pub enum ColorRole {
     WaveLow,
     WaveMid,
     WaveHigh,
+    Shadow,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -222,5 +233,48 @@ fn bad_color(origin: &SourceUri, value: &str) -> UiDocError {
     UiDocError::BadColor {
         origin: origin.clone(),
         value: value.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use kithara_test_utils::kithara;
+
+    use super::*;
+    use crate::builtin;
+
+    #[kithara::test]
+    fn palette_holds_exactly_the_declared_roles() {
+        assert_eq!(
+            builtin::skin_doc().palette,
+            PaletteDoc {
+                bg: "#12121f".to_owned(),
+                bg_deep: "#0b0b16".to_owned(),
+                bg_inset: "#15152a".to_owned(),
+                bg_panel: "#20203a".to_owned(),
+                bg_footer: "#1b1b32".to_owned(),
+                bg_panel_2: "#26264a".to_owned(),
+                bg_select: "#26264a".to_owned(),
+                line: "#3b3b67".to_owned(),
+                line_dim: "#242442".to_owned(),
+                line_inner: "#2a2a4c".to_owned(),
+                line_soft: "#2a2a4c".to_owned(),
+                line_hi: "#4a4a7a".to_owned(),
+                line_pop: "#2f2f57".to_owned(),
+                text: "#e6e6e6".to_owned(),
+                text_dim: "#a7aac2".to_owned(),
+                muted: "#6f7189".to_owned(),
+                accent: "#bb9442".to_owned(),
+                accent_strong: "#d6ad59".to_owned(),
+                accent_soft: "#bb94422e".to_owned(),
+                danger: "#e64d4d".to_owned(),
+                success: "#66cc66".to_owned(),
+                warning: "#e6b333".to_owned(),
+                wave_low: "#eb298c".to_owned(),
+                wave_mid: "#f2d129".to_owned(),
+                wave_high: "#2ec7eb".to_owned(),
+                shadow: "#000000".to_owned(),
+            }
+        );
     }
 }

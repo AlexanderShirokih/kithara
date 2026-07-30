@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     document::ColorRole,
-    primitives::{FontSkin, FrameSkin, TextRoleSkin},
+    primitives::{FontSkin, FrameSkin, ShadowSkin, TextRoleSkin},
 };
 use crate::size::SizeSpec;
 
@@ -164,6 +164,18 @@ pub struct DragSkin {
     pub pad_x: f32,
 }
 
+/// Pop-over chrome; the frame and the cap draw outward of the content column.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct PopSkin {
+    pub background: ColorRole,
+    pub frame: FrameSkin,
+    pub cap_height: f32,
+    pub cap_color: ColorRole,
+    pub shadow: ShadowSkin,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -311,4 +323,36 @@ pub struct LayoutPreviewSkin {
     pub height: f32,
     pub line_width: f32,
     pub module_inset: f32,
+}
+
+#[cfg(test)]
+mod tests {
+    use kithara_test_utils::kithara;
+
+    use super::*;
+    use crate::builtin;
+
+    #[kithara::test]
+    fn pop_holds_exactly_the_declared_chrome() {
+        assert_eq!(
+            builtin::skin_doc().pop,
+            PopSkin {
+                background: ColorRole::BgFooter,
+                frame: FrameSkin {
+                    radius: 0.0,
+                    border_width: 1.0,
+                    border: ColorRole::LineHi,
+                },
+                cap_height: 2.0,
+                cap_color: ColorRole::Accent,
+                shadow: ShadowSkin {
+                    color: ColorRole::Shadow,
+                    alpha: 0.6,
+                    offset_x: 0.0,
+                    offset_y: 16.0,
+                    blur: 40.0,
+                },
+            }
+        );
+    }
 }

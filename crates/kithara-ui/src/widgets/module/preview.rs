@@ -129,6 +129,7 @@ impl UnitRect {
 
 fn collect_areas(node: &CompiledNode, bounds: UnitRect, areas: &mut Vec<PreviewArea>) {
     match node {
+        CompiledNode::Optional { child, .. } => collect_areas(child, bounds, areas),
         CompiledNode::Split { axis, children, .. } => {
             areas.push(PreviewArea {
                 bounds,
@@ -239,11 +240,12 @@ mod tests {
                 (EndpointCategory::Telemetry, "deck.playback.waveform") => {
                     Some(&self.scoped_waveform)
                 }
-                (EndpointCategory::Telemetry, "deck.track.title") => Some(&self.scoped_text),
-                (EndpointCategory::Telemetry, "deck.playback.tempo") => Some(&self.scoped_text),
-                (EndpointCategory::Parameter, "player.output.volume") => Some(&self.scalar),
+                (EndpointCategory::Telemetry, "deck.track.title" | "deck.playback.tempo") => {
+                    Some(&self.scoped_text)
+                }
+                (EndpointCategory::Parameter, "player.output.volume")
+                | (EndpointCategory::Model, "deck.view.zoom") => Some(&self.scalar),
                 (EndpointCategory::Telemetry, "player.output.levels") => Some(&self.stereo),
-                (EndpointCategory::Model, "deck.view.zoom") => Some(&self.scalar),
                 (EndpointCategory::Model, "library.visible_tracks") => Some(&self.track_list),
                 _ => None,
             }

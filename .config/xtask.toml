@@ -107,6 +107,7 @@ features = ["kithara-integration-tests/apple-net"]
 
 [test.lanes.workspace]
 program = "cargo"
+default_features = ["kithara-ui/render"]
 prefix_args = [
   "nextest",
   "run",
@@ -119,6 +120,7 @@ prefix_args = [
 
 [test.lanes.cached]
 program = "cargo"
+default_features = ["kithara-ui/render"]
 prefix_args = [
   "nextest",
   "run",

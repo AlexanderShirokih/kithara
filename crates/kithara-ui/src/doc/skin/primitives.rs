@@ -31,6 +31,17 @@ pub struct FrameSkin {
     pub border: ColorRole,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct ShadowSkin {
+    pub color: ColorRole,
+    pub alpha: f32,
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub blur: f32,
+}
+
 /// Scale beside a fader: hairlines with a longer, brighter one at centre.
 /// `thickness` runs along the scale, `length` across it, whatever the axis.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
