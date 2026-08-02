@@ -60,6 +60,15 @@ scaled by the tempo, an em dash while no analysis carries one. The percent is
 the accented reading and the BPM follows it dimmed. The deck's own bar prints
 the track's BPM, which the tempo does not move.
 
+`Kithara` owns one EQ mode for the whole studio; every deck keeps only its own
+desired gains in `UiState`. Right-clicking either knob bank opens its host-owned
+pointer popover in `StudioCache`; the popover itself owns no product state.
+Selecting a mode replaces every deck's player layout before the shared mode is
+committed. Three-band mode lays out HIGH / MID / LOW vertically, four-band mode
+HIGH / HI-MID / LO-MID / LOW. Switching modes remaps each deck's middle gains
+independently: one MID is copied to both four-band mids, and two mids are
+averaged on the way back.
+
 Beside the block the transport carries the pair of zoom buttons the design canon
 gives it, widening then narrowing left to right. They trigger
 `deck.view.zoom_in` and `deck.view.zoom_out`, which the studio applies to the
