@@ -310,8 +310,8 @@ fn render_node<'a>(
 
 fn control_event(path: &str, action: ControlAction) -> UiEvent {
     UiEvent::Control {
-        path: path.to_owned(),
         action,
+        path: path.to_owned(),
     }
 }
 
