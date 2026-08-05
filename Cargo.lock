@@ -4923,12 +4923,16 @@ version = "0.0.1-alpha4"
 dependencies = [
  "bon",
  "bungee-rs",
+ "delegate",
  "derive_more",
  "fast-interleave",
+ "fieldwork",
  "kithara-bufpool",
+ "kithara-test-utils",
  "kithara-workspace-hack",
  "num-traits",
  "signalsmith-stretch",
+ "smallvec",
  "thiserror 2.0.18",
  "tracing",
 ]
