@@ -29,6 +29,13 @@ pub(crate) enum Lane {
     LinuxCheck,
     LinuxWasm,
     LinuxTest,
+    LinuxDoc,
+    LinuxLoom,
+    LinuxIntegrationRegressions,
+    LinuxE2e,
+    LinuxE2eFused,
+    LinuxE2eGlide,
+    LinuxSelenium,
     LinuxCoverage,
     AndroidBuild,
     AndroidTest,
@@ -45,7 +52,6 @@ pub(crate) enum Lane {
     DepsUnused,
     DepsFeatures,
     DepsSemver,
-    Mutants,
     ReleaseXcframework,
     ReleaseDocs,
     ReleaseWasm,
@@ -87,6 +93,13 @@ impl Lane {
             | Self::LinuxCheck
             | Self::LinuxWasm
             | Self::LinuxTest
+            | Self::LinuxDoc
+            | Self::LinuxLoom
+            | Self::LinuxIntegrationRegressions
+            | Self::LinuxE2e
+            | Self::LinuxE2eFused
+            | Self::LinuxE2eGlide
+            | Self::LinuxSelenium
             | Self::LinuxCoverage
             | Self::WebChromium
             | Self::WebFirefox
@@ -94,8 +107,7 @@ impl Lane {
             | Self::DepsDeny
             | Self::DepsUnused
             | Self::DepsFeatures
-            | Self::DepsSemver
-            | Self::Mutants => CacheGroup::Linux,
+            | Self::DepsSemver => CacheGroup::Linux,
             Self::WindowsArm64 | Self::WindowsX64 | Self::WindowsX64Build => CacheGroup::Windows,
             Self::AndroidBuild
             | Self::AndroidTest
@@ -156,7 +168,7 @@ pub(crate) fn run(args: &RunArgs, ctx: &Ctx) -> Result<()> {
     // exists fails every compilation while reporting only that a C compiler
     // exited 254. Retire the server so it restarts with what this job asked
     // for; the cache on disk is untouched.
-    process.best_effort("sccache", &["--stop-server"], "retire the compiler cache");
+    process.ensure("sccache", &["--stop-server"], "retire the compiler cache");
 
     let result = match args.lane {
         Lane::AppleLint => lane::apple::lint(&process, &ci_config),
@@ -173,6 +185,15 @@ pub(crate) fn run(args: &RunArgs, ctx: &Ctx) -> Result<()> {
         Lane::LinuxCheck => lane::linux::check(&process),
         Lane::LinuxWasm => lane::linux::wasm(&process),
         Lane::LinuxTest => lane::linux::test(&process),
+        Lane::LinuxDoc => lane::linux::configured(&process, "doc"),
+        Lane::LinuxLoom => lane::linux::configured(&process, "loom"),
+        Lane::LinuxIntegrationRegressions => {
+            lane::linux::configured(&process, "integration-regressions")
+        }
+        Lane::LinuxE2e => lane::linux::configured(&process, "e2e"),
+        Lane::LinuxE2eFused => lane::linux::configured(&process, "e2e-fused"),
+        Lane::LinuxE2eGlide => lane::linux::configured(&process, "e2e-glide"),
+        Lane::LinuxSelenium => lane::linux::configured(&process, "selenium"),
         Lane::LinuxCoverage => lane::linux::coverage(&process),
         Lane::AndroidBuild => lane::android::build(&process),
         Lane::AndroidTest => lane::android::test(&process, &ci_config),
@@ -189,7 +210,6 @@ pub(crate) fn run(args: &RunArgs, ctx: &Ctx) -> Result<()> {
         Lane::DepsUnused => lane::deps::unused(&process),
         Lane::DepsFeatures => lane::deps::features(&process),
         Lane::DepsSemver => lane::deps::semver(&process),
-        Lane::Mutants => lane::deps::mutants(&process),
         Lane::ReleaseXcframework => {
             super::release::xcframework(&process, ctx, &ext, &temp, args.kind)
         }
