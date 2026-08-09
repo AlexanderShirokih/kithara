@@ -70,7 +70,7 @@ impl UrlSessionEvents for AppleSessionEvents {
                 },
                 Err,
             );
-            let _ = sender.send(result);
+            sender.send(result).ok();
         }
         if let Some(queue) = state.body_queue.take() {
             queue.close(terminal);
@@ -82,10 +82,11 @@ impl UrlSessionEvents for AppleSessionEvents {
             return;
         };
         let transactions = metrics.transactionMetrics();
-        for transaction in &transactions {
-            if !transaction.isReusedConnection() {
-                connection_metrics.record_opened_connection();
-            }
+        for _transaction in transactions
+            .iter()
+            .filter(|transaction| !transaction.isReusedConnection())
+        {
+            connection_metrics.record_opened_connection();
         }
     }
 
@@ -124,7 +125,7 @@ impl UrlSessionEvents for AppleSessionEvents {
                 })
         });
         if let Some(sender) = state.head_sender.take() {
-            let _ = sender.send(head);
+            sender.send(head).ok();
         }
     }
 }

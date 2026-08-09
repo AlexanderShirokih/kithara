@@ -462,7 +462,7 @@ where
         }
     }
 
-    if apple_standalone_supports(codec, container) {
+    if crate::apple::AppleAudioFileDemuxer::supports(codec, container) {
         tracing::debug!(
             ?codec,
             ?container,
@@ -478,11 +478,6 @@ where
         let _ = (source, container, config);
         Err(DecodeError::UnsupportedCodec { codec })
     }
-}
-
-#[cfg(all(feature = "apple", any(target_os = "macos", target_os = "ios")))]
-fn apple_standalone_supports(codec: AudioCodec, container: Option<ContainerFormat>) -> bool {
-    crate::apple::AppleAudioFileDemuxer::supports(codec, container)
 }
 
 #[cfg(all(feature = "apple", any(target_os = "macos", target_os = "ios")))]
