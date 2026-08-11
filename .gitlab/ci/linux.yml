@@ -27,6 +27,7 @@ linux:check:
 linux:test:
   extends:
     - .linux-job
+    - .judged
     - .measured
   interruptible: false
   rules:
@@ -44,7 +45,7 @@ linux:test:
     reports:
       junit: target/nextest/ci/junit.xml
     paths:
-      - target/nextest/ci/junit.xml
+      - target/junit/
 
 linux:coverage:
   extends:
