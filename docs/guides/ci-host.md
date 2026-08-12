@@ -212,6 +212,12 @@ Activate the staged launch daemon only after validation:
 sudo -E /Volumes/KitharaCI/services/bin/kithara-ci ci host activate-bridge
 ```
 
+Changes land here. GitLab used to be a pull mirror that forced its `main` from
+GitHub, and that mirror is disabled — it overwrote diverged branches, so
+switching it back on would throw away whatever had been merged here since.
+GitHub keeps receiving that history through the bridge below, and pull requests
+opened there come back through quarantine.
+
 GitLab `main` fast-forwards to GitHub only after the exact commit has a
 successful GitLab push pipeline, judged on the child pipeline the dispatch
 stage triggers rather than on its parent. A GitHub `main` update is imported
@@ -302,6 +308,15 @@ Health and cleanup run through launchd. They can also be checked directly:
 /Volumes/KitharaCI/services/bin/kithara-ci ci host health
 /Volumes/KitharaCI/services/bin/kithara-ci ci host cleanup
 ```
+
+Health reports every agent that has to hold a process for work to arrive —
+`colima`, `gitlab-runner`, `macos-runner` — and fails when one of them does not.
+An agent under `KeepAlive` that dies on startup stays loaded and keeps being
+restarted, so it is only distinguishable from a working one by having no
+process; the macOS runner spent an evening in that state, failing on a stale
+pins file, while health called the host well because it watched a different
+agent. From the outside that looks like nothing at all: the jobs the guest would
+have taken simply sit `pending`, and the pipeline reads as hung.
 
 ## GitLab project settings
 

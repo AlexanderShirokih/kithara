@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs::{self, OpenOptions},
     io::{self, Write},
     path::{Component, Path, PathBuf},
@@ -28,6 +29,23 @@ pub(super) struct HostStorage<'a> {
     process: &'a Process,
 }
 
+struct Agents;
+
+impl Agents {
+    const LAUNCHCTL: &'static str = "/bin/launchctl";
+    const RUNNING: &'static str = "running";
+    /// A host with no launchd has no agents to be wrong about, and the Linux
+    /// executor runs this same command.
+    const ABSENT: &'static str = "not-applicable";
+    /// The agents that must hold a process for work to reach this host.
+    ///
+    /// `cleanup` and `health` are periodic and spend nearly all their life
+    /// loaded with nothing running, so a missing process says nothing about
+    /// them. These three are `KeepAlive`, and a missing process means work has
+    /// stopped.
+    const ALWAYS_ON: &'static [&'static str] = &["colima", "gitlab-runner", "macos-runner"];
+}
+
 #[derive(Serialize)]
 struct Health<'a> {
     /// What is left where there is least of it. The thresholds are free-space
@@ -38,7 +56,10 @@ struct Health<'a> {
     /// Named so an operator can see which volume is under pressure without
     /// running `df` by hand.
     volumes: Vec<VolumeHealth>,
-    runner: &'a str,
+    /// Every agent that has to be running for work to reach this host, by label
+    /// suffix. Watching only the `gitlab-runner` agent missed the one whose death
+    /// stops the work without stopping anything else.
+    agents: BTreeMap<&'a str, &'static str>,
     timestamp: u64,
 }
 
@@ -234,14 +255,19 @@ impl<'a> HostStorage<'a> {
             })
             .collect();
         let (pressure, worst) = self.worst_pressure()?;
-        let runner = self.runner_state();
+        let agents = self.agent_states();
+        let down: Vec<&str> = agents
+            .iter()
+            .filter(|(_, state)| ![Agents::RUNNING, Agents::ABSENT].contains(*state))
+            .map(|(name, _)| *name)
+            .collect();
         serde_json::to_writer(
             io::stdout().lock(),
             &Health {
                 free_bytes: free,
                 pressure,
                 volumes,
-                runner,
+                agents,
                 timestamp: unix_time()?,
             },
         )
@@ -252,10 +278,28 @@ impl<'a> HostStorage<'a> {
         if pressure == Pressure::Reject {
             bail!("{} is above the new-job threshold", worst.display());
         }
-        if runner == "stopped" {
-            bail!("GitLab runner service is stopped");
+        if !down.is_empty() {
+            bail!("CI agents are not running: {}", down.join(", "));
         }
         Ok(())
+    }
+
+    /// What launchd says about each agent work depends on.
+    ///
+    /// On a host with no launchd there is nothing to say, and this must not
+    /// invent a fault: the Linux executor runs the same command.
+    fn agent_states(&self) -> BTreeMap<&'static str, &'static str> {
+        if !Path::new(Agents::LAUNCHCTL).is_file() {
+            return Agents::ALWAYS_ON
+                .iter()
+                .map(|name| (*name, Agents::ABSENT))
+                .collect();
+        }
+        let listing = self
+            .process
+            .capture(Agents::LAUNCHCTL, &["list"], "launchd agent listing")
+            .unwrap_or_default();
+        agent_states_from(&listing)
     }
 
     /// What is left on the volume with the least to spare — the one the pressure
@@ -617,28 +661,6 @@ impl<'a> HostStorage<'a> {
         }
     }
 
-    fn runner_state(&self) -> &'static str {
-        if !self.config.host.brew_tool("gitlab-runner").is_file() {
-            return "not-installed";
-        }
-        let uid = self
-            .process
-            .capture("id", &["-u"], "current user id")
-            .unwrap_or_default();
-        let label = format!("gui/{uid}/com.zvuk.kithara-ci.gitlab-runner");
-        if self
-            .process
-            .command("launchctl")
-            .args(["print", &label])
-            .output()
-            .is_ok_and(|output| output.status.success())
-        {
-            "running"
-        } else {
-            "stopped"
-        }
-    }
-
     fn is_removable(root: &Path, target: &Path) -> bool {
         if !root.is_absolute() || !target.is_absolute() {
             return false;
@@ -672,6 +694,34 @@ pub(super) fn pressure_for(available: u64, soft: u64, aggressive: u64, reject: u
     } else {
         Pressure::Normal
     }
+}
+
+/// `launchctl list` prints `PID  status  label`, and the dash in the PID column
+/// is the point: an agent restarted by `KeepAlive` stays loaded while holding no
+/// process, which is what a crash loop looks like from outside.
+fn agent_states_from(listing: &str) -> BTreeMap<&'static str, &'static str> {
+    Agents::ALWAYS_ON
+        .iter()
+        .map(|name| {
+            let label = format!("com.zvuk.kithara-ci.{name}");
+            let state = listing
+                .lines()
+                .find_map(|line| {
+                    let mut columns = line.split_whitespace();
+                    let pid = columns.next()?;
+                    columns.next()?;
+                    (columns.next()? == label).then(|| {
+                        if pid == "-" {
+                            "stopped"
+                        } else {
+                            Agents::RUNNING
+                        }
+                    })
+                })
+                .unwrap_or("not-loaded");
+            (*name, state)
+        })
+        .collect()
 }
 
 fn persistent_target_dirs(root: &Path) -> Result<Vec<PathBuf>> {
@@ -811,12 +861,8 @@ mod tests {
         assert_eq!(storage.pressure_of(&half(15)), Pressure::Reject);
     }
 
-    /// The blocks Docker frees inside the guest stay allocated in a file this
-    /// volume pays for until something asks for them back, and waiting for
-    /// pressure to ask is what let 63 gibibytes sit there while the volume drifted
-    /// toward refusing work. A tempdir has more than the sixty bytes this config
-    /// calls a floor, so the run below is `Normal` — the pressure that used to
-    /// skip the trim entirely.
+    /// A tempdir has more than the sixty bytes this config calls a floor, so the
+    /// run below is `Normal` — the pressure that used to skip the trim entirely.
     #[cfg(unix)]
     #[test]
     fn the_guest_is_trimmed_even_with_nothing_under_pressure() {
@@ -845,6 +891,40 @@ mod tests {
         assert!(
             arguments.contains("fstrim"),
             "cleanup asked the guest for {arguments} instead of a trim"
+        );
+    }
+
+    /// Verbatim from the host while the macOS runner was crash-looping.
+    const CRASH_LOOP_LISTING: &str = "\
+82778\t0\tcom.zvuk.kithara-ci.gitlab-runner
+-\t0\tcom.zvuk.kithara-ci.health
+-\t1\tcom.zvuk.kithara-ci.macos-runner
+-\t0\tcom.zvuk.kithara-ci.cleanup
+54543\t0\tcom.zvuk.kithara-ci.colima
+";
+
+    #[test]
+    fn an_agent_restarting_into_nothing_reads_as_stopped() {
+        assert_eq!(
+            agent_states_from(CRASH_LOOP_LISTING).get("macos-runner"),
+            Some(&"stopped")
+        );
+    }
+
+    #[test]
+    fn the_agents_still_holding_a_process_read_as_running() {
+        let states = agent_states_from(CRASH_LOOP_LISTING);
+        assert_eq!(states.get("gitlab-runner"), Some(&"running"));
+        assert_eq!(states.get("colima"), Some(&"running"));
+    }
+
+    /// An agent nobody ever loaded is as unable to take work as one that keeps
+    /// dying, and reads differently so an operator knows which to fix.
+    #[test]
+    fn an_agent_missing_from_the_listing_reads_as_not_loaded() {
+        assert_eq!(
+            agent_states_from("82778\t0\tcom.zvuk.kithara-ci.gitlab-runner\n").get("macos-runner"),
+            Some(&"not-loaded")
         );
     }
 
