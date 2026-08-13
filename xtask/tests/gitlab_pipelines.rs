@@ -3,6 +3,7 @@ use std::{collections::BTreeSet, fs, path::Path};
 use serde_yaml_ng::{Mapping, Value};
 
 const MERGE_REQUEST_KIND: &str = "merge-request";
+const VERDICT_REPORT_DIR: &str = ".ci-artifacts/junit/";
 
 struct GitlabConfig {
     common: Value,
@@ -391,6 +392,57 @@ fn child_pipeline_includes_apple_lanes_and_the_blocking_verdict() {
     );
     assert_eq!(verdict.get("when").and_then(Value::as_str), Some("always"));
     assert!(!verdict.contains_key("allow_failure"));
+}
+
+#[test]
+fn judged_jobs_stage_only_checkout_cleaned_verdict_evidence() {
+    let root = workspace_root();
+    for file in [
+        "apple.yml",
+        "android.yml",
+        "linux.yml",
+        "web.yml",
+        "verdict.yml",
+    ] {
+        let document = yaml(root.join(".gitlab/ci").join(file));
+        let jobs = mapping(&document, "a CI lane document");
+        for (name, definition) in jobs {
+            let Some(name) = name.as_str() else {
+                continue;
+            };
+            let Some(paths) = definition
+                .as_mapping()
+                .and_then(|definition| definition.get("artifacts"))
+                .and_then(Value::as_mapping)
+                .and_then(|artifacts| artifacts.get("paths"))
+                .and_then(Value::as_sequence)
+            else {
+                continue;
+            };
+            let verdict_paths = paths
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|path| path.ends_with("junit/"))
+                .collect::<Vec<_>>();
+            assert!(
+                verdict_paths.iter().all(|path| *path == VERDICT_REPORT_DIR),
+                "`{name}` stages verdict evidence outside the checkout-cleaned owner"
+            );
+        }
+    }
+
+    let pipeline = yaml(root.join(".gitlab/ci/pipeline.yml"));
+    let variables = mapping(
+        mapping(&pipeline, "the child pipeline")
+            .get("variables")
+            .expect("child pipeline has variables"),
+        "the child pipeline variables",
+    );
+    let clean = variables
+        .get("GIT_CLEAN_FLAGS")
+        .and_then(Value::as_str)
+        .expect("child pipeline defines checkout cleanup");
+    assert!(!clean.contains(".ci-artifacts"));
 }
 
 #[test]

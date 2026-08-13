@@ -50,7 +50,7 @@ apple:test:
     reports:
       junit: target/nextest/ci/junit.xml
     paths:
-      - target/junit/
+      - .ci-artifacts/junit/
 
 # The same suite with the clock left real. It owns a second target directory,
 # so it is another whole build of the workspace, and what it guards is the
@@ -74,7 +74,7 @@ apple:test-flash-off:
     reports:
       junit: target-flash-off/nextest/ci/junit.xml
     paths:
-      - target/junit/
+      - .ci-artifacts/junit/
 
 apple:xcframework:
   extends:
@@ -112,7 +112,7 @@ apple:swift-test:
     reports:
       junit: target/xcresult/swift-test.junit.xml
     paths:
-      - target/junit/
+      - .ci-artifacts/junit/
 
 apple:ios:
   extends: .apple-job
@@ -146,7 +146,7 @@ apple:ios-test:
     reports:
       junit: target/xcresult/ios-test.junit.xml
     paths:
-      - target/junit/
+      - .ci-artifacts/junit/
 
 # The resampler axis: the same end-to-end playback through three source-rate
 # conversion shapes, which is what a change to decode, blending or output can

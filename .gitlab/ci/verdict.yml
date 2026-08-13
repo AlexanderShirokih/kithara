@@ -49,4 +49,4 @@ verdict:
   artifacts:
     when: always
     paths:
-      - target/junit/
+      - .ci-artifacts/junit/

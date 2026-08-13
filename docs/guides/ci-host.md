@@ -251,7 +251,7 @@ red it did not cause. The lanes the verdict judges therefore carry
 `allow_failure: true` and one job decides: a run is held for failing something
 the default branch is not.
 
-Each lane leaves what it produced in `target/junit/`, collected by the lane
+Each lane leaves what it produced in `.ci-artifacts/junit/`, collected by the lane
 dispatcher rather than by the lane itself — the build directory survives between
 jobs, so the report a lane is expected to write is removed before it runs. A
 lane that can name no test leaves a marker carrying its own name, because GitLab

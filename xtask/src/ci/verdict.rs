@@ -46,7 +46,7 @@ enum VerdictCommand {
 #[derive(Debug, Args)]
 struct Common {
     /// Directory holding this run's `JUnit` reports.
-    #[arg(long, default_value = "target/junit")]
+    #[arg(long, default_value = ".ci-artifacts/junit")]
     reports: PathBuf,
     /// Journal kept on the executor, outliving artifact expiry.
     #[arg(long, env = "KITHARA_VERDICT_JOURNAL")]
@@ -241,7 +241,7 @@ fn case_id(case: &CaseTiming) -> String {
 /// Where the verdict expects every lane to leave what it produced. Artifacts
 /// travel between runners at their own paths, so one directory is what makes a
 /// report from the simulator and a report from a container comparable.
-pub(crate) const REPORT_DIR: &str = "target/junit";
+pub(crate) const REPORT_DIR: &str = ".ci-artifacts/junit";
 
 /// The report a lane writes, before it is collected. A lane that writes none
 /// still leaves a marker when it fails, which is how a browser suite or a
@@ -259,10 +259,23 @@ pub(crate) fn produced_report(lane: &str) -> Option<&'static str> {
     }
 }
 
-/// The build directory survives between jobs on this executor, so a report left
-/// by an earlier lane would be collected as this one's. Remove it first: a lane
-/// that produces nothing must publish nothing.
+/// The build directory survives between jobs on this executor. Producers empty
+/// the artifact staging directory as well as their raw report. The staging path
+/// is outside the persistent Cargo targets, so checkout cleanup removes absent
+/// evidence before `GitLab` downloads a verdict's needs.
 pub(crate) fn clear(root: &Path, lane: &str) -> Result<()> {
+    let directory = root.join(REPORT_DIR);
+    if lane != "verdict" && directory.exists() {
+        fs::remove_dir_all(&directory)
+            .with_context(|| format!("removing {}", directory.display()))?;
+    }
+    for extension in ["xml", "failed"] {
+        let evidence = directory.join(format!("{lane}.{extension}"));
+        if evidence.exists() {
+            fs::remove_file(&evidence)
+                .with_context(|| format!("removing {}", evidence.display()))?;
+        }
+    }
     let Some(report) = produced_report(lane) else {
         return Ok(());
     };
@@ -651,6 +664,67 @@ mod tests {
                 .exists(),
             "the build directory survives between jobs, so a stale report must not travel"
         );
+    }
+
+    #[test]
+    fn a_retried_lane_publishes_only_its_current_evidence() {
+        let directory = tempfile::tempdir().unwrap();
+        let reports = directory.path().join(REPORT_DIR);
+        fs::create_dir_all(&reports).unwrap();
+        fs::write(reports.join("apple-ios-test.failed"), "").unwrap();
+        fs::write(reports.join("apple-lint.failed"), "").unwrap();
+        fs::write(reports.join("apple-test.xml"), "<testsuites/>").unwrap();
+
+        clear(directory.path(), "apple-ios-test").unwrap();
+        let fresh = directory.path().join("target/xcresult/ios-test.junit.xml");
+        fs::create_dir_all(fresh.parent().unwrap()).unwrap();
+        fs::write(&fresh, "<testsuites tests=\"1\"/>").unwrap();
+        gather(directory.path(), "apple-ios-test", false).unwrap();
+
+        let mut entries = fs::read_dir(&reports)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        entries.sort();
+        assert_eq!(entries, ["apple-ios-test.xml"]);
+    }
+
+    #[test]
+    fn a_retried_verdict_keeps_downloaded_evidence_but_drops_its_own_marker() {
+        let directory = tempfile::tempdir().unwrap();
+        let reports = directory.path().join(REPORT_DIR);
+        fs::create_dir_all(&reports).unwrap();
+        fs::write(reports.join("apple-test.xml"), "<testsuites/>").unwrap();
+        fs::write(reports.join("apple-ios-test.failed"), "").unwrap();
+        fs::write(reports.join("verdict.failed"), "").unwrap();
+
+        clear(directory.path(), "verdict").unwrap();
+
+        let mut entries = fs::read_dir(&reports)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        entries.sort();
+        assert_eq!(entries, ["apple-ios-test.failed", "apple-test.xml"]);
+    }
+
+    #[test]
+    fn checkout_cleanup_removes_stale_evidence_before_needs_are_downloaded() {
+        let directory = tempfile::tempdir().unwrap();
+        let reports = directory.path().join(REPORT_DIR);
+        fs::create_dir_all(&reports).unwrap();
+        fs::write(reports.join("apple-ios-test.failed"), "").unwrap();
+
+        fs::remove_dir_all(directory.path().join(".ci-artifacts")).unwrap();
+        fs::create_dir_all(&reports).unwrap();
+        fs::write(reports.join("apple-ios-test.xml"), "<testsuites/>").unwrap();
+        clear(directory.path(), "verdict").unwrap();
+
+        let entries = fs::read_dir(&reports)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(entries, ["apple-ios-test.xml"]);
     }
 
     #[test]
