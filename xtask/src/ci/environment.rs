@@ -46,6 +46,7 @@ impl CacheTrust {
 }
 
 pub(crate) struct CiEnvironment {
+    shared_root: PathBuf,
     pub(crate) cache_root: PathBuf,
     pub(crate) swiftpm_cache: PathBuf,
     pub(crate) temp: PathBuf,
@@ -183,6 +184,7 @@ impl CiEnvironment {
         }
 
         Ok(Self {
+            shared_root,
             cache_root,
             swiftpm_cache,
             temp,
@@ -193,6 +195,10 @@ impl CiEnvironment {
 
     pub(crate) fn vars(&self) -> BTreeMap<OsString, OsString> {
         self.vars.clone()
+    }
+
+    pub(crate) fn shared_root(&self) -> &Path {
+        &self.shared_root
     }
 }
 

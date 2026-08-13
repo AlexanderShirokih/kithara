@@ -24,7 +24,8 @@ pub(super) enum Pressure {
 }
 
 pub(super) struct HostStorage<'a> {
-    root: PathBuf,
+    host_root: PathBuf,
+    build_root: PathBuf,
     config: &'a CiConfig,
     process: &'a Process,
 }
@@ -113,20 +114,27 @@ impl<'a> HostStorage<'a> {
     ];
 
     pub(super) fn new(config: &'a CiConfig, process: &'a Process) -> Result<Self> {
-        let root = config.host.host_root.clone();
-        validate_root(&root)?;
+        let host_root = config.host.host_root.clone();
+        let build_root = config.host.build_root().to_path_buf();
+        validate_root(&host_root)?;
+        validate_root(&build_root)?;
         Ok(Self {
-            root,
+            host_root,
+            build_root,
             config,
             process,
         })
     }
 
     #[cfg(test)]
-    fn for_test(root: PathBuf, config: &'a CiConfig, process: &'a Process) -> Result<Self> {
-        validate_root(&root)?;
+    fn for_test(config: &'a CiConfig, process: &'a Process) -> Result<Self> {
+        let host_root = config.host.host_root.clone();
+        let build_root = config.host.build_root().to_path_buf();
+        validate_root(&host_root)?;
+        validate_root(&build_root)?;
         Ok(Self {
-            root,
+            host_root,
+            build_root,
             config,
             process,
         })
@@ -144,12 +152,17 @@ impl<'a> HostStorage<'a> {
         }
 
         for name in ["cache", "logs", "toolchains", "vm", "workspaces"] {
-            let directory = self.root.join(name);
+            let directory = self.host_root.join(name);
             if !directory.is_dir() {
                 bail!("missing CI directory: {}", directory.display());
             }
             writable_probe(&directory)?;
         }
+        let workspaces = self.build_root.join("workspaces");
+        if !workspaces.is_dir() {
+            bail!("missing CI directory: {}", workspaces.display());
+        }
+        writable_probe(&workspaces)?;
         self.process.require_tools(&["git", "sccache"])?;
         info!(free_bytes = free, ?pressure, "host preflight passed");
         Ok(())
@@ -165,31 +178,31 @@ impl<'a> HostStorage<'a> {
         let (pressure, volume) = self.worst_pressure()?;
         info!(free_bytes = initial, ?pressure, volume = %volume.display(), "cleanup started");
 
-        self.prune_old_trees("workspaces/tmp", Self::DAY)?;
-        self.prune_old_trees("workspaces/builds", Self::DAY)?;
-        self.prune_old_trees("workspaces/gitlab", Self::DAY)?;
-        self.prune_old_trees("vm/overlays", Self::DAY)?;
-        self.prune_old_trees("vm/android/avd", Self::DAY)?;
-        self.prune_old_files("logs", 14 * Self::DAY)?;
+        self.prune_host_trees("workspaces/tmp", Self::DAY)?;
+        self.prune_host_trees("workspaces/builds", Self::DAY)?;
+        self.prune_build_trees("workspaces/gitlab", Self::DAY)?;
+        self.prune_host_trees("vm/overlays", Self::DAY)?;
+        self.prune_host_trees("vm/android/avd", Self::DAY)?;
+        self.prune_host_files("logs", 14 * Self::DAY)?;
         self.rotate_logs()?;
         self.prune_retired_caches(7 * Self::DAY)?;
 
         match pressure {
             Pressure::Soft => {
-                self.prune_old_trees("cache/quarantine", 7 * Self::DAY)?;
-                self.prune_old_trees("cache/review", 30 * Self::DAY)?;
-                self.prune_old_trees("cache/bootstrap/quarantine", 7 * Self::DAY)?;
-                self.prune_old_trees("cache/bootstrap/review", 30 * Self::DAY)?;
+                self.prune_host_trees("cache/quarantine", 7 * Self::DAY)?;
+                self.prune_host_trees("cache/review", 30 * Self::DAY)?;
+                self.prune_host_trees("cache/bootstrap/quarantine", 7 * Self::DAY)?;
+                self.prune_host_trees("cache/bootstrap/review", 30 * Self::DAY)?;
                 self.prune_docker_cache("720h");
             }
             Pressure::Aggressive | Pressure::Reject => {
-                self.prune_old_trees("cache/quarantine", Duration::ZERO)?;
-                self.prune_old_trees("cache/review", Duration::ZERO)?;
-                self.prune_old_trees("cache/bootstrap/quarantine", Duration::ZERO)?;
-                self.prune_old_trees("cache/bootstrap/review", Duration::ZERO)?;
-                self.prune_old_trees("cache/trusted", 7 * Self::DAY)?;
-                self.prune_old_trees("cache/bootstrap/trusted", 7 * Self::DAY)?;
-                self.prune_old_trees("vm/tart/cache", 7 * Self::DAY)?;
+                self.prune_host_trees("cache/quarantine", Duration::ZERO)?;
+                self.prune_host_trees("cache/review", Duration::ZERO)?;
+                self.prune_host_trees("cache/bootstrap/quarantine", Duration::ZERO)?;
+                self.prune_host_trees("cache/bootstrap/review", Duration::ZERO)?;
+                self.prune_host_trees("cache/trusted", 7 * Self::DAY)?;
+                self.prune_host_trees("cache/bootstrap/trusted", 7 * Self::DAY)?;
+                self.prune_host_trees("vm/tart/cache", 7 * Self::DAY)?;
                 self.prune_docker_cache("168h");
             }
             Pressure::Normal => {}
@@ -205,7 +218,7 @@ impl<'a> HostStorage<'a> {
         // the drift reach refusal five times.
         self.trim_linux_guest();
 
-        let target_dirs = persistent_target_dirs(&self.root.join("workspaces/gitlab"))?;
+        let target_dirs = persistent_target_dirs(&self.build_root.join("workspaces/gitlab"))?;
         build_cache::enforce_budget(&target_dirs, self.config.host.build_cache_budget_bytes()?)?;
 
         let (mut final_pressure, _) = self.worst_pressure()?;
@@ -226,8 +239,8 @@ impl<'a> HostStorage<'a> {
             final_pressure = self.worst_pressure()?.0;
         }
         if final_pressure == Pressure::Reject {
-            self.prune_old_trees("cache/trusted", Duration::ZERO)?;
-            self.prune_old_trees("cache/bootstrap/trusted", Duration::ZERO)?;
+            self.prune_host_trees("cache/trusted", Duration::ZERO)?;
+            self.prune_host_trees("cache/bootstrap/trusted", Duration::ZERO)?;
             self.prune_retired_caches(Duration::ZERO)?;
             final_pressure = self.worst_pressure()?.0;
         }
@@ -326,11 +339,20 @@ impl<'a> HostStorage<'a> {
     /// shared volume. Anything reached through `vm` that turns out to live on
     /// another filesystem is measured as well.
     fn volumes(&self) -> Result<Vec<Volume>> {
-        let mut volumes = vec![Volume::read(&self.root)?];
-        let guests = self.root.join("vm");
+        let mut volumes = vec![Volume::read(&self.host_root)?];
+        if self.build_root != self.host_root
+            && let Ok(build_root) = self.build_root.canonicalize()
+            && !build_root.starts_with(&self.host_root)
+        {
+            volumes.push(Volume::read(&build_root)?);
+        }
+        let guests = self.host_root.join("vm");
         if guests.is_dir()
             && let Ok(guests) = guests.canonicalize()
-            && !guests.starts_with(&self.root)
+            && !guests.starts_with(&self.host_root)
+            && !volumes
+                .iter()
+                .any(|volume| guests.starts_with(&volume.path))
         {
             volumes.push(Volume::read(&guests)?);
         }
@@ -343,7 +365,7 @@ impl<'a> HostStorage<'a> {
     /// failure this split exists to prevent.
     fn worst_pressure(&self) -> Result<(Pressure, PathBuf)> {
         let volumes = self.volumes()?;
-        let mut worst = (Pressure::Normal, self.root.clone());
+        let mut worst = (Pressure::Normal, self.host_root.clone());
         for volume in volumes {
             let pressure = self.pressure_of(&volume);
             if pressure > worst.0 {
@@ -383,7 +405,7 @@ impl<'a> HostStorage<'a> {
     /// Cache namespaces nothing writes to any more, once they have gone quiet
     /// for a week.
     fn prune_retired_caches(&self, age: Duration) -> Result<()> {
-        let directory = self.root.join("cache");
+        let directory = self.host_root.join("cache");
         if !directory.is_dir() {
             return Ok(());
         }
@@ -411,8 +433,16 @@ impl<'a> HostStorage<'a> {
         Ok(())
     }
 
-    fn prune_old_trees(&self, relative: &str, age: Duration) -> Result<()> {
-        let directory = self.root.join(relative);
+    fn prune_host_trees(&self, relative: &str, age: Duration) -> Result<()> {
+        self.prune_old_trees(&self.host_root, relative, age)
+    }
+
+    fn prune_build_trees(&self, relative: &str, age: Duration) -> Result<()> {
+        self.prune_old_trees(&self.build_root, relative, age)
+    }
+
+    fn prune_old_trees(&self, root: &Path, relative: &str, age: Duration) -> Result<()> {
+        let directory = root.join(relative);
         if !directory.is_dir() {
             return Ok(());
         }
@@ -434,8 +464,8 @@ impl<'a> HostStorage<'a> {
         Ok(())
     }
 
-    fn prune_old_files(&self, relative: &str, age: Duration) -> Result<()> {
-        let directory = self.root.join(relative);
+    fn prune_host_files(&self, relative: &str, age: Duration) -> Result<()> {
+        let directory = self.host_root.join(relative);
         if !directory.is_dir() {
             return Ok(());
         }
@@ -470,7 +500,7 @@ impl<'a> HostStorage<'a> {
     }
 
     fn rotate_logs(&self) -> Result<()> {
-        let directory = self.root.join("logs");
+        let directory = self.host_root.join("logs");
         if !directory.is_dir() {
             return Ok(());
         }
@@ -521,7 +551,7 @@ impl<'a> HostStorage<'a> {
     }
 
     fn remove_path(&self, path: &Path) -> Result<()> {
-        if !Self::is_removable(&self.root, path) {
+        if !self.is_removable(path) {
             bail!("refusing to remove unsafe CI path: {}", path.display());
         }
         let metadata = match fs::symlink_metadata(path) {
@@ -539,7 +569,7 @@ impl<'a> HostStorage<'a> {
     }
 
     fn prune_docker_cache(&self, age: &str) {
-        let home = self.root.join("home").join(&self.config.host.ci_user);
+        let home = self.host_root.join("home").join(&self.config.host.ci_user);
         let socket = home.join(".colima/kithara/docker.sock");
         let docker = self.config.host.brew_tool("docker");
         if !socket.exists() || !docker.is_file() {
@@ -572,7 +602,7 @@ impl<'a> HostStorage<'a> {
         if !colima.is_file() {
             return;
         }
-        let home = self.root.join("home").join(&self.config.host.ci_user);
+        let home = self.host_root.join("home").join(&self.config.host.ci_user);
         let mut command = self.process.command(colima);
         command.env("COLIMA_HOME", home.join(".colima")).args([
             "ssh",
@@ -625,7 +655,7 @@ impl<'a> HostStorage<'a> {
             warn!("limactl is absent, so the guest's data disk stays allocated");
             return;
         }
-        let home = self.root.join("home").join(&self.config.host.ci_user);
+        let home = self.host_root.join("home").join(&self.config.host.ci_user);
         let mut command = self.process.command(limactl);
         command.env("LIMA_HOME", home.join(".colima/_lima")).args([
             "disk",
@@ -661,25 +691,30 @@ impl<'a> HostStorage<'a> {
         }
     }
 
-    fn is_removable(root: &Path, target: &Path) -> bool {
-        if !root.is_absolute() || !target.is_absolute() {
-            return false;
-        }
-        let Ok(relative) = target.strip_prefix(root) else {
-            return false;
-        };
-        let mut components = relative.components();
-        let Some(Component::Normal(first)) = components.next() else {
-            return false;
-        };
-        Self::REMOVABLE_ROOTS
-            .iter()
-            .any(|allowed| first == std::ffi::OsStr::new(allowed))
-            && components.next().is_some()
-            && relative
-                .components()
-                .all(|component| matches!(component, Component::Normal(_)))
+    fn is_removable(&self, target: &Path) -> bool {
+        is_removable_under(&self.host_root, target, Self::REMOVABLE_ROOTS)
+            || is_removable_under(&self.build_root, target, &["workspaces"])
     }
+}
+
+fn is_removable_under(root: &Path, target: &Path, removable_roots: &[&str]) -> bool {
+    if !root.is_absolute() || !target.is_absolute() {
+        return false;
+    }
+    let Ok(relative) = target.strip_prefix(root) else {
+        return false;
+    };
+    let mut components = relative.components();
+    let Some(Component::Normal(first)) = components.next() else {
+        return false;
+    };
+    removable_roots
+        .iter()
+        .any(|allowed| first == std::ffi::OsStr::new(allowed))
+        && components.next().is_some()
+        && relative
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
 }
 
 /// Floors are free-space limits, so a smaller number is a tighter one: at or
@@ -842,8 +877,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let cfg = config(directory.path());
         let process = Process::new(directory.path(), BTreeMap::new());
-        let storage =
-            HostStorage::for_test(directory.path().to_path_buf(), &cfg, &process).unwrap();
+        let storage = HostStorage::for_test(&cfg, &process).unwrap();
         // The volume this replaces a proportional rule for: 279 GB total with
         // 170 used never came within a hundred of a 285 reject threshold, so
         // cleanup stayed `Normal` and never recycled the guest, while jobs were
@@ -882,8 +916,7 @@ mod tests {
         fs::set_permissions(bin.join("colima"), fs::Permissions::from_mode(0o755)).unwrap();
 
         let process = Process::new(directory.path(), BTreeMap::new());
-        let storage =
-            HostStorage::for_test(directory.path().to_path_buf(), &cfg, &process).unwrap();
+        let storage = HostStorage::for_test(&cfg, &process).unwrap();
         assert_eq!(storage.worst_pressure().unwrap().0, Pressure::Normal);
         storage.cleanup().unwrap();
 
@@ -935,6 +968,28 @@ mod tests {
     }
 
     #[test]
+    fn a_distinct_checkout_volume_is_monitored() {
+        let directory = tempfile::tempdir().unwrap();
+        let host_root = directory.path().join("host");
+        let build_root = directory.path().join("builds");
+        fs::create_dir_all(&host_root).unwrap();
+        fs::create_dir_all(&build_root).unwrap();
+        let mut cfg = config(&host_root);
+        cfg.host.build_root = Some(build_root.clone());
+        let process = Process::new(directory.path(), BTreeMap::new());
+        let storage = HostStorage::for_test(&cfg, &process).unwrap();
+
+        let volumes = storage.volumes().unwrap();
+
+        assert!(volumes.iter().any(|volume| volume.path == host_root));
+        assert!(
+            volumes
+                .iter()
+                .any(|volume| volume.path == build_root.canonicalize().unwrap())
+        );
+    }
+
+    #[test]
     fn a_namespace_nothing_writes_to_is_pruned_and_the_live_ones_are_not() {
         let directory = tempfile::tempdir().unwrap();
         let cache = directory.path().join("cache");
@@ -949,8 +1004,7 @@ mod tests {
         }
         let cfg = config(directory.path());
         let process = Process::new(directory.path(), BTreeMap::new());
-        let storage =
-            HostStorage::for_test(directory.path().to_path_buf(), &cfg, &process).unwrap();
+        let storage = HostStorage::for_test(&cfg, &process).unwrap();
 
         storage.prune_retired_caches(Duration::ZERO).unwrap();
 
@@ -969,8 +1023,7 @@ mod tests {
         fs::create_dir_all(cache.join("reapi")).unwrap();
         let cfg = config(directory.path());
         let process = Process::new(directory.path(), BTreeMap::new());
-        let storage =
-            HostStorage::for_test(directory.path().to_path_buf(), &cfg, &process).unwrap();
+        let storage = HostStorage::for_test(&cfg, &process).unwrap();
 
         storage.prune_retired_caches(HostStorage::DAY).unwrap();
 
@@ -985,8 +1038,7 @@ mod tests {
         }
         let cfg = config(directory.path());
         let process = Process::new(directory.path(), BTreeMap::new());
-        let storage =
-            HostStorage::for_test(directory.path().to_path_buf(), &cfg, &process).unwrap();
+        let storage = HostStorage::for_test(&cfg, &process).unwrap();
         let safe = directory.path().join("workspaces/tmp/old");
         fs::create_dir_all(&safe).unwrap();
         storage.remove_path(&safe).unwrap();
@@ -997,6 +1049,73 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_allows_only_workspace_descendants_on_the_checkout_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let host_root = directory.path().join("host");
+        let build_root = directory.path().join("builds");
+        fs::create_dir_all(&host_root).unwrap();
+        fs::create_dir_all(&build_root).unwrap();
+        let mut cfg = config(&host_root);
+        cfg.host.build_root = Some(build_root.clone());
+        let process = Process::new(directory.path(), BTreeMap::new());
+        let storage = HostStorage::for_test(&cfg, &process).unwrap();
+
+        let workspace = build_root.join("workspaces/gitlab/old");
+        fs::create_dir_all(&workspace).unwrap();
+        storage.remove_path(&workspace).unwrap();
+        assert!(!workspace.exists());
+
+        assert!(storage.remove_path(&build_root).is_err());
+        let cache = build_root.join("cache/old");
+        fs::create_dir_all(&cache).unwrap();
+        assert!(storage.remove_path(&cache).is_err());
+    }
+
+    #[test]
+    fn persistent_targets_are_discovered_under_the_checkout_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let host_root = directory.path().join("host");
+        let build_root = directory.path().join("builds");
+        let checkout = build_root.join("workspaces/gitlab/project");
+        fs::create_dir_all(checkout.join("target/debug")).unwrap();
+        fs::write(checkout.join("Cargo.toml"), "[workspace]\n").unwrap();
+        fs::create_dir_all(host_root.join("workspaces/gitlab/stale/target/debug")).unwrap();
+        fs::write(
+            host_root.join("workspaces/gitlab/stale/Cargo.toml"),
+            "[workspace]\n",
+        )
+        .unwrap();
+
+        let targets = persistent_target_dirs(&build_root.join("workspaces/gitlab")).unwrap();
+
+        assert_eq!(targets, [checkout.join("target")]);
+    }
+
+    #[test]
+    fn gitlab_workspace_pruning_uses_the_checkout_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let host_root = directory.path().join("host");
+        let build_root = directory.path().join("builds");
+        fs::create_dir_all(&host_root).unwrap();
+        fs::create_dir_all(&build_root).unwrap();
+        let mut cfg = config(&host_root);
+        cfg.host.build_root = Some(build_root.clone());
+        let process = Process::new(directory.path(), BTreeMap::new());
+        let storage = HostStorage::for_test(&cfg, &process).unwrap();
+        let selected = build_root.join("workspaces/gitlab/old");
+        let stale = host_root.join("workspaces/gitlab/old");
+        fs::create_dir_all(&selected).unwrap();
+        fs::create_dir_all(&stale).unwrap();
+
+        storage
+            .prune_build_trees("workspaces/gitlab", Duration::ZERO)
+            .unwrap();
+
+        assert!(!selected.exists());
+        assert!(stale.exists());
+    }
+
+    #[test]
     fn active_marker_pins_a_workspace() {
         let directory = tempfile::tempdir().unwrap();
         for name in HostStorage::REMOVABLE_ROOTS {
@@ -1004,8 +1123,7 @@ mod tests {
         }
         let cfg = config(directory.path());
         let process = Process::new(directory.path(), BTreeMap::new());
-        let storage =
-            HostStorage::for_test(directory.path().to_path_buf(), &cfg, &process).unwrap();
+        let storage = HostStorage::for_test(&cfg, &process).unwrap();
         let workspace = directory.path().join("workspaces/tmp/current");
         fs::create_dir_all(&workspace).unwrap();
         fs::write(workspace.join(".kithara-ci-active"), b"").unwrap();
