@@ -278,6 +278,11 @@ pub struct HealthConfig {
     /// Crates whose manifest a generator owns, so "is this dependency used?"
     /// is a question about the generator rather than about the code.
     pub machete_exclude: Vec<String>,
+    /// Crates whose deadlock findings the stage reports without failing on.
+    /// Only this workspace's own crates belong here: a dependency is out of
+    /// the verdict already, and this list is for a finding that has an owner
+    /// and a place it is being fixed.
+    pub lockbud_exclude: Vec<String>,
 }
 
 /// A rule some crates state with `compile_error!`: this build needs a backend.

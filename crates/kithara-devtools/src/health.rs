@@ -60,7 +60,7 @@ struct Stage {
     args: Vec<String>,
     advisory: bool,
     strict: bool,
-    finding: Option<&'static str>,
+    own_crates: Option<Vec<String>>,
 }
 
 impl Stage {
@@ -71,15 +71,17 @@ impl Stage {
             args: args.iter().map(|s| (*s).to_string()).collect(),
             advisory: false,
             strict: false,
-            finding: None,
+            own_crates: None,
         }
     }
 
-    /// What a finding looks like in the log of a tool that reports one without
-    /// failing. Such a tool exits 0 whether or not it found anything, so a
-    /// green exit alone would report every run as a clean verdict.
-    const fn finding(mut self, marker: &'static str) -> Self {
-        self.finding = Some(marker);
+    /// The crates whose findings this stage is allowed to fail on, for a tool
+    /// that reports findings without failing. Such a tool exits 0 whether or
+    /// not it found anything, so a green exit alone would report every run as
+    /// a clean verdict — and it reports on every crate the build compiled,
+    /// dependencies included, which nobody here can fix.
+    fn own_crates(mut self, crates: &[String]) -> Self {
+        self.own_crates = Some(crates.to_vec());
         self
     }
 
@@ -121,7 +123,7 @@ impl Stage {
             args,
             advisory: false,
             strict: false,
-            finding: None,
+            own_crates: None,
         }
     }
 }
@@ -174,6 +176,7 @@ struct Resolved {
     machete_paths: Vec<String>,
     semver_packages: Vec<String>,
     geiger_manifest: String,
+    own_crates: Vec<String>,
     lockbud_toolchain: String,
 }
 
@@ -183,6 +186,7 @@ fn build_stages(project: &ProjectConfig) -> Result<Vec<Stage>> {
         machete_paths: walkable_packages(&metadata, &project.health.machete_exclude),
         semver_packages: project.health.semver_packages.clone(),
         geiger_manifest: manifest_of(&metadata, &project.health.geiger_package)?,
+        own_crates: own_crate_names(&metadata, &project.health.lockbud_exclude),
         lockbud_toolchain: format!("+{}", lockbud_toolchain()),
     };
     Ok(build_stages_with(&resolved))
@@ -218,6 +222,20 @@ fn walkable_packages(metadata: &Metadata, excluded: &[String]) -> Vec<String> {
     paths
 }
 
+/// Workspace member names spelled the way a compiled crate is named: cargo
+/// says `kithara-storage`, a tool reading MIR reports `kithara_storage`. The
+/// excluded packages are named the cargo way, as they are in the config.
+fn own_crate_names(metadata: &Metadata, excluded: &[String]) -> Vec<String> {
+    let mut names: Vec<String> = metadata
+        .workspace_packages()
+        .into_iter()
+        .filter(|package| !excluded.contains(&package.name.to_string()))
+        .map(|package| package.name.replace('-', "_"))
+        .collect();
+    names.sort();
+    names
+}
+
 /// One package's manifest, absolute. cargo-geiger rejects a relative
 /// `--manifest-path` outright, so this cannot be a literal in the stage list.
 fn manifest_of(metadata: &Metadata, package: &str) -> Result<String> {
@@ -234,6 +252,7 @@ fn build_stages_with(resolved: &Resolved) -> Vec<Stage> {
         machete_paths,
         semver_packages,
         geiger_manifest,
+        own_crates,
         lockbud_toolchain,
     } = resolved;
     vec![
@@ -315,8 +334,9 @@ fn build_stages_with(resolved: &Resolved) -> Vec<Stage> {
         // same nightly compiled, which is why the toolchain is selected here
         // rather than left to whatever the caller defaults to. `.strict()`
         // because a driver that cannot load is a missing verdict, not a clean
-        // one, and `.finding()` because lockbud exits zero on a deadlock it
-        // found — it writes the bug to its log and lets the build succeed.
+        // one, and `.own_crates()` because lockbud exits zero on a deadlock it
+        // found — it writes the bug to its log and lets the build succeed —
+        // while reporting on the dependencies it compiled as well.
         Stage::new(
             "lockbud-deadlock",
             "cargo",
@@ -328,7 +348,7 @@ fn build_stages_with(resolved: &Resolved) -> Vec<Stage> {
                 "--workspace",
             ],
         )
-        .finding("\"bug_kind\"")
+        .own_crates(own_crates)
         .strict(),
         Stage::new("workspace-unused-pub", "cargo", &["workspace-unused-pub"]),
         Stage::new(
@@ -377,12 +397,12 @@ fn run_stage(idx: usize, stage: &Stage, logs_dir: &Path) -> StageResult {
 
     match status_result {
         Ok(s) if s.success() => match reported_finding(stage, &log_path) {
-            Some(marker) => StageResult {
+            Some(found) => StageResult {
                 cmdline,
                 duration,
                 name: stage.name,
                 status: Status::Fail,
-                note: Some(format!("reported a finding: {marker}")),
+                note: Some(format!("reported a finding in {found}")),
             },
             None => StageResult {
                 cmdline,
@@ -528,11 +548,44 @@ fn classify_failure(marker: Option<&'static str>, stage: &Stage, exit: i32) -> (
     }
 }
 
-/// The finding a stage exited zero with, if it names one and its log carries it.
-fn reported_finding(stage: &Stage, path: &Path) -> Option<&'static str> {
-    let marker = stage.finding?;
+/// The finding a stage exited zero with, in a crate this repository owns.
+///
+/// lockbud reports on every crate the build compiled, so its log carries
+/// dependencies too — `tokio` and `tokio_util` between them account for most
+/// of what it prints, and its own `-l` / `-b` crate filters do not restrict
+/// that (measured: identical output with and without either flag). Judging the
+/// whole log would fail this stage on code nobody here can change, so the
+/// verdict reads the per-crate summaries the tool already prints and counts
+/// only workspace members.
+fn reported_finding(stage: &Stage, path: &Path) -> Option<String> {
+    let own = stage.own_crates.as_ref()?;
     let content = fs::read_to_string(path).ok()?;
-    content.contains(marker).then_some(marker)
+    content
+        .lines()
+        .filter_map(crate_bug_summary)
+        .filter(|&(_, bugs)| bugs > 0)
+        .find(|(name, _)| own.iter().any(|own| own == name))
+        .map(|(name, bugs)| format!("{name} ({bugs})"))
+}
+
+/// One `crate <name> contains bugs: { .. }, <kind>: { .. }, ..` line: the crate
+/// it names, and how many bugs it counts across every kind and confidence.
+fn crate_bug_summary(line: &str) -> Option<(&str, u64)> {
+    let (_, named) = line.split_once("crate ")?;
+    let (name, counts) = named.split_once(" contains bugs:")?;
+    let bugs = counts
+        .split(':')
+        .skip(1)
+        .filter_map(|field| {
+            let digits: String = field
+                .trim_start()
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            digits.parse::<u64>().ok()
+        })
+        .sum();
+    Some((name, bugs))
 }
 
 fn scan_env_skip_marker(path: &Path) -> Option<&'static str> {
@@ -838,42 +891,135 @@ mod tests {
         );
     }
 
+    /// The shape lockbud prints once per crate it compiled, verbatim from a
+    /// run of the pinned driver over this workspace on 2026-08-17.
+    fn summary(crate_name: &str, probably: u64, possibly: u64) -> String {
+        format!(
+            "[WARN  lockbud::callbacks] crate {crate_name} contains bugs: \
+             {{ probably: {probably}, possibly: {possibly} }}, conflictlock: \
+             {{ probably: 0, possibly: 0 }}, condvar_deadlock: \
+             {{ probably: 0, possibly: 0 }}, atomicity_violation: \
+             {{ possibly: 0 }}, invalid_free: {{ possibly: 0 }}, \
+             use_after_free: {{ possibly: 0 }}\n"
+        )
+    }
+
     #[test]
-    fn the_deadlock_stage_states_what_a_finding_looks_like() {
-        let stages = build_stages_with(&Resolved::default());
+    fn the_deadlock_stage_judges_the_crates_this_workspace_owns() {
+        let resolved = Resolved {
+            own_crates: vec!["kithara_storage".to_owned()],
+            ..Resolved::default()
+        };
+        let stages = build_stages_with(&resolved);
         let lockbud = stages
             .iter()
             .find(|s| s.name == "lockbud-deadlock")
             .expect("lockbud-deadlock stage exists");
         assert_eq!(
-            lockbud.finding,
-            Some("\"bug_kind\""),
+            lockbud.own_crates.as_deref(),
+            Some(["kithara_storage".to_owned()].as_slice()),
             "lockbud exits zero on a deadlock it found, so the exit status \
              alone reports every run as clean"
         );
     }
 
     #[test]
-    fn a_finding_in_the_log_is_read_as_one() {
-        let stage = Stage::new("probe", "true", &[]).finding("\"bug_kind\"");
-        let log = write_log("[{\"DoubleLock\": {\"bug_kind\": \"DoubleLock\"}}]\n");
-        assert_eq!(reported_finding(&stage, &log), Some("\"bug_kind\""));
+    fn a_bug_in_a_crate_we_own_is_a_finding() {
+        let stage = Stage::new("probe", "true", &[]).own_crates(&["kithara_storage".to_owned()]);
+        let log = write_log(&summary("kithara_storage", 0, 8));
+        assert_eq!(
+            reported_finding(&stage, &log),
+            Some("kithara_storage (8)".to_owned())
+        );
         let _ = fs::remove_file(&log);
     }
 
     #[test]
-    fn a_log_without_the_marker_is_not_a_finding() {
-        let stage = Stage::new("probe", "true", &[]).finding("\"bug_kind\"");
-        let log = write_log("Finished `dev` profile [unoptimized + debuginfo]\n");
+    fn a_bug_in_a_dependency_is_not_a_finding() {
+        let stage = Stage::new("probe", "true", &[]).own_crates(&["kithara_storage".to_owned()]);
+        let log = write_log(&summary("tokio", 4, 6));
+        assert_eq!(
+            reported_finding(&stage, &log),
+            None,
+            "tokio is not ours to fix, and lockbud's own crate filters do not \
+             keep it out of the log"
+        );
+        let _ = fs::remove_file(&log);
+    }
+
+    #[test]
+    fn a_crate_we_own_with_no_bugs_is_not_a_finding() {
+        let stage = Stage::new("probe", "true", &[]).own_crates(&["kithara_storage".to_owned()]);
+        let log = write_log(&summary("kithara_storage", 0, 0));
         assert_eq!(reported_finding(&stage, &log), None);
         let _ = fs::remove_file(&log);
     }
 
     #[test]
-    fn a_stage_that_names_no_finding_never_reports_one() {
+    fn a_stage_that_owns_no_crates_never_reports_a_finding() {
         let stage = Stage::new("probe", "true", &[]);
-        let log = write_log("[{\"DoubleLock\": {\"bug_kind\": \"DoubleLock\"}}]\n");
+        let log = write_log(&summary("kithara_storage", 0, 8));
         assert_eq!(reported_finding(&stage, &log), None);
         let _ = fs::remove_file(&log);
+    }
+
+    #[test]
+    fn a_member_name_is_matched_as_a_compiled_crate_spells_it() {
+        let stage = Stage::new("probe", "true", &[]).own_crates(&["kithara_storage".to_owned()]);
+        let log = write_log(&summary("kithara-storage", 0, 8));
+        assert_eq!(
+            reported_finding(&stage, &log),
+            None,
+            "cargo names the member `kithara-storage`; the log never spells it \
+             that way, so the list has to carry the underscored form"
+        );
+        let _ = fs::remove_file(&log);
+    }
+
+    #[test]
+    fn every_kind_and_confidence_counts_toward_the_total() {
+        let line = "crate kithara_hls contains bugs: { probably: 1, possibly: 2 }, \
+                    conflictlock: { probably: 4, possibly: 8 }";
+        assert_eq!(crate_bug_summary(line), Some(("kithara_hls", 15)));
+    }
+
+    #[test]
+    fn an_excluded_member_is_not_judged() {
+        let owned = own_crate_names(&this_workspace(), &["kithara-storage".to_owned()]);
+        assert!(
+            !owned.contains(&"kithara_storage".to_owned()),
+            "the excluded member is still judged: {owned:?}"
+        );
+    }
+
+    #[test]
+    fn every_configured_exclusion_names_a_member() {
+        let metadata = this_workspace();
+        let project = ProjectConfig::load(metadata.workspace_root.as_std_path())
+            .expect("this workspace's xtask config");
+        let members: Vec<String> = metadata
+            .workspace_packages()
+            .into_iter()
+            .map(|package| package.name.to_string())
+            .collect();
+        let unknown: Vec<&String> = project
+            .health
+            .lockbud_exclude
+            .iter()
+            .filter(|name| !members.contains(name))
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "a name no member carries excludes nothing, silently: {unknown:?}"
+        );
+    }
+
+    #[test]
+    fn every_other_member_is_still_judged() {
+        let owned = own_crate_names(&this_workspace(), &["kithara-storage".to_owned()]);
+        assert!(
+            owned.contains(&"kithara_hls".to_owned()),
+            "naming one member dropped the rest: {owned:?}"
+        );
     }
 }

@@ -107,6 +107,24 @@ geiger_package = "kithara"
 # no exclude flag, so the stage names the packages to walk instead, and this is
 # what it leaves out.
 machete_exclude = ["kithara-workspace-hack"]
+# Members whose deadlock findings this stage reports without failing on.
+# Dependencies need no entry: the verdict only ever judges this workspace's own
+# crates, so a bug in tokio is already out of it. What is listed is the scaffold
+# — build tooling, the harness, the generated hack crate — which `cargo lockbud
+# --workspace` compiles and reports on like any other member, and which is not
+# the product a deadlock verdict is about. The same set is named in
+# `[architecture.filters] exclude_crates`, per stage, the way every other
+# `[health]` list is. Product crates are not listed: kithara-storage's 8
+# `possibly` double locks fail the stage until that code is fixed.
+lockbud_exclude = [
+  "kithara-devtools",
+  "kithara-fuzz",
+  "kithara-integration-tests",
+  "kithara-test-macros",
+  "kithara-test-utils",
+  "kithara-workspace-hack",
+  "xtask",
+]
 
 # Groups a crate refuses to be built without, and says so with compile_error!.
 # A crate is matched by declaring `when_feature`, so these follow the workspace

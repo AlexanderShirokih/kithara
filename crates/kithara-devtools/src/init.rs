@@ -20,6 +20,7 @@ impl Consts {
 # [health]
 # feature_powerset_exclude = []
 # machete_exclude = []
+# lockbud_exclude = []
 # semver_packages = []
 # geiger_package = ""
 #

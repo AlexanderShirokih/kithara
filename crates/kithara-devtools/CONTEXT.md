@@ -195,10 +195,29 @@ as SKIP instead of a false FAIL. Two stages needed a different answer:
   minutes — it is a 1.95.0-nightly, between the MSRV the fleet already builds
   and the pinned stable.
   The stage is `.strict()` because a driver that cannot load is a missing
-  verdict, not a clean one, and it carries `.finding("\"bug_kind\"")` because
-  lockbud exits zero on a deadlock it found: it writes the bug to its log and
-  lets the build succeed, so the exit status alone would report every run as
-  clean.
+  verdict, not a clean one, and it carries `.own_crates()` because lockbud exits
+  zero on a deadlock it found: it writes the bug to its log and lets the build
+  succeed, so the exit status alone would report every run as clean.
+  `.own_crates()` also decides *whose* bugs the verdict is about. lockbud reports
+  on every crate the build compiled, dependencies included, and its `-l` / `-b`
+  crate filters do not restrict that — measured on the pinned commit over this
+  workspace, all three flag forms print the same 168 findings across
+  `kithara_storage`, `tokio` and `tokio_util`. So the verdict parses the
+  per-crate summary lines the tool already prints and counts only workspace
+  members, spelled as a compiled crate is named (`kithara_storage`, not
+  `kithara-storage`). Bugs in dependencies stay in the log, where a reader can
+  find them, and never fail a stage nobody here can turn green.
+  `health.lockbud_exclude` takes members back out of that judgement, named the
+  cargo way. A dependency needs no entry — it is outside the verdict already — so
+  the list holds the scaffold instead: `xtask`, `kithara-devtools`, the harness
+  and fuzz crates, the generated hack crate. `cargo lockbud --workspace`
+  compiles and reports on them like any other member, and a deadlock verdict is
+  about the product, not about what builds and tests it; the same set is named in
+  `[architecture.filters] exclude_crates`, kept per stage the way every other
+  `[health]` list is. A product crate does not belong here: the 8 `possibly`
+  double locks lockbud counts in `kithara-storage`, all in
+  `backend/resource/wait.rs` around the gate a waiter parks on and the cancel
+  callbacks that notify it, fail the stage until they are fixed.
 - `workspace-unused-pub` shells out to `rust-analyzer scip` to build its index.
   rustup ships a `rust-analyzer` proxy binary whether or not the component is
   installed, so an image without it does not report a missing tool — it reports
