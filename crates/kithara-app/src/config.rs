@@ -103,6 +103,13 @@ pub struct AppConfig {
     /// interleaved samples occupy.
     #[builder(default = Duration::from_secs(2))]
     pub broadcast_tap_lead: Duration,
+    /// Upper bound on waveform buckets (native = one per FFT window). Only
+    /// caps very long tracks, to bound the cached blob.
+    #[builder(default = 96_000)]
+    pub waveform_max_buckets: usize,
+    /// Band count of the EQ layout every deck's player graph is built with.
+    #[builder(default = 3)]
+    pub eq_bands: usize,
 }
 
 fn default_tracks() -> Vec<String> {
@@ -127,6 +134,8 @@ impl fmt::Debug for AppConfig {
             )
             .field("crossfade_seconds", &self.crossfade_seconds)
             .field("broadcast_tap_lead", &self.broadcast_tap_lead)
+            .field("waveform_max_buckets", &self.waveform_max_buckets)
+            .field("eq_bands", &self.eq_bands)
             .field("beat_analysis", &self.beat_analysis)
             .field("size_probe_method", &self.size_probe_method)
             .finish_non_exhaustive()
