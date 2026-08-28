@@ -1,3 +1,5 @@
+use std::num::NonZeroU32;
+
 use kithara_platform::{CancelToken, sync::mpsc, tokio::sync::watch};
 use kithara_resampler::ResamplerBackend;
 use tracing::warn;
@@ -5,7 +7,10 @@ use tracing::warn;
 use super::{AnalysisNode, AnalysisObserver, Job};
 use crate::{
     PcmReader,
-    analysis::analyzer::{AnalyzerBuilder, TrackAnalysis},
+    analysis::{
+        analyzer::{AnalysisToken, AnalyzerBuilder, TrackAnalysis},
+        producer::{AnalysisProducer, ring},
+    },
     runtime::{Scheduler, SchedulerHandle},
 };
 
@@ -51,18 +56,40 @@ where
         }
     }
 
+    /// Open a pass on `rate`, the axis its ranges are measured on. The
+    /// reader must decode onto that axis; a chunk on another one is refused
+    /// rather than redefining the pass.
+    ///
+    /// Returns where the pass's snapshots arrive and the producer another
+    /// component may contribute already-decoded ranges through. Dropping the
+    /// producer simply leaves the pass to its own reader.
     pub fn analyze(
         &self,
         reader: Box<dyn PcmReader>,
         cancel: CancelToken,
-    ) -> watch::Receiver<Option<TrackAnalysis>> {
+        token: AnalysisToken,
+        rate: NonZeroU32,
+    ) -> (watch::Receiver<Option<TrackAnalysis>>, AnalysisProducer) {
         let (tx, rx) = watch::channel(None);
-        if self.jobs.send(Job { reader, cancel, tx }).is_err() {
+        let (writer, ingest) = ring::open_for(rate);
+        let producer = AnalysisProducer::new(writer, rate, token.clone());
+        if self
+            .jobs
+            .send(Job {
+                reader,
+                cancel,
+                ingest,
+                rate,
+                token,
+                tx,
+            })
+            .is_err()
+        {
             warn!("analysis worker stopped; job dropped");
         } else {
             self.scheduler.wake();
         }
-        rx
+        (rx, producer)
     }
 
     #[must_use]

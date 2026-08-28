@@ -1,6 +1,6 @@
 use kithara_beat::{BEAT_MODEL_BYTES, BeatThis, MEL_MODEL_BYTES};
 
-use super::{BeatDetectError, BeatDetector, RawBeats};
+use super::{BeatDetectError, BeatDetector, BeatMark, RawBeats};
 
 /// Beat detector selection.
 #[derive(Debug, Clone, Copy, derive_more::Display, PartialEq, Eq)]
@@ -66,8 +66,16 @@ impl BeatDetector for NnDetector {
                 reason: e.to_string(),
             })?;
         Ok(RawBeats {
-            beats: raw.beats,
-            downbeats: raw.downbeats,
+            beats: raw.beats.into_iter().map(mark).collect(),
+            downbeats: raw.downbeats.into_iter().map(mark).collect(),
         })
+    }
+}
+
+/// The backend's own mark in the terms the pass speaks.
+fn mark(mark: kithara_beat::BeatMark) -> BeatMark {
+    BeatMark {
+        at: mark.at,
+        confidence: mark.confidence,
     }
 }

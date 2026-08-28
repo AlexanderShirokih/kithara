@@ -4,12 +4,36 @@ use thiserror::Error;
 #[path = "backend.rs"]
 pub(super) mod backend;
 
-/// Raw detector output: beat / downbeat positions in seconds from track
-/// start.
+/// One detected beat or downbeat: where it is, and how sure the detector was.
+///
+/// Declared here rather than taken from a backend crate, because the trait
+/// below is what a backend answers to and no backend owns the shape of the
+/// answer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct BeatMark {
+    /// Seconds from the start of the analysed window.
+    pub(crate) at: f32,
+    /// Probability the detector assigned this mark, in `(0, 1)`.
+    pub(crate) confidence: f32,
+}
+
+#[cfg(test)]
+impl BeatMark {
+    /// A mark at `at`, detected surely enough to keep, for the tests that
+    /// only care where it sits.
+    pub(crate) const fn at(at: f32) -> Self {
+        Self {
+            at,
+            confidence: 0.9,
+        }
+    }
+}
+
+/// Raw detector output: beat / downbeat marks in seconds from track start.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RawBeats {
-    pub(crate) beats: Vec<f32>,
-    pub(crate) downbeats: Vec<f32>,
+    pub(crate) beats: Vec<BeatMark>,
+    pub(crate) downbeats: Vec<BeatMark>,
 }
 
 /// Failure of a beat detector backend.

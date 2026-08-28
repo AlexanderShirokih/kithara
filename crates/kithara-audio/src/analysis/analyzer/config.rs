@@ -7,6 +7,7 @@ struct Consts;
 
 impl Consts {
     const DEFAULT_BEAT_BLOCK_FRAMES: usize = 1024;
+    const DEFAULT_BEAT_DETECTOR_MIN_WINDOW_SECONDS: u32 = 10;
     const DEFAULT_BEAT_DETECTOR_OVERLAP_SECONDS: u32 = 2;
     const DEFAULT_BEAT_DETECTOR_WINDOW_SECONDS: u32 = 30;
     const DEFAULT_BEAT_RESAMPLER_QUALITY: ResamplerQuality = ResamplerQuality::High;
@@ -28,6 +29,11 @@ pub struct BeatAnalysisConfig<B> {
     /// Seconds carried from the end of one detector window into the next.
     #[builder(default = Consts::DEFAULT_BEAT_DETECTOR_OVERLAP_SECONDS)]
     detector_overlap_seconds: u32,
+    /// Shortest span worth running the detector over. A covered run this long
+    /// yields a grid before a full window is available, which is what lets a
+    /// track be usable from its first decoded piece.
+    #[builder(default = Consts::DEFAULT_BEAT_DETECTOR_MIN_WINDOW_SECONDS)]
+    detector_min_window_seconds: u32,
     /// Maximum NN detector window length in seconds.
     #[builder(default = Consts::DEFAULT_BEAT_DETECTOR_WINDOW_SECONDS)]
     detector_window_seconds: u32,
@@ -48,6 +54,18 @@ where
         super::nn::tag(self)
     }
 
+    /// Source seconds one detector window needs before it can be evaluated:
+    /// the window itself plus the overlap the next one starts from, clamped
+    /// the way the beat analyzer clamps them when it sizes its own window.
+    /// Read by the decode schedule, which the wasm build has no worker for.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn ready_seconds(&self) -> u32 {
+        self.detector_window_seconds.max(1).saturating_add(
+            self.detector_overlap_seconds
+                .min(self.detector_window_seconds.saturating_sub(1)),
+        )
+    }
+
     fn resampler_backend_name(&self) -> &'static str {
         self.resampler_backend.name()
     }
@@ -63,6 +81,10 @@ where
             .field("target_rate", &self.target_rate)
             .field("resampler_quality", &self.resampler_quality)
             .field("resampler_backend", &self.resampler_backend_name())
+            .field(
+                "detector_min_window_seconds",
+                &self.detector_min_window_seconds,
+            )
             .field("detector_window_seconds", &self.detector_window_seconds)
             .field("detector_overlap_seconds", &self.detector_overlap_seconds)
             .finish()
@@ -95,14 +117,18 @@ mod tests {
 
     #[cfg(feature = "beat-nn")]
     #[kithara::test(native, flash(false))]
-    fn cache_tag_invalidates_pre_bpm_from_beats_results() {
+    fn cache_tag_invalidates_pre_confidence_results() {
         let tag = BeatAnalysisConfig::<RubatoBackend>::default()
             .cache_tag()
             .expect("beat NN has a cache tag");
 
         assert!(
-            tag.contains(":grid_bpm_from_beats_v1:"),
+            tag.contains(":grid_bpm_from_beats_v2:"),
             "grid semantics must participate in durable-cache identity"
+        );
+        assert!(
+            !tag.contains(":grid_bpm_from_beats_v1:"),
+            "a grid carrying per-marker confidence is not the grid v1 cached"
         );
     }
 }

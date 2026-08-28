@@ -102,14 +102,15 @@ impl UiState {
 
     /// Set the analysis and re-derive `beat_marks`/`downbeat_marks` from its
     /// beat grid, keeping them in sync with their single source.
+    ///
     pub(crate) fn set_analysis(&mut self, analysis: Option<TrackAnalysis>) {
         let (beats, downbeats) = analysis
             .as_ref()
             .and_then(|a| {
                 a.beat().filter(|_| a.source_frames() > 0).map(|grid| {
                     (
-                        frames_to_fractions(grid.beats(), a.source_frames()),
-                        frames_to_fractions(grid.downbeats(), a.source_frames()),
+                        frames_to_fractions(grid.grid().beats(), a.source_frames()),
+                        frames_to_fractions(grid.grid().downbeats(), a.source_frames()),
                     )
                 })
             })
@@ -262,14 +263,15 @@ impl StateController {
         let Some(analysis) = state.analysis.as_ref() else {
             return;
         };
-        let Some(grid) = analysis.beat() else {
+        let Some(beat) = analysis.beat() else {
             return;
         };
+        let grid = beat.grid();
         let source_frames = analysis.source_frames();
         let slot = SlotId::new(1);
         let mut beat_clock = self.beat_clock.lock();
         if beat_clock.published_track != Some(current_index)
-            && let Some(info) = bpm_info_from_state(grid, source_frames, state.duration)
+            && let Some(info) = bpm_info_from_state(beat, source_frames, state.duration)
         {
             self.queue
                 .bus()
@@ -306,18 +308,22 @@ impl StateController {
     }
 }
 
+/// Takes the whole beat artifact, not just its grid: tempo and how sure the
+/// detector was are two answers about the same markers, and passing them
+/// separately is how they come to disagree.
 fn bpm_info_from_state(
-    grid: &kithara::audio::BeatGrid,
+    beat: &kithara::audio::analysis::BeatSnapshot,
     source_frames: u64,
     duration_secs: f64,
 ) -> Option<BpmInfo> {
+    let grid = beat.grid();
     let first_beat = *grid.beats().first()?;
     if source_frames == 0 || duration_secs <= 0.0 {
         return None;
     }
     Some(BpmInfo::new(
         grid.bpm(),
-        None,
+        beat.confidence(),
         Duration::from_secs_f64(
             (u64_to_f64(first_beat) / u64_to_f64(source_frames)) * duration_secs,
         ),
@@ -475,9 +481,46 @@ fn variant_short_label(v: &VariantInfo) -> String {
 
 #[cfg(test)]
 mod tests {
+    use ::kithara::audio::{
+        BeatGrid,
+        analysis::{BeatSnapshot, GridState},
+    };
     use kithara_test_utils::kithara;
 
-    use super::{codec_label, frames_to_fractions};
+    use super::{bpm_info_from_state, codec_label, frames_to_fractions};
+
+    fn beat(beats: Vec<(u64, Option<f32>)>) -> BeatSnapshot {
+        BeatSnapshot::new(
+            BeatGrid::new(120.0, beats, Vec::new(), Vec::new()),
+            GridState::Provisional,
+            Vec::new(),
+        )
+    }
+
+    /// The event carries a confidence slot; leaving it empty when the grid
+    /// knows the answer is the gap this closes.
+    #[kithara::test(native, flash(false))]
+    fn a_published_tempo_carries_the_confidence_its_grid_reports() {
+        let detected = beat(vec![(0, Some(0.4)), (22_050, Some(0.8))]);
+        let info = bpm_info_from_state(&detected, 44_100, 1.0).expect("a grid names a tempo");
+
+        assert!((info.bpm - 120.0).abs() < f64::EPSILON);
+        let confidence = info.confidence.expect("detected markers name a confidence");
+        assert!(
+            (confidence - 0.6).abs() < 1e-6,
+            "the published confidence is the grid's own: {confidence}"
+        );
+    }
+
+    /// A grid built entirely by extrapolation has a tempo but nothing to
+    /// stand behind it, and must say so rather than report a zero.
+    #[kithara::test(native, flash(false))]
+    fn a_tempo_with_nothing_detected_publishes_no_confidence() {
+        let guessed = beat(vec![(0, None), (22_050, None)]);
+        let info = bpm_info_from_state(&guessed, 44_100, 1.0).expect("a grid names a tempo");
+
+        assert_eq!(info.confidence, None);
+    }
 
     #[kithara::test(native, flash(false))]
     fn frames_to_fractions_maps_and_clamps() {

@@ -10,10 +10,13 @@ use super::{
     fit::{GridFitCtx, build_segments},
     scratch::{GridBuffers, fill, retain},
 };
-use crate::{analysis::beat::detector::RawBeats, waveform::BeatGrid};
+use crate::{
+    analysis::beat::detector::{BeatMark, RawBeats},
+    waveform::{BeatGrid, MarkedBeat},
+};
 
 #[cfg(feature = "beat-nn")]
-pub(crate) const GRID_SEMANTICS_TAG: &str = "grid_bpm_from_beats_v1";
+pub(crate) const GRID_SEMANTICS_TAG: &str = "grid_bpm_from_beats_v2";
 
 struct Consts;
 
@@ -100,7 +103,16 @@ fn build_grid_with(
     buffers: &mut GridBuffers,
 ) -> Result<BeatGrid, BudgetExhausted> {
     let sr = f64::from(sample_rate);
-    fill(&mut buffers.positions, raw.downbeats.iter().copied())?;
+    // Both lookups below binary-search these, and both asserts downstream
+    // assume it. `normalize_marks` is what guarantees it on the live path.
+    debug_assert!(
+        is_sorted(&raw.beats) && is_sorted(&raw.downbeats),
+        "build_grid needs detector marks sorted by position"
+    );
+    fill(
+        &mut buffers.positions,
+        raw.downbeats.iter().map(|mark| mark.at),
+    )?;
     retain(&mut buffers.positions, |time| {
         time.is_finite() && time >= 0.0
     });
@@ -120,10 +132,14 @@ fn build_grid_with(
         &mut buffers.sorted,
     )?;
     let marks_bpm = beats_bpm(&buffers.marks, &mut buffers.gaps, &mut buffers.sorted)?;
-    let beats = positions_to_frames(&buffers.marks, sr);
+    let beats = marks_to_frames(&buffers.marks, &raw.beats, sr);
     if beats.len() >= Consts::MIN_MAP_BEATS {
         retain(&mut buffers.positions, |position| {
-            position_to_frame(position, sr).is_some_and(|frame| beats.binary_search(&frame).is_ok())
+            position_to_frame(position, sr).is_some_and(|frame| {
+                beats
+                    .binary_search_by(|(candidate, _)| candidate.cmp(&frame))
+                    .is_ok()
+            })
         });
     }
 
@@ -131,13 +147,13 @@ fn build_grid_with(
         return Ok(BeatGrid::new(
             marks_bpm.unwrap_or(downbeat_bpm),
             beats,
-            positions_to_frames(&buffers.positions, sr),
+            marks_to_frames(&buffers.positions, &raw.downbeats, sr),
             Vec::new(),
         ));
     }
     bar_gaps(&buffers.positions, &mut buffers.gaps)?;
     let nominal_seed = median(&buffers.gaps, &mut buffers.sorted)?;
-    let downbeats = positions_to_frames(&buffers.positions, sr);
+    let downbeats = marks_to_frames(&buffers.positions, &raw.downbeats, sr);
 
     // Degraded mode (per plan): too short / no stable tempo region means no
     // trustworthy piecewise grid — report tempo only, no segments.
@@ -177,14 +193,14 @@ fn build_grid_with(
 }
 
 fn clean_beats(
-    secs: &[f32],
+    secs: &[BeatMark],
     downbeats: &[f32],
     params: &GridParams,
     marks: &mut PcmBuf,
     gaps: &mut PcmBuf,
     sorted: &mut PcmBuf,
 ) -> Result<(), BudgetExhausted> {
-    fill(marks, secs.iter().copied())?;
+    fill(marks, secs.iter().map(|mark| mark.at))?;
     retain(marks, |time| time.is_finite() && time >= 0.0);
     marks.sort_unstable_by(f32::total_cmp);
     bar_gaps(marks, gaps)?;
@@ -228,11 +244,42 @@ fn beats_bpm(
     Ok((beat > 0.0).then(|| Consts::SECS_PER_MIN / beat))
 }
 
-fn positions_to_frames(positions: &[f32], sample_rate: f64) -> Vec<u64> {
-    positions
-        .iter()
-        .filter_map(|&position| position_to_frame(position, sample_rate))
-        .collect()
+/// The surviving positions as source frames, each paired with the confidence
+/// the detector reported for it.
+///
+/// Cleaning only drops and reorders positions - no stage synthesises one - so
+/// a surviving position is bit-identical to a detected one and its confidence
+/// is recoverable by exact lookup. Every marker here came from the detector,
+/// so a lookup that misses means some stage broke that property; the assert
+/// makes the whole test suite check it rather than one reading of three
+/// functions.
+fn marks_to_frames(positions: &[f32], detected: &[BeatMark], sample_rate: f64) -> Vec<MarkedBeat> {
+    let mut out = Vec::with_capacity(positions.len());
+    for &position in positions {
+        let Some(frame) = position_to_frame(position, sample_rate) else {
+            continue;
+        };
+        let confidence = confidence_at(detected, position);
+        debug_assert!(
+            confidence.is_some(),
+            "a cleaned position must be one the detector reported: {position}"
+        );
+        out.push((frame, confidence));
+    }
+    out
+}
+
+/// The confidence the detector reported at exactly `position`.
+fn confidence_at(detected: &[BeatMark], position: f32) -> Option<f32> {
+    detected
+        .binary_search_by(|mark| mark.at.total_cmp(&position))
+        .ok()
+        .and_then(|index| detected.get(index))
+        .map(|mark| mark.confidence)
+}
+
+fn is_sorted(marks: &[BeatMark]) -> bool {
+    marks.windows(2).all(|pair| pair[0].at <= pair[1].at)
 }
 
 fn position_to_frame(position: f32, sample_rate: f64) -> Option<u64> {
@@ -264,10 +311,66 @@ mod tests {
         const TOL_20MS: u64 = 882;
     }
 
+    /// Positions as detected marks, for the tests that only fix positions.
+    fn marks(times: Vec<f32>) -> Vec<BeatMark> {
+        times.into_iter().map(BeatMark::at).collect()
+    }
+
     fn raw(downbeats: Vec<f32>) -> RawBeats {
         RawBeats {
-            downbeats,
+            downbeats: marks(downbeats),
             beats: Vec::new(),
+        }
+    }
+
+    /// Cleaning drops marks, reorders them and prefers downbeats in a
+    /// collision. Whatever survives must still carry the number the detector
+    /// reported for it, not the one that happened to sit next to it.
+    #[kithara::test(native, flash(false))]
+    fn cleaning_leaves_every_survivor_with_its_own_confidence() {
+        // A beat every half second, each with a confidence of its own, plus a
+        // straggler at 1.9 that cleaning drops for colliding with 2.0.
+        let mut beats: Vec<BeatMark> = (0..13u8)
+            .map(|n| {
+                let t = f32::from(n) * 0.5;
+                BeatMark {
+                    at: t,
+                    confidence: 0.2 + f32::from(n) * 0.05,
+                }
+            })
+            .collect();
+        beats.push(BeatMark {
+            at: 1.9,
+            confidence: 0.99,
+        });
+        beats.sort_by(|a, b| a.at.total_cmp(&b.at));
+        let detected = beats.clone();
+
+        let grid = build_grid(
+            &RawBeats {
+                beats,
+                downbeats: marks(vec![0.0, 2.0, 4.0, 6.0]),
+            },
+            100,
+            &GridParams::default(),
+        );
+
+        assert!(
+            grid.beats().binary_search(&190).is_err(),
+            "the straggler is dropped by cleaning"
+        );
+        assert!(!grid.beats().is_empty(), "the grid keeps the rest");
+
+        for (&frame, &confidence) in grid.beats().iter().zip(grid.beat_confidence()) {
+            let at = frame.to_f32().unwrap_or(0.0) / 100.0;
+            let want = detected
+                .iter()
+                .find(|mark| (mark.at - at).abs() < 1e-4)
+                .map(|mark| mark.confidence);
+            assert_eq!(
+                confidence, want,
+                "the survivor at {at} kept the confidence it was detected with"
+            );
         }
     }
 
@@ -280,8 +383,8 @@ mod tests {
     fn injected_pcm_pool_reuses_grid_buffers() {
         let pool = PcmPool::new(64, 200_000);
         let raw = RawBeats {
-            beats: steady(0.0, 0.5, 128),
-            downbeats: steady(0.0, 2.0, 64),
+            beats: marks(steady(0.0, 0.5, 128)),
+            downbeats: marks(steady(0.0, 2.0, 64)),
         };
 
         super::build_grid(&raw, Consts::SR, &GridParams::default(), &pool)
@@ -304,8 +407,8 @@ mod tests {
 
         let grid = build_grid(
             &RawBeats {
-                downbeats: steady(0.0, 2.0, 16),
-                beats,
+                downbeats: marks(steady(0.0, 2.0, 16)),
+                beats: marks(beats),
             },
             Consts::SR,
             &GridParams::default(),
@@ -327,7 +430,10 @@ mod tests {
         downbeats[0] = beat * 0.1;
 
         let grid = build_grid(
-            &RawBeats { beats, downbeats },
+            &RawBeats {
+                beats: marks(beats),
+                downbeats: marks(downbeats),
+            },
             Consts::SR,
             &GridParams::default(),
         );
@@ -349,8 +455,8 @@ mod tests {
 
         let grid = build_grid(
             &RawBeats {
-                beats,
-                downbeats: vec![0.0, 2.0, 4.0, 6.0],
+                beats: marks(beats),
+                downbeats: marks(vec![0.0, 2.0, 4.0, 6.0]),
             },
             100,
             &GridParams::default(),
@@ -364,8 +470,8 @@ mod tests {
     fn unmatched_downbeat_is_omitted_from_a_map_capable_grid() {
         let grid = build_grid(
             &RawBeats {
-                beats: steady(0.0, 0.5, 12),
-                downbeats: vec![0.0, 2.25, 4.0, 6.0],
+                beats: marks(steady(0.0, 0.5, 12)),
+                downbeats: marks(vec![0.0, 2.25, 4.0, 6.0]),
             },
             100,
             &GridParams::default(),
@@ -384,8 +490,8 @@ mod tests {
         let beats: Vec<f32> = (0..64u16).map(|i| f32::from(i) * 0.5).collect();
         let grid = build_grid(
             &RawBeats {
-                downbeats: steady(0.0, 2.0, 16),
-                beats,
+                downbeats: marks(steady(0.0, 2.0, 16)),
+                beats: marks(beats),
             },
             Consts::SR,
             &GridParams::default(),
@@ -408,7 +514,7 @@ mod tests {
         let grid = build_grid(
             &RawBeats {
                 downbeats: Vec::new(),
-                beats,
+                beats: marks(beats),
             },
             Consts::SR,
             &GridParams::default(),
@@ -436,7 +542,7 @@ mod tests {
         let grid = build_grid(
             &RawBeats {
                 downbeats: Vec::new(),
-                beats,
+                beats: marks(beats),
             },
             Consts::SR,
             &GridParams::default(),
@@ -460,8 +566,8 @@ mod tests {
         let beats: Vec<f32> = (0..64u16).map(|i| f32::from(i) * 0.4).collect();
         let grid = build_grid(
             &RawBeats {
-                downbeats: beats.clone(),
-                beats,
+                downbeats: marks(beats.clone()),
+                beats: marks(beats),
             },
             Consts::SR,
             &GridParams::default(),
@@ -632,8 +738,8 @@ mod tests {
         let beats = vec![0.5f32, 1.0, 1.5];
         let grid = build_grid(
             &RawBeats {
-                beats,
-                downbeats: steady(1.0, 2.0, 8),
+                beats: marks(beats),
+                downbeats: marks(steady(1.0, 2.0, 8)),
             },
             Consts::SR,
             &GridParams::default(),

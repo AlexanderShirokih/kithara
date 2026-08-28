@@ -8,8 +8,8 @@ use crate::{
 struct Consts;
 
 impl Consts {
-    /// One frame position on the wire.
-    const FRAME_BYTES: usize = size_of::<u64>();
+    /// One marker on the wire: its frame, a present flag, and a confidence.
+    const FRAME_BYTES: usize = size_of::<u64>() + size_of::<u32>() + size_of::<f32>();
     /// A length prefix on the wire.
     const LEN_PREFIX_BYTES: usize = size_of::<u64>();
     /// `beats`, `downbeats`, `segments` — three length-prefixed lists.
@@ -18,8 +18,13 @@ impl Consts {
     const SEGMENT_BYTES: usize = size_of::<u64>() * 2 + size_of::<f64>();
     /// Wire/disk format version for the [`BeatGrid`] blob. Bump when the
     /// encoding changes.
-    const VERSION: u32 = 1;
+    const VERSION: u32 = 2;
 }
+
+/// One grid marker: its source frame, and the confidence the detector
+/// reported for it - `None` where the grid placed it by extrapolation and no
+/// detector saw it.
+pub type MarkedBeat = (u64, Option<f32>);
 
 /// Cleaned beat grid for one track. All positions are source frames
 /// (decoder/song time, `PcmMeta.frame_offset` space) — never output/stretched
@@ -30,8 +35,15 @@ impl Consts {
 pub struct BeatGrid {
     /// Beat positions in source frames, ascending.
     beats: Vec<u64>,
+    /// Detector confidence per entry of `beats`, `None` where the grid placed
+    /// a marker no detector window saw. Split from the positions rather than
+    /// stored with them because a built grid is only ever read: nothing here
+    /// drops or reorders, so the two cannot drift.
+    beat_confidence: Vec<Option<f32>>,
     /// Downbeat (bar start) positions in source frames, ascending.
     downbeats: Vec<u64>,
+    /// Detector confidence per entry of `downbeats`.
+    downbeat_confidence: Vec<Option<f32>>,
     /// Piecewise-constant stretch segments, sorted and non-overlapping.
     segments: Vec<GridSegment>,
     /// Tempo estimated from cleaned beat marks, with a downbeat fallback.
@@ -40,16 +52,23 @@ pub struct BeatGrid {
 
 impl BeatGrid {
     /// Construct from already-cleaned parts.
+    ///
+    /// Markers arrive paired with their confidence so the two cannot be
+    /// handed over misaligned: the grid never sees two lists to reconcile.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         bpm: f64,
-        beats: Vec<u64>,
-        downbeats: Vec<u64>,
+        beats: Vec<MarkedBeat>,
+        downbeats: Vec<MarkedBeat>,
         segments: Vec<GridSegment>,
     ) -> Self {
+        let (beats, beat_confidence) = beats.into_iter().unzip();
+        let (downbeats, downbeat_confidence) = downbeats.into_iter().unzip();
         Self {
             beats,
+            beat_confidence,
             downbeats,
+            downbeat_confidence,
             segments,
             bpm,
         }
@@ -81,8 +100,8 @@ impl Blob for BeatGrid {
 
     fn decode(r: &mut Reader<'_>) -> Result<Self, BlobError> {
         let bpm = read_finite(r)?;
-        let beats = r.read_frames()?;
-        let downbeats = r.read_frames()?;
+        let beats = read_marks(r)?;
+        let downbeats = read_marks(r)?;
         let segment_count = r.read_len()?;
         let mut segments = Vec::with_capacity(segment_count.min(MAX_PREALLOC));
         for _ in 0..segment_count {
@@ -103,8 +122,8 @@ impl Blob for BeatGrid {
                 + Consts::SEGMENT_BYTES * self.segments.len(),
         );
         w.write_f64(self.bpm);
-        w.write_frames(&self.beats);
-        w.write_frames(&self.downbeats);
+        write_marks(w, &self.beats, &self.beat_confidence);
+        write_marks(w, &self.downbeats, &self.downbeat_confidence);
         w.write_len(self.segments.len());
         for segment in &self.segments {
             w.write_u64(segment.start_frame());
@@ -134,8 +153,15 @@ mod bytes_tests {
     fn sample() -> BeatGrid {
         BeatGrid::new(
             123.5,
-            vec![0, 22_050, 44_100, 66_150],
-            vec![0, 88_200],
+            // A mix on purpose: the codec must carry both a detected
+            // confidence and the absence of one.
+            vec![
+                (0, Some(0.9)),
+                (22_050, Some(0.5)),
+                (44_100, None),
+                (66_150, Some(0.75)),
+            ],
+            vec![(0, Some(0.9)), (88_200, None)],
             vec![
                 GridSegment::new(0, 88_200, 1.02),
                 GridSegment::new(88_200, 176_400, 0.98),
@@ -169,6 +195,38 @@ mod bytes_tests {
         ));
     }
 
+    /// A confidence is a probability the detector reported. A blob claiming
+    /// one outside that range, or a present-flag that is neither yes nor no,
+    /// is corruption - and repairing it would put a number in the grid that
+    /// no detector ever said.
+    #[kithara::test]
+    fn rejects_a_confidence_no_detector_could_have_reported() {
+        // Header (u32) + bpm (f64) + list length (u64) + first frame (u64)
+        // puts the first marker's present flag here.
+        let flag = size_of::<u32>() + size_of::<f64>() + size_of::<u64>() + size_of::<u64>();
+
+        let mut bad_flag = Vec::<u8>::from(&sample());
+        bad_flag[flag] = 7;
+        assert!(
+            matches!(
+                BeatGrid::try_from(bad_flag.as_slice()),
+                Err(BlobError::Corrupt)
+            ),
+            "a present flag outside yes or no is corruption"
+        );
+
+        let mut out_of_range = Vec::<u8>::from(&sample());
+        out_of_range[flag + size_of::<u32>()..flag + size_of::<u32>() + size_of::<f32>()]
+            .copy_from_slice(&2.0_f32.to_le_bytes());
+        assert!(
+            matches!(
+                BeatGrid::try_from(out_of_range.as_slice()),
+                Err(BlobError::Corrupt)
+            ),
+            "a confidence above one is corruption"
+        );
+    }
+
     #[kithara::test]
     fn rejects_corrupt_blobs() {
         let corrupt = |bytes: &[u8]| matches!(BeatGrid::try_from(bytes), Err(BlobError::Corrupt));
@@ -182,4 +240,41 @@ mod bytes_tests {
         trailing.push(0);
         assert!(corrupt(&trailing), "trailing garbage");
     }
+}
+
+/// Write a length-prefixed marker list: one frame, one present flag and one
+/// confidence each. Dense rather than sparse so the reader can check the
+/// count against the markers it just read.
+fn write_marks(w: &mut Writer<'_>, frames: &[u64], confidence: &[Option<f32>]) {
+    w.write_len(frames.len());
+    for (frame, confidence) in frames.iter().zip(confidence.iter()) {
+        w.write_u64(*frame);
+        w.write_u32(u32::from(confidence.is_some()));
+        w.write_f32(confidence.unwrap_or(0.0));
+    }
+}
+
+/// Read a marker list written by [`write_marks`].
+///
+/// A flag outside `{0, 1}`, or a confidence that is not a finite probability,
+/// is corruption rather than something to repair: an invented confidence would
+/// claim the detector said something it did not.
+fn read_marks(r: &mut Reader<'_>) -> Result<Vec<MarkedBeat>, BlobError> {
+    let count = r.read_len()?;
+    let mut out = Vec::with_capacity(count.min(MAX_PREALLOC));
+    for _ in 0..count {
+        let frame = r.read_u64()?;
+        let present = r.read_u32()?;
+        let confidence = r.read_f32()?;
+        let confidence = match present {
+            0 => None,
+            1 => Some(confidence),
+            _ => return Err(BlobError::Corrupt),
+        };
+        if confidence.is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value)) {
+            return Err(BlobError::Corrupt);
+        }
+        out.push((frame, confidence));
+    }
+    Ok(out)
 }

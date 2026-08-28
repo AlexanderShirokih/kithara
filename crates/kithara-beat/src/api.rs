@@ -14,12 +14,27 @@ pub enum BeatError {
     Inference { reason: String },
 }
 
-/// Beat / downbeat positions in seconds, whole-track.
+/// One detected beat or downbeat: where it is, and how sure the model was.
+///
+/// Position and confidence travel together rather than in parallel vectors,
+/// because every stage above this one may drop, merge or reorder marks, and
+/// two vectors would only have to agree.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct BeatMark {
+    /// Seconds from the start of the analysed audio.
+    pub at: f32,
+    /// Probability the model assigned the peak this mark was picked from.
+    /// Between zero and one, exclusive.
+    pub confidence: f32,
+}
+
+/// Beat / downbeat marks in seconds, whole-track.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct RawBeats {
-    pub beats: Vec<f32>,
-    pub downbeats: Vec<f32>,
+    pub beats: Vec<BeatMark>,
+    pub downbeats: Vec<BeatMark>,
 }
 
 /// `beat_this` NN detector: mel → chunked inference → peak picking.

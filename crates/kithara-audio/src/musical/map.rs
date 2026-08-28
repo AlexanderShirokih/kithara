@@ -81,9 +81,6 @@ pub enum BeatMapError {
     /// The analysis snapshot contains no beat grid.
     #[error("track analysis has no beat grid")]
     Missing,
-    /// The analysis snapshot does not define the sample-rate axis of its markers.
-    #[error("track analysis does not identify its source sample rate")]
-    SourceRateMissing,
     /// Piecewise interpolation cannot be defined from fewer than two markers.
     #[error("beat map requires at least two markers, got {count}")]
     InsufficientMarkers { count: usize },
@@ -160,11 +157,9 @@ impl TrackBeatMap {
         host_sample_rate: NonZeroU32,
     ) -> Result<Self, BeatMapError> {
         let grid = analysis.beat().ok_or(BeatMapError::Missing)?;
-        let source_rate = analysis
-            .source_sample_rate()
-            .ok_or(BeatMapError::SourceRateMissing)?;
+        let source_rate = analysis.source_sample_rate();
         Self::build(
-            grid,
+            grid.grid(),
             analysis.source_frames(),
             source_rate,
             host_sample_rate,
@@ -328,29 +323,43 @@ mod tests {
     use num_traits::cast::ToPrimitive;
 
     use super::{BeatMapError, CoordinateError, SourceFrame, TrackBeat, TrackBeatMap};
-    use crate::{analysis::TrackAnalysis, waveform::BeatGrid};
+    use crate::{
+        analysis::{BeatSnapshot, GridState, TrackAnalysis},
+        waveform::BeatGrid,
+    };
 
     fn sample_rate(value: u32) -> NonZeroU32 {
         NonZeroU32::new(value).expect("invariant: test sample rate is non-zero")
     }
 
     fn grid(beats: Vec<u64>) -> BeatGrid {
-        let downbeats = beats.first().copied().into_iter().collect();
+        let downbeats = beats
+            .first()
+            .copied()
+            .into_iter()
+            .map(|frame| (frame, Some(0.9)))
+            .collect();
+        let beats = beats.into_iter().map(|frame| (frame, Some(0.9))).collect();
         BeatGrid::new(120.0, beats, downbeats, Vec::new())
     }
 
+    fn analysis(beat: Option<BeatGrid>, source_frames: u64, source_rate: u32) -> TrackAnalysis {
+        TrackAnalysis::builder()
+            .token("test-track".into())
+            .revision(1)
+            .source_sample_rate(sample_rate(source_rate))
+            .extent(source_frames)
+            .maybe_beat(beat.map(|grid| BeatSnapshot::new(grid, GridState::Final, Vec::new())))
+            .build()
+    }
+
     fn analysis_with_grid(beats: Vec<u64>, source_frames: u64, source_rate: u32) -> TrackAnalysis {
-        TrackAnalysis::with_source_rate(
-            Some(grid(beats)),
-            None,
-            source_frames,
-            sample_rate(source_rate),
-        )
+        analysis(Some(grid(beats)), source_frames, source_rate)
     }
 
     #[kithara::test]
     fn rejects_missing_beat_grid() {
-        let analysis = TrackAnalysis::with_source_rate(None, None, 1_000, sample_rate(48_000));
+        let analysis = analysis(None, 1_000, 48_000);
 
         assert_eq!(
             TrackBeatMap::new(&analysis, sample_rate(48_000)),
@@ -375,16 +384,6 @@ mod tests {
         assert_eq!(
             TrackBeatMap::new(&analysis, sample_rate(48_000)),
             Err(BeatMapError::NonIncreasingMarker { index: 2 })
-        );
-    }
-
-    #[kithara::test]
-    fn rejects_missing_source_sample_rate() {
-        let analysis = TrackAnalysis::new(Some(grid(vec![0, 480])), None, 1_000);
-
-        assert_eq!(
-            TrackBeatMap::new(&analysis, sample_rate(48_000)),
-            Err(BeatMapError::SourceRateMissing)
         );
     }
 

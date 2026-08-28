@@ -1,6 +1,9 @@
 use num_traits::cast::AsPrimitive;
 
-use crate::{api::BeatError, config::BeatConfig};
+use crate::{
+    api::{BeatError, BeatMark},
+    config::BeatConfig,
+};
 
 /// Frames per second of the beat model output.
 const FPS: f32 = 50.0;
@@ -23,7 +26,7 @@ impl PeakPicker {
         &self,
         beat_logits: &[f32],
         downbeat_logits: &[f32],
-    ) -> Result<(Vec<f32>, Vec<f32>), BeatError> {
+    ) -> Result<(Vec<BeatMark>, Vec<BeatMark>), BeatError> {
         if beat_logits.len() != downbeat_logits.len() {
             return Err(BeatError::Inference {
                 reason: format!(
@@ -37,14 +40,8 @@ impl PeakPicker {
         let beat_frames = find_peaks(beat_logits, &self.config);
         let downbeat_frames = find_peaks(downbeat_logits, &self.config);
 
-        let beats: Vec<f32> = beat_frames
-            .iter()
-            .map(|&f| (f / f64::from(FPS)).as_())
-            .collect();
-        let mut downbeats: Vec<f32> = downbeat_frames
-            .iter()
-            .map(|&f| (f / f64::from(FPS)).as_())
-            .collect();
+        let beats: Vec<BeatMark> = beat_frames.iter().map(Peak::mark).collect();
+        let mut downbeats: Vec<BeatMark> = downbeat_frames.iter().map(Peak::mark).collect();
 
         snap_downbeats_to_beats(&beats, &mut downbeats);
 
@@ -52,13 +49,40 @@ impl PeakPicker {
     }
 }
 
+/// One picked peak: where it sits in model frames, and the logit that got it
+/// picked. The logit travels with the position because it is the only place
+/// the model says how sure it was, and every later stage can move a peak but
+/// none can recover its evidence.
+#[derive(Clone, Copy, Debug)]
+struct Peak {
+    at: f64,
+    logit: f32,
+}
+
+impl Peak {
+    /// The mark this peak becomes: seconds from the start of the analysed
+    /// audio, and the probability behind it.
+    fn mark(&self) -> BeatMark {
+        BeatMark {
+            at: (self.at / f64::from(FPS)).as_(),
+            confidence: sigmoid(self.logit),
+        }
+    }
+}
+
+/// The model emits logits; a probability is what a caller can compare. The
+/// default `peak_threshold` of zero is exactly one half here.
+fn sigmoid(logit: f32) -> f32 {
+    1.0 / (1.0 + (-logit).exp())
+}
+
 /// Identify local maxima exceeding [`BeatConfig::peak_threshold`].
 ///
 /// Max-pool window of `2 * peak_half_width + 1` frames, stride 1: a frame is a
 /// peak if it equals the local maximum and clears the threshold.
-fn find_peaks(logits: &[f32], config: &BeatConfig) -> Vec<f64> {
+fn find_peaks(logits: &[f32], config: &BeatConfig) -> Vec<Peak> {
     let len = logits.len();
-    let mut peaks = Vec::new();
+    let mut peaks: Vec<(usize, f32)> = Vec::new();
 
     for i in 0..len {
         // The default threshold of 0 is probability 0.5 after the sigmoid.
@@ -78,7 +102,7 @@ fn find_peaks(logits: &[f32], config: &BeatConfig) -> Vec<f64> {
         }
 
         if is_max {
-            peaks.push(i);
+            peaks.push((i, logits[i]));
         }
     }
 
@@ -88,58 +112,76 @@ fn find_peaks(logits: &[f32], config: &BeatConfig) -> Vec<f64> {
 /// Merge adjacent peak frame indices using a running mean.
 ///
 /// Consecutive peaks at most `width` frames apart collapse to their mean
-/// position.
-fn deduplicate_peaks(peaks: &[usize], width: usize) -> Vec<f64> {
-    let Some((&first, rest)) = peaks.split_first() else {
+/// position and keep the strongest logit among them: the merged peak is one
+/// beat, and how sure the model was about it is its best evidence, not an
+/// average diluted by the frames either side of it.
+fn deduplicate_peaks(peaks: &[(usize, f32)], width: usize) -> Vec<Peak> {
+    let Some((&(first, first_logit), rest)) = peaks.split_first() else {
         return Vec::new();
     };
 
     let mut result = Vec::new();
     let mut p: f64 = first.as_();
+    let mut logit = first_logit;
     let mut c = 1.0_f64;
 
-    for &p2_usize in rest {
+    for &(p2_usize, p2_logit) in rest {
         let p2: f64 = p2_usize.as_();
         if p2 - p <= width.as_() {
             c += 1.0;
             p += (p2 - p) / c;
+            logit = logit.max(p2_logit);
         } else {
-            result.push(p);
+            result.push(Peak { at: p, logit });
             p = p2;
+            logit = p2_logit;
             c = 1.0;
         }
     }
-    result.push(p);
+    result.push(Peak { at: p, logit });
 
     result
 }
 
-fn snap_downbeats_to_beats(beat_times: &[f32], downbeat_times: &mut Vec<f32>) {
-    if beat_times.is_empty() || downbeat_times.is_empty() {
+/// Move every downbeat onto the nearest beat, then collapse the ones that
+/// landed together.
+///
+/// A downbeat keeps its own confidence: it is what the downbeat head of the
+/// model reported, and the beat head's number is a different answer to a
+/// different question. Two downbeats that collapse keep the higher one, the
+/// same rule dedup uses.
+fn snap_downbeats_to_beats(beats: &[BeatMark], downbeats: &mut Vec<BeatMark>) {
+    if beats.is_empty() || downbeats.is_empty() {
         return;
     }
 
-    for d_time in downbeat_times.iter_mut() {
-        let pos = beat_times.partition_point(|&b| b < *d_time);
+    for down in downbeats.iter_mut() {
+        let pos = beats.partition_point(|beat| beat.at < down.at);
 
-        let best = match (pos.checked_sub(1), beat_times.get(pos)) {
-            (Some(before), Some(&after)) => {
-                if (*d_time - beat_times[before]).abs() <= (after - *d_time).abs() {
-                    beat_times[before]
+        let best = match (pos.checked_sub(1), beats.get(pos)) {
+            (Some(before), Some(after)) => {
+                if (down.at - beats[before].at).abs() <= (after.at - down.at).abs() {
+                    beats[before].at
                 } else {
-                    after
+                    after.at
                 }
             }
-            (Some(before), None) => beat_times[before],
-            (None, Some(&after)) => after,
+            (Some(before), None) => beats[before].at,
+            (None, Some(after)) => after.at,
             (None, None) => continue,
         };
 
-        *d_time = best;
+        down.at = best;
     }
 
-    downbeat_times.sort_by(f32::total_cmp);
-    downbeat_times.dedup();
+    downbeats.sort_by(|a, b| a.at.total_cmp(&b.at));
+    downbeats.dedup_by(|dropped, kept| {
+        if dropped.at != kept.at {
+            return false;
+        }
+        kept.confidence = kept.confidence.max(dropped.confidence);
+        true
+    });
 }
 
 #[cfg(test)]
@@ -147,6 +189,79 @@ mod tests {
     use kithara_test_utils::kithara;
 
     use super::*;
+
+    /// Where the picked peaks sit, for the tests that only care about that.
+    fn at(peaks: &[Peak]) -> Vec<f64> {
+        peaks.iter().map(|peak| peak.at).collect()
+    }
+
+    /// Where the marks sit, in seconds.
+    fn seconds(marks: &[BeatMark]) -> Vec<f32> {
+        marks.iter().map(|mark| mark.at).collect()
+    }
+
+    /// Frames with no evidence either way, so a test can place its own.
+    fn flat(len: usize) -> Vec<f32> {
+        vec![-5.0; len]
+    }
+
+    /// Marks at the given seconds, for the tests that only care about where.
+    fn marks(at: &[f32]) -> Vec<BeatMark> {
+        at.iter()
+            .map(|&at| BeatMark {
+                at,
+                confidence: 0.5,
+            })
+            .collect()
+    }
+
+    /// The model's own answer to how sure it was must reach the caller, and
+    /// must order the way the logits did: a stronger peak cannot come back
+    /// less confident than a weaker one, and neither may saturate to a
+    /// certainty the model never expressed.
+    #[kithara::test(native, flash(false))]
+    fn a_stronger_peak_comes_back_more_confident() {
+        let mut logits = flat(200);
+        logits[50] = 0.5;
+        logits[150] = 3.0;
+
+        let picker = PeakPicker::new(BeatConfig::default());
+        let (beats, _) = picker
+            .decode(&logits, &flat(200))
+            .expect("equal-length logits decode");
+
+        assert_eq!(beats.len(), 2, "both peaks clear the threshold");
+        assert!(
+            beats[0].confidence < beats[1].confidence,
+            "the stronger logit is the more confident mark: {beats:?}"
+        );
+        for beat in &beats {
+            assert!(
+                beat.confidence > 0.0 && beat.confidence < 1.0,
+                "a probability is never a certainty: {beat:?}"
+            );
+        }
+    }
+
+    /// A logit at the default threshold is one half by construction, which is
+    /// what the threshold is documented to mean.
+    #[kithara::test(native, flash(false))]
+    fn the_default_threshold_is_an_even_chance() {
+        assert!((sigmoid(0.0) - 0.5).abs() < 1e-6);
+        assert!(sigmoid(-4.0) < 0.02);
+        assert!(sigmoid(4.0) > 0.98);
+    }
+
+    /// Merged peaks are one beat, and its confidence is the best evidence for
+    /// it, not an average pulled down by the frames beside it.
+    #[kithara::test(native, flash(false))]
+    fn merged_peaks_keep_their_strongest_evidence() {
+        let merged = deduplicate_peaks(&[(10, 0.5), (11, 2.0)], 1);
+
+        assert_eq!(merged.len(), 1, "the two frames are one beat");
+        assert_eq!(merged[0].at, 10.5);
+        assert_eq!(merged[0].logit, 2.0);
+    }
 
     /// The threshold decides which model outputs become beats at all. Raising
     /// it past a peak's logit drops that beat; the picker must not carry a
@@ -156,7 +271,7 @@ mod tests {
         let logits = [0.0, 0.0, 0.5, 1.0, 0.5, 0.0, 0.0];
         let strict = BeatConfig::builder().peak_threshold(1.5).build();
 
-        assert_eq!(find_peaks(&logits, &BeatConfig::default()), vec![3.0]);
+        assert_eq!(at(&find_peaks(&logits, &BeatConfig::default())), vec![3.0]);
         assert!(find_peaks(&logits, &strict).is_empty());
     }
 
@@ -170,25 +285,28 @@ mod tests {
         logits[6] = 1.0;
         let wide = BeatConfig::builder().peak_half_width(4).build();
 
-        assert_eq!(find_peaks(&logits, &BeatConfig::default()), vec![2.0, 6.0]);
-        assert_eq!(find_peaks(&logits, &wide), vec![2.0]);
+        assert_eq!(
+            at(&find_peaks(&logits, &BeatConfig::default())),
+            vec![2.0, 6.0]
+        );
+        assert_eq!(at(&find_peaks(&logits, &wide)), vec![2.0]);
     }
 
     /// Dedup width is how far apart two surviving peaks still count as one
     /// beat. A wider one must merge peaks the default reports separately.
     #[kithara::test(native, flash(false))]
     fn a_wider_dedup_merges_peaks_the_default_reports_apart() {
-        let peaks = [10, 14];
+        let peaks = [(10, 1.0), (14, 1.0)];
 
-        assert_eq!(deduplicate_peaks(&peaks, 1), vec![10.0, 14.0]);
-        assert_eq!(deduplicate_peaks(&peaks, 4), vec![12.0]);
+        assert_eq!(at(&deduplicate_peaks(&peaks, 1)), vec![10.0, 14.0]);
+        assert_eq!(at(&deduplicate_peaks(&peaks, 4)), vec![12.0]);
     }
 
     #[kithara::test(native, flash(false))]
     fn find_peaks_single_peak() {
         let logits = [0.0, 0.0, 0.5, 1.0, 0.5, 0.0, 0.0];
         let peaks = find_peaks(&logits, &BeatConfig::default());
-        assert_eq!(peaks, vec![3.0]);
+        assert_eq!(at(&peaks), vec![3.0]);
     }
 
     #[kithara::test(native, flash(false))]
@@ -205,7 +323,7 @@ mod tests {
         logits[3] = 2.0;
         logits[15] = 1.5;
         let peaks = find_peaks(&logits, &BeatConfig::default());
-        assert_eq!(peaks, vec![3.0, 15.0]);
+        assert_eq!(at(&peaks), vec![3.0, 15.0]);
     }
 
     #[kithara::test(native, flash(false))]
@@ -215,7 +333,7 @@ mod tests {
         logits[4] = 2.0;
         logits[7] = 1.0;
         let peaks = find_peaks(&logits, &BeatConfig::default());
-        assert_eq!(peaks, vec![4.0]);
+        assert_eq!(at(&peaks), vec![4.0]);
     }
 
     #[kithara::test(native, flash(false))]
@@ -225,7 +343,7 @@ mod tests {
         logits[2] = 2.0;
         logits[6] = 1.0;
         let peaks = find_peaks(&logits, &BeatConfig::default());
-        assert_eq!(peaks, vec![2.0, 6.0]);
+        assert_eq!(at(&peaks), vec![2.0, 6.0]);
     }
 
     #[kithara::test(native, flash(false))]
@@ -235,7 +353,7 @@ mod tests {
         let logits = [0.0, 1.0, 1.0, 0.0];
         let peaks = find_peaks(&logits, &BeatConfig::default());
         assert_eq!(peaks.len(), 1);
-        assert_eq!(peaks[0], 1.5);
+        assert_eq!(peaks[0].at, 1.5);
     }
 
     #[kithara::test(native, flash(false))]
@@ -246,58 +364,68 @@ mod tests {
 
     #[kithara::test(native, flash(false))]
     fn deduplicate_peaks_no_adjacent() {
-        let peaks = deduplicate_peaks(&[5, 10, 20], 1);
-        assert_eq!(peaks, vec![5.0, 10.0, 20.0]);
+        let peaks = deduplicate_peaks(&[(5, 1.0), (10, 1.0), (20, 1.0)], 1);
+        assert_eq!(at(&peaks), vec![5.0, 10.0, 20.0]);
     }
 
     #[kithara::test(native, flash(false))]
     fn deduplicate_peaks_merge() {
         // 10 and 11 merge (gap 1) to 10.5; 12 is 1.5 from the mean → new group.
-        let peaks = deduplicate_peaks(&[10, 11, 12, 20], 1);
-        assert_eq!(peaks, vec![10.5, 12.0, 20.0]);
+        let peaks = deduplicate_peaks(&[(10, 1.0), (11, 1.0), (12, 1.0), (20, 1.0)], 1);
+        assert_eq!(at(&peaks), vec![10.5, 12.0, 20.0]);
 
         // {10, 11, 11}: running mean 32/3, kept fractional.
-        let peaks = deduplicate_peaks(&[10, 11, 11, 20], 1);
+        let peaks = deduplicate_peaks(&[(10, 1.0), (11, 1.0), (11, 1.0), (20, 1.0)], 1);
         assert_eq!(peaks.len(), 2);
-        assert!((peaks[0] - 32.0 / 3.0).abs() < 1e-9);
-        assert_eq!(peaks[1], 20.0);
+        assert!((peaks[0].at - 32.0 / 3.0).abs() < 1e-9);
+        assert_eq!(peaks[1].at, 20.0);
     }
 
     #[kithara::test(native, flash(false))]
     fn deduplicate_peaks_single() {
-        let peaks = deduplicate_peaks(&[42], 1);
-        assert_eq!(peaks, vec![42.0]);
+        let peaks = deduplicate_peaks(&[(42, 1.0)], 1);
+        assert_eq!(at(&peaks), vec![42.0]);
     }
 
     #[kithara::test(native, flash(false))]
     fn snap_downbeats() {
-        let beats = vec![1.0, 2.0, 3.0];
-        let mut downbeats = vec![1.1, 2.8];
+        let beats = marks(&[1.0, 2.0, 3.0]);
+        let mut downbeats = marks(&[1.1, 2.8]);
         snap_downbeats_to_beats(&beats, &mut downbeats);
-        assert_eq!(downbeats, vec![1.0, 3.0]);
+        assert_eq!(seconds(&downbeats), vec![1.0, 3.0]);
     }
 
     #[kithara::test(native, flash(false))]
     fn snap_downbeats_dedup() {
-        let beats = vec![1.0, 2.0, 3.0];
-        // Both downbeats snap to 2.0 and collapse to one.
-        let mut downbeats = vec![1.8, 2.1];
+        let beats = marks(&[1.0, 2.0, 3.0]);
+        // Both downbeats snap to 2.0 and collapse to one, keeping the surer.
+        let mut downbeats = vec![
+            BeatMark {
+                at: 1.8,
+                confidence: 0.6,
+            },
+            BeatMark {
+                at: 2.1,
+                confidence: 0.9,
+            },
+        ];
         snap_downbeats_to_beats(&beats, &mut downbeats);
-        assert_eq!(downbeats, vec![2.0]);
+        assert_eq!(seconds(&downbeats), vec![2.0]);
+        assert_eq!(downbeats[0].confidence, 0.9);
     }
 
     #[kithara::test(native, flash(false))]
     fn snap_downbeats_empty_beats() {
-        let beats: Vec<f32> = vec![];
-        let mut downbeats = vec![1.0, 2.0];
+        let beats: Vec<BeatMark> = vec![];
+        let mut downbeats = marks(&[1.0, 2.0]);
         snap_downbeats_to_beats(&beats, &mut downbeats);
-        assert_eq!(downbeats, vec![1.0, 2.0]);
+        assert_eq!(seconds(&downbeats), vec![1.0, 2.0]);
     }
 
     #[kithara::test(native, flash(false))]
     fn snap_downbeats_empty_downbeats() {
-        let beats = vec![1.0, 2.0];
-        let mut downbeats: Vec<f32> = vec![];
+        let beats = marks(&[1.0, 2.0]);
+        let mut downbeats: Vec<BeatMark> = vec![];
         snap_downbeats_to_beats(&beats, &mut downbeats);
         assert!(downbeats.is_empty());
     }
@@ -316,8 +444,8 @@ mod tests {
         let pp = PeakPicker::new(BeatConfig::default());
         let (beats, downbeats) = pp.decode(&beat_logits, &downbeat_logits).unwrap();
 
-        assert_eq!(beats, vec![1.0, 2.0, 3.0]);
-        assert_eq!(downbeats, vec![1.0]);
+        assert_eq!(seconds(&beats), vec![1.0, 2.0, 3.0]);
+        assert_eq!(seconds(&downbeats), vec![1.0]);
     }
 
     #[kithara::test(native, flash(false))]
