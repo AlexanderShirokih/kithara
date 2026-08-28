@@ -35,11 +35,6 @@ where
         self.analyzer.push_interleaved(pcm, channels, at, detector);
     }
 
-    /// The grid as it stands, with the ranges the pass could not analyse.
-    ///
-    /// Once the extent is known the grid is spread across it at its own tempo,
-    /// so a track is usable from its first covered piece rather than from the
-    /// end of its decode.
     pub(crate) fn snapshot(
         &mut self,
         detector: &mut dyn BeatDetector,

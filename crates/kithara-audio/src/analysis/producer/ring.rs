@@ -8,21 +8,12 @@ use ringbuf::{
 };
 use tracing::warn;
 
-/// One offered range: where it starts in the source, and how many mono frames
-/// of it follow in the sample ring.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Span {
     start: u64,
     frames: usize,
 }
 
-/// Open the transport for a pass on `rate`.
-///
-/// The sizes are how far a producer may run ahead of the analysis worker
-/// before its ranges start being refused. The worker is idle-class work, so
-/// this is how long it may be starved without losing what playback already
-/// decoded; a decoder chunk is a few thousand frames, so the descriptor side
-/// is set well above the sample side.
 pub(crate) fn open_for(rate: NonZeroU32) -> (Writer, Reader) {
     const AHEAD_SECONDS: u32 = 4;
     const AHEAD_RANGES: usize = 256;
@@ -31,12 +22,6 @@ pub(crate) fn open_for(rate: NonZeroU32) -> (Writer, Reader) {
     open(frames.unwrap_or(usize::MAX), AHEAD_RANGES)
 }
 
-/// Open a bounded mono transport sized for `frames` of audio and `ranges`
-/// outstanding ranges. Both halves are allocated here, at open, so neither
-/// side allocates again.
-///
-/// [`open_for`] is what a pass uses; this is for a caller that must state the
-/// capacity itself, such as a test that needs the transport to refuse.
 pub(crate) fn open(frames: usize, ranges: usize) -> (Writer, Reader) {
     let (samples_tx, samples_rx) = HeapRb::<f32>::new(frames.max(1)).split();
     let (spans_tx, spans_rx) = HeapRb::<Span>::new(ranges.max(1)).split();
@@ -52,26 +37,16 @@ pub(crate) fn open(frames: usize, ranges: usize) -> (Writer, Reader) {
     )
 }
 
-/// The producer half. Held by whoever decoded the audio; writes only.
 pub(crate) struct Writer {
     samples: HeapProd<f32>,
     spans: HeapProd<Span>,
 }
 
 impl Writer {
-    /// Whether the pass still holds the reading half. A pass that ended drops
-    /// it, and there is then nothing to write for.
     pub(crate) fn is_open(&self) -> bool {
         self.spans.read_is_held()
     }
 
-    /// Take `frames` mono frames yielded by `mono` as one range starting at
-    /// source frame `at`.
-    ///
-    /// Returns whether the range was taken. A range that does not fit is
-    /// refused whole: nothing is written, so the reader never sees half of
-    /// one. The samples are written before the descriptor that names them, so
-    /// a descriptor the reader can see always has its samples behind it.
     pub(crate) fn push<I>(&mut self, at: u64, frames: usize, mono: I) -> bool
     where
         I: Iterator<Item = f32>,
@@ -94,15 +69,12 @@ impl Writer {
     }
 }
 
-/// The consumer half. Held by the analysis worker; reads only.
 pub(crate) struct Reader {
     samples: HeapCons<f32>,
     spans: HeapCons<Span>,
 }
 
 impl Reader {
-    /// Read the next range into `out`, returning the source frame it starts
-    /// at. `out` is left holding exactly that range's mono frames.
     pub(crate) fn pop(&mut self, out: &mut PcmBuf) -> Option<u64> {
         let span = self.spans.try_pop()?;
         out.clear();

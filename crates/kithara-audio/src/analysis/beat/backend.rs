@@ -2,19 +2,15 @@ use kithara_beat::{BEAT_MODEL_BYTES, BeatThis, MEL_MODEL_BYTES};
 
 use super::{BeatDetectError, BeatDetector, BeatMark, RawBeats};
 
-/// Beat detector selection.
 #[derive(Debug, Clone, Copy, derive_more::Display, PartialEq, Eq)]
 #[display("{self:?}")]
 pub(crate) enum BeatDetectorKind {
-    /// `kithara-beat` NN (`beat_this` port). Feature `beat-nn`.
     NnBeatThis,
 }
 
 impl BeatDetectorKind {
-    /// Detectors compiled into this target/feature set, in selector order.
     pub(crate) const ALL: &'static [Self] = &[Self::NnBeatThis];
 
-    /// First compiled-in detector, in selector order.
     pub(crate) fn first() -> Self {
         Self::ALL[0]
     }
@@ -26,10 +22,6 @@ impl Default for BeatDetectorKind {
     }
 }
 
-/// Construct the detector for `kind`.
-///
-/// # Errors
-/// [`BeatDetectError::Init`] when the backend cannot load its models.
 pub(crate) fn build_detector(
     kind: BeatDetectorKind,
 ) -> Result<Box<dyn BeatDetector>, BeatDetectError> {
@@ -38,8 +30,6 @@ pub(crate) fn build_detector(
     }
 }
 
-/// Adapter: `kithara-beat` NN behind the [`BeatDetector`] seam, built from
-/// the embedded small-model bytes.
 struct NnDetector {
     inner: BeatThis,
 }
@@ -72,7 +62,6 @@ impl BeatDetector for NnDetector {
     }
 }
 
-/// The backend's own mark in the terms the pass speaks.
 fn mark(mark: kithara_beat::BeatMark) -> BeatMark {
     BeatMark {
         at: mark.at,

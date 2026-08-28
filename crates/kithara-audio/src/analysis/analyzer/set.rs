@@ -33,9 +33,6 @@ impl<B> AnalyzerBuilder<B>
 where
     B: ResamplerBackend,
 {
-    /// Open a pass on `rate`. Every producer of this pass measures its
-    /// ranges on that axis; one measured on another is refused rather than
-    /// redefining it.
     pub(crate) fn build(&self, rate: NonZeroU32, token: AnalysisToken) -> TrackAnalyzers<B> {
         TrackAnalyzers {
             beat: Config::build(&self.beat, rate, &self.pcm_pool),
@@ -63,10 +60,6 @@ where
         )
     }
 
-    /// Source frames a scheduled run must carry before another position is
-    /// chosen: one detector window, so every run completes a window rather
-    /// than contributing a partial one. `None` when no beat configuration
-    /// names a window, which leaves a run bounded only by what it runs into.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn run_frames(&self, rate: NonZeroU32) -> Option<u64> {
         let seconds = self.beat_config.as_ref()?.ready_seconds();
@@ -316,8 +309,6 @@ mod tests {
         );
     }
 
-    /// The run length the schedule derives must be the window the beat
-    /// analyzer actually evaluates, which clamps both of its own inputs.
     #[kithara::test(native, flash(false))]
     fn a_run_is_sized_by_the_window_the_detector_really_uses() {
         let rate = NonZeroU32::new(44_100).unwrap_or(NonZeroU32::MIN);

@@ -20,27 +20,18 @@ impl Consts {
 #[non_exhaustive]
 #[fieldwork(get)]
 pub struct BeatAnalysisConfig<B> {
-    /// Standalone mono resampler backend used before detector windows.
     resampler_backend: B,
-    /// Quality used by the configured beat-resampler backend.
     #[builder(default = Consts::DEFAULT_BEAT_RESAMPLER_QUALITY)]
     #[field(get(copy))]
     resampler_quality: ResamplerQuality,
-    /// Seconds carried from the end of one detector window into the next.
     #[builder(default = Consts::DEFAULT_BEAT_DETECTOR_OVERLAP_SECONDS)]
     detector_overlap_seconds: u32,
-    /// Shortest span worth running the detector over. A covered run this long
-    /// yields a grid before a full window is available, which is what lets a
-    /// track be usable from its first decoded piece.
     #[builder(default = Consts::DEFAULT_BEAT_DETECTOR_MIN_WINDOW_SECONDS)]
     detector_min_window_seconds: u32,
-    /// Maximum NN detector window length in seconds.
     #[builder(default = Consts::DEFAULT_BEAT_DETECTOR_WINDOW_SECONDS)]
     detector_window_seconds: u32,
-    /// Detector input sample rate in Hz.
     #[builder(default = Consts::DEFAULT_BEAT_TARGET_RATE)]
     target_rate: u32,
-    /// Mono resampler input block size in frames.
     #[builder(default = Consts::DEFAULT_BEAT_BLOCK_FRAMES)]
     block_frames: usize,
 }
@@ -54,10 +45,6 @@ where
         super::nn::tag(self)
     }
 
-    /// Source seconds one detector window needs before it can be evaluated:
-    /// the window itself plus the overlap the next one starts from, clamped
-    /// the way the beat analyzer clamps them when it sizes its own window.
-    /// Read by the decode schedule, which the wasm build has no worker for.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn ready_seconds(&self) -> u32 {
         self.detector_window_seconds.max(1).saturating_add(

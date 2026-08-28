@@ -6,10 +6,7 @@ use crate::{coverage::FrameRange, waveform::BeatGrid};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum GridState {
-    /// Coverage is incomplete or the extent is unknown: a later revision may
-    /// move the markers.
     Provisional,
-    /// The whole source extent is covered.
     Final,
 }
 
@@ -34,13 +31,9 @@ impl BeatSnapshot {
         }
     }
 
-    /// How sure the detector was about this grid, over the markers it actually
-    /// detected. `None` when it detected none: a grid built entirely by
-    /// extrapolation, or one with no markers at all, has nothing to average,
-    /// and zero would claim the detector looked and saw nothing.
-    ///
-    /// Independent of [`state`](Self::state): a final grid of weak markers is
-    /// finished and unconvincing at once.
+    /// Mean confidence over the markers the detector actually reported.
+    /// `None` when it reported none, since zero is a different answer.
+    /// Independent of [`state`](Self::state).
     #[must_use]
     pub const fn confidence(&self) -> Option<f32> {
         self.confidence
@@ -64,12 +57,6 @@ impl BeatSnapshot {
     }
 }
 
-/// The mean confidence over the grid's detected markers.
-///
-/// The mean rather than a median or a count above some threshold: a grid whose
-/// few weak markers matter should say so, and a threshold would re-encode a
-/// sensitivity the caller cannot see. Consumers wanting another reduction have
-/// the per-marker numbers.
 fn grid_confidence(grid: &BeatGrid) -> Option<f32> {
     let mut sum = 0.0_f64;
     let mut count = 0_u32;
@@ -103,8 +90,6 @@ mod tests {
         )
     }
 
-    /// One number for a caller that wants one, over the markers a detector
-    /// actually saw.
     #[kithara::test(native, flash(false))]
     fn a_grid_reports_the_mean_of_what_was_detected() {
         let snapshot = snapshot(
@@ -119,8 +104,6 @@ mod tests {
         );
     }
 
-    /// No confidence and no confidence in it are different answers, and zero
-    /// is the second one.
     #[kithara::test(native, flash(false))]
     fn a_grid_with_nothing_detected_reports_nothing() {
         assert_eq!(
@@ -135,8 +118,6 @@ mod tests {
         );
     }
 
-    /// Being finished and being convincing are different properties, so a
-    /// final grid may be the less trustworthy of the two.
     #[kithara::test(native, flash(false))]
     fn a_final_grid_of_weak_markers_is_less_sure_than_a_provisional_strong_one() {
         let weak = snapshot(vec![(0, Some(0.2)), (100, Some(0.3))], GridState::Final);

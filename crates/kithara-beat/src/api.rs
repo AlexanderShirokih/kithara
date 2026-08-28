@@ -15,17 +15,14 @@ pub enum BeatError {
 }
 
 /// One detected beat or downbeat: where it is, and how sure the model was.
-///
-/// Position and confidence travel together rather than in parallel vectors,
-/// because every stage above this one may drop, merge or reorder marks, and
-/// two vectors would only have to agree.
+/// Paired rather than kept in parallel vectors, which stages above would only
+/// have to keep in step.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct BeatMark {
     /// Seconds from the start of the analysed audio.
     pub at: f32,
-    /// Probability the model assigned the peak this mark was picked from.
-    /// Between zero and one, exclusive.
+    /// Probability the model assigned this peak, in `(0, 1)`.
     pub confidence: f32,
 }
 

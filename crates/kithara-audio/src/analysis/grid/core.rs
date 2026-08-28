@@ -27,10 +27,8 @@ impl Consts {
     const MEDIAN_TRUST_RATIO: f64 = 0.10;
     const MERGE_RATIO_EPS: f64 = 1e-3;
     const MIN_BAR_RATIO: f64 = 0.5;
-    /// Minimum mark gaps required to estimate tempo.
     const MIN_BEAT_GAPS: usize = 8;
     const MIN_MAP_BEATS: usize = 2;
-    /// A bar gap needs two downbeats to measure.
     const MIN_DOWNBEATS: usize = 2;
     const MIN_GAP_RATIO: f64 = 0.7;
     const MIN_LEAF_BARS: usize = 8;
@@ -41,40 +39,28 @@ impl Consts {
     const STABLE_WINDOW_BARS: usize = 16;
 }
 
-/// Grid-cleanup tuning.
 #[derive(Builder, Debug, Clone, PartialEq)]
 pub(crate) struct GridParams {
     #[builder(default = Consts::MAX_BAR_RATIO)]
     pub(crate) max_bar_ratio: f64,
-    /// Stable window median must lie within this fraction of nominal.
     #[builder(default = Consts::MEDIAN_TRUST_RATIO)]
     pub(crate) median_trust_ratio: f64,
-    /// Merge adjacent leaves whose ratio corrections agree within this
-    /// epsilon — collinear halves around the anchor collapse to one segment.
     #[builder(default = Consts::MERGE_RATIO_EPS)]
     pub(crate) merge_ratio_eps: f64,
-    /// Hard sanity bounds on a bar length, as fractions of the nominal bar.
     #[builder(default = Consts::MIN_BAR_RATIO)]
     pub(crate) min_bar_ratio: f64,
-    /// Drop a detector mark closer than this fraction of its nominal interval.
     #[builder(default = Consts::MIN_GAP_RATIO)]
     pub(crate) min_gap_ratio: f64,
-    /// Outlier threshold vs the neighbour-window median bar factor.
     #[builder(default = Consts::OUTLIER_RATIO)]
     pub(crate) outlier_ratio: f64,
-    /// Bisection leaf fit tolerance: worst bar residual, milliseconds.
     #[builder(default = Consts::RESIDUAL_MS)]
     pub(crate) residual_ms: f64,
-    /// Snap bisection split points to multiples of this many bars.
     #[builder(default = Consts::ALIGN_BARS)]
     pub(crate) align_bars: usize,
-    /// Minimum segment length in bars.
     #[builder(default = Consts::MIN_LEAF_BARS)]
     pub(crate) min_leaf_bars: usize,
-    /// Neighbour median window (bars each side) for outlier classification.
     #[builder(default = Consts::OUTLIER_WINDOW)]
     pub(crate) outlier_window: usize,
-    /// Sliding window length (bars) for the stable-tempo anchor search.
     #[builder(default = Consts::STABLE_WINDOW_BARS)]
     pub(crate) stable_window_bars: usize,
 }
@@ -85,7 +71,6 @@ impl Default for GridParams {
     }
 }
 
-/// Builds a cleaned [`BeatGrid`] in source frames, preferring beat marks for tempo.
 pub(crate) fn build_grid(
     raw: &RawBeats,
     sample_rate: u32,
@@ -209,7 +194,6 @@ fn clean_beats(
     Ok(())
 }
 
-/// Estimates tempo by weighting each gap by the beat spans it covers.
 fn beats_bpm(
     beats: &[f32],
     gaps: &mut PcmBuf,
@@ -244,15 +228,8 @@ fn beats_bpm(
     Ok((beat > 0.0).then(|| Consts::SECS_PER_MIN / beat))
 }
 
-/// The surviving positions as source frames, each paired with the confidence
-/// the detector reported for it.
-///
-/// Cleaning only drops and reorders positions - no stage synthesises one - so
-/// a surviving position is bit-identical to a detected one and its confidence
-/// is recoverable by exact lookup. Every marker here came from the detector,
-/// so a lookup that misses means some stage broke that property; the assert
-/// makes the whole test suite check it rather than one reading of three
-/// functions.
+// Cleaning only drops and reorders, so a survivor is one the detector reported
+// and its confidence is recoverable by exact lookup; a miss means that broke.
 fn marks_to_frames(positions: &[f32], detected: &[BeatMark], sample_rate: f64) -> Vec<MarkedBeat> {
     let mut out = Vec::with_capacity(positions.len());
     for &position in positions {
@@ -269,7 +246,6 @@ fn marks_to_frames(positions: &[f32], detected: &[BeatMark], sample_rate: f64) -
     out
 }
 
-/// The confidence the detector reported at exactly `position`.
 fn confidence_at(detected: &[BeatMark], position: f32) -> Option<f32> {
     detected
         .binary_search_by(|mark| mark.at.total_cmp(&position))
@@ -286,7 +262,6 @@ fn position_to_frame(position: f32, sample_rate: f64) -> Option<u64> {
     (f64::from(position) * sample_rate).round().to_u64()
 }
 
-/// 4/4 bars: bpm = beats-per-bar (4) × 60 / bar-seconds.
 fn bar_to_bpm(bar_seconds: f64) -> f64 {
     if bar_seconds > 0.0 {
         Consts::BEATS_PER_BAR * Consts::SECS_PER_MIN / bar_seconds
@@ -307,11 +282,9 @@ mod tests {
     impl Consts {
         const SR: u32 = 44_100;
         const TOL_100MS: u64 = 4_410;
-        /// 0.02 s and 0.1 s at `SR`, in frames.
         const TOL_20MS: u64 = 882;
     }
 
-    /// Positions as detected marks, for the tests that only fix positions.
     fn marks(times: Vec<f32>) -> Vec<BeatMark> {
         times.into_iter().map(BeatMark::at).collect()
     }
@@ -323,9 +296,6 @@ mod tests {
         }
     }
 
-    /// Cleaning drops marks, reorders them and prefers downbeats in a
-    /// collision. Whatever survives must still carry the number the detector
-    /// reported for it, not the one that happened to sit next to it.
     #[kithara::test(native, flash(false))]
     fn cleaning_leaves_every_survivor_with_its_own_confidence() {
         // A beat every half second, each with a confidence of its own, plus a
@@ -585,7 +555,6 @@ mod tests {
         );
     }
 
-    /// `bars + 1` downbeats starting at `start`, one every `bar` seconds.
     fn steady(start: f32, bar: f32, bars: usize) -> Vec<f32> {
         let mut out = Vec::with_capacity(bars + 1);
         let mut t = start;

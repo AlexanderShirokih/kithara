@@ -56,13 +56,9 @@ where
         }
     }
 
-    /// Open a pass on `rate`, the axis its ranges are measured on. The
-    /// reader must decode onto that axis; a chunk on another one is refused
-    /// rather than redefining the pass.
-    ///
-    /// Returns where the pass's snapshots arrive and the producer another
-    /// component may contribute already-decoded ranges through. Dropping the
-    /// producer simply leaves the pass to its own reader.
+    /// Open a pass on `rate`, the axis its ranges are measured on; a chunk on
+    /// another axis is refused. Returns where its snapshots arrive and the
+    /// producer another component may contribute decoded ranges through.
     pub fn analyze(
         &self,
         reader: Box<dyn PcmReader>,

@@ -72,16 +72,10 @@ impl AnalysisFingerprint {
 #[builder(state_mod(vis = "pub"))]
 #[non_exhaustive]
 pub struct TrackAnalysis {
-    /// The caller's own identity for this track.
     token: AnalysisToken,
-    /// Strictly greater than the previous publication of the same pass.
     revision: u64,
-    /// Rate the coverage, extent and grid markers are measured in. This is the
-    /// rate of the chunks the pass was fed, not necessarily the container's.
     source_sample_rate: NonZeroU32,
-    /// Source length in frames, once it is known.
     extent: Option<u64>,
-    /// Source ranges this snapshot is derived from.
     #[builder(default)]
     coverage: Coverage,
     #[builder(default)]
@@ -120,17 +114,9 @@ impl TrackAnalysis {
             .is_some_and(|extent| self.coverage.contains(FrameRange::new(0, extent)))
     }
 
-    /// Source ranges no producer covered.
-    ///
-    /// Derived from the coverage rather than recorded: a range that was
-    /// refused is missing because it is not covered, so a refusal needs no
-    /// second record and a later producer taking it needs no reconciliation.
-    ///
-    /// The horizon is the extent once the pass knows it, and the covered
-    /// frontier until then - the same "what is known to exist" rule
-    /// [`source_frames`](Self::source_frames) uses. So a hole a producer
-    /// skipped over is reported as soon as something past it lands, while
-    /// nothing is claimed about audio the pass has never been told exists.
+    /// Source ranges no producer covered, derived from the coverage rather
+    /// than recorded. The horizon is the extent when known and the covered
+    /// frontier until then, as [`source_frames`](Self::source_frames) uses.
     #[must_use]
     pub fn missing(&self) -> Vec<FrameRange> {
         self.coverage

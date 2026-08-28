@@ -13,30 +13,16 @@ use crate::analysis::analyzer::AnalysisToken;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum Offer {
-    /// Copied into the pass's transport. It joins the coverage when the
-    /// analysis worker drains it.
     Taken,
-    /// The transport is full. The range stays uncovered and so stays missing,
-    /// which is what makes it eligible to be produced again.
     Full,
-    /// Measured on another sample-rate axis than the pass was opened with.
     ForeignRate,
-    /// The pass ended and no longer holds the transport. Nothing was written,
-    /// and nothing written from here on could be read: the caller should let
-    /// the handle go.
     Closed,
 }
 
-/// The producer side of one analysis pass.
-///
-/// The pass is named once, when the handle is made, so offering costs no
-/// lookup and two producers never contend for one transport. Holding a handle
-/// is the only way in; a track with no open pass has none, which is what makes
-/// that case free rather than merely cheap.
+/// The producer side of one analysis pass, named once when the handle is made
+/// so offering costs no lookup. A track with no open pass has no handle.
 pub struct AnalysisProducer {
     ring: Writer,
-    /// The axis the pass was opened on. Every range offered here is measured
-    /// in it.
     rate: NonZeroU32,
     token: AnalysisToken,
 }
@@ -52,12 +38,8 @@ impl AnalysisProducer {
         &self.token
     }
 
-    /// Offer one interleaved range starting at source frame `at`.
-    ///
-    /// Downmixes to mono by the channel mean - the same reduction both
-    /// analyzers apply - and copies it into the pass's transport. Returns
-    /// without blocking, without allocating, and without retaining `pcm`, so
-    /// the caller may recycle its buffer the moment this returns.
+    /// Offer one interleaved range starting at source frame `at`, downmixed to
+    /// mono by the channel mean. Never blocks, allocates, or retains `pcm`.
     pub fn offer(&mut self, pcm: &[f32], spec: PcmSpec, at: u64) -> Offer {
         if !self.ring.is_open() {
             return Offer::Closed;

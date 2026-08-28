@@ -29,18 +29,13 @@ use crate::{
 struct Consts;
 
 impl Consts {
-    /// Four seconds of source, decoded a fifth of a second at a time, so a
-    /// one-second run is exactly five chunks.
     const CHUNK: u64 = 8820;
     const EXTENT: u64 = 4 * 44_100;
     const TOKEN: &'static str = "scheduled-track";
-    /// Ticks a pass is given to reach its own end. Every test drives until
-    /// the pass ends, so this is only a bound on a pass that never does.
     const TICKS: usize = 8192;
     const WINDOW_SECONDS: u32 = 1;
 }
 
-/// What the reader was asked to do, in order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Call {
     Seek { to: u64, landed: u64 },
@@ -51,12 +46,6 @@ enum Call {
 
 type Log = Arc<Mutex<Vec<Call>>>;
 
-/// A seekable source of `frames` frames, decoded `chunk` frames at a time from
-/// wherever it was last positioned.
-///
-/// Every seek snaps down to a multiple of `snap`, the way a decoder snaps to a
-/// granule or segment boundary, and what it reports as its length is separate
-/// from what it holds, so a source can over-report. Every call is logged.
 struct Source {
     bus: EventBus,
     metadata: TrackMetadata,
@@ -92,12 +81,10 @@ impl Source {
         }
     }
 
-    /// Snap every seek down to a multiple of `snap` frames.
     fn snapping(self, snap: u64) -> Self {
         Self { snap, ..self }
     }
 
-    /// Report `frames` as the source length whatever it actually holds.
     fn reporting(self, frames: Option<u64>) -> Self {
         Self {
             reports: frames,
@@ -105,8 +92,6 @@ impl Source {
         }
     }
 
-    /// Reveal the whole length once decoding has started, the way a decode
-    /// path refines a duration upward as it learns more.
     fn refining(self) -> Self {
         Self {
             refines: true,
@@ -114,7 +99,6 @@ impl Source {
         }
     }
 
-    /// Never deliver a chunk, so only a producer can cover this pass.
     fn stalling(self) -> Self {
         Self {
             stalls: true,
@@ -122,9 +106,6 @@ impl Source {
         }
     }
 
-    /// Answer a seek with the position it was asked for while decoding
-    /// resumes wherever `snap` puts it, the way the readers this runs
-    /// against do: the seek is begun, not completed, when it reports.
     fn echoing(self) -> Self {
         Self {
             echoes: true,
@@ -132,7 +113,6 @@ impl Source {
         }
     }
 
-    /// Fail the decode once `chunks` blocks have been delivered.
     fn failing_after(self, chunks: u64) -> Self {
         Self {
             fails_after: Some(chunks),
@@ -239,14 +219,10 @@ impl PcmControl for Source {
     }
 }
 
-/// One decoded block of the shared signal, positioned at the frame it was
-/// decoded from.
 fn decoded(at: u64, frames: u64) -> PcmChunk {
     chunk(&sine_from(at, frames.to_usize().unwrap_or(0)), at)
 }
 
-/// A pass with no beat detector but a beat window, which is what the run
-/// length is derived from.
 fn scheduled(window_seconds: u32) -> AnalyzerBuilder<NoResamplerBackend> {
     AnalyzerBuilder::<NoResamplerBackend>::default().with_beat_config(
         BeatAnalysisConfig::builder()
@@ -257,8 +233,6 @@ fn scheduled(window_seconds: u32) -> AnalyzerBuilder<NoResamplerBackend> {
     )
 }
 
-/// One pass under test: the node, the producer half of its transport, and
-/// what its reader was asked to do.
 struct Pass<B>
 where
     B: ResamplerBackend,
@@ -299,7 +273,6 @@ where
         }
     }
 
-    /// Contribute a range the pass therefore does not have to decode.
     fn offer(&mut self, at: u64, frames: u64) {
         let frames = frames.to_usize().unwrap_or(0);
         assert_eq!(
@@ -309,12 +282,10 @@ where
         );
     }
 
-    /// One tick, so a test can interleave producer offers with decoding.
     fn tick(&mut self) {
         let _ = Node::tick(&mut self.node);
     }
 
-    /// Tick until the pass ends or `ticks` run out; reports whether it ended.
     fn drive(&mut self, ticks: usize) -> bool {
         for _ in 0..ticks {
             if self.has_ended() {
@@ -325,8 +296,6 @@ where
         self.has_ended()
     }
 
-    /// The task drops its sender when it is done, which the watch reports as
-    /// a closed channel.
     fn has_ended(&self) -> bool {
         self.results.has_changed().is_err()
     }
@@ -343,7 +312,6 @@ where
     }
 }
 
-/// Every position the schedule asked the reader for, in order.
 fn targets(calls: &[Call]) -> Vec<u64> {
     calls
         .iter()
@@ -354,7 +322,6 @@ fn targets(calls: &[Call]) -> Vec<u64> {
         .collect()
 }
 
-/// The frame each decoded chunk came from, in order.
 fn decoded_at(calls: &[Call]) -> Vec<u64> {
     calls
         .iter()
@@ -365,7 +332,6 @@ fn decoded_at(calls: &[Call]) -> Vec<u64> {
         .collect()
 }
 
-/// How many chunks were decoded from each scheduled position, in order.
 fn run_lengths(calls: &[Call]) -> Vec<usize> {
     let mut out = Vec::new();
     for call in calls {
@@ -769,22 +735,14 @@ mod artifacts {
 
     const BUCKETS: usize = 64;
     const WINDOW_SECONDS: u32 = 2;
-    /// Longer than the mono a beat pass holds between its runs, which is four
-    /// detector windows: the comparison has to cover the regime where the
-    /// pass reclaims mono, because that is where a scattered coverage set
-    /// could lose a window a linear one keeps.
     const EXTENT: u64 = 12 * 44_100;
 
-    /// What one route over a track produced, and what it took to get there.
     struct Route {
         artifacts: Artifacts,
         seeks: usize,
-        /// Whether the beat pass reclaimed mono it could not hold.
         reclaimed: bool,
     }
 
-    /// A pass with both artifacts and a detector that marks every window it
-    /// is given, so a change in where the windows fall is visible.
     fn beat_pass() -> AnalyzerBuilder<RubatoBackend> {
         AnalyzerBuilder::<RubatoBackend>::default()
             .with_waveform(BUCKETS)
@@ -798,8 +756,6 @@ mod artifacts {
             .with_beat_detector(beat_detector(), GridParams::default())
     }
 
-    /// Cover a whole track through `source`, contributing `offer` as a
-    /// producer would: a block at a time, each taken up before the next.
     fn covered(source: Source, offer: &[(u64, u64)]) -> Route {
         let mut pass = Pass::open(source, beat_pass());
         for (at, frames) in offer {

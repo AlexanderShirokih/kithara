@@ -20,37 +20,23 @@ use crate::coverage::{Coverage, FrameRange};
 struct Consts;
 
 impl Consts {
-    /// Hann `a0`: `w[n] = a0 - a0·cos(2πn/(N-1))`.
     const HANN_A0: f32 = 0.5;
-    /// 75 % overlap: the window advances by a quarter of its length.
     const HOP_DIVISOR: usize = 4;
-    /// Windows held while their span is still incomplete. Each edge of a
-    /// covered run leaves `HOP_DIVISOR` of them, so this bounds what a
-    /// fragmented coverage set can pin.
     const MAX_PARTIAL: usize = 256;
-    /// A real FFT needs at least two input samples.
     const MIN_FFT_SIZE: usize = 2;
 }
 
-/// A window whose span is not filled yet: its mono samples so far, which of
-/// its frames have actually been written, and the order it was opened in, so
-/// the oldest is the one evicted under pressure. The written set is what makes
-/// a window reducible - the pass's coverage is not, because an evicted window
-/// loses samples the pass still counts as covered.
 struct Partial {
     samples: PcmBuf,
     written: Coverage,
     seq: u64,
 }
 
-/// Synchronous position-addressed waveform analyzer. Downmixes to mono once
-/// (channel mean) and reduces the spectrum to a band-energy series indexed by
-/// absolute window position, each window spanning `[k·hop, k·hop + fft_size)`
-/// of the source. A window is reduced once its own span sits inside one
-/// contiguous covered run, so ranges may arrive in any order, twice, or
-/// overlapping. [`Self::snapshot`] folds the series into per-bucket band
-/// heights: three independent envelopes (low/mid/high) the deck paints
-/// concentrically.
+/// Position-addressed waveform analyzer: mono downmix, then a band-energy
+/// series indexed by absolute window position. A window is reduced once its
+/// span sits inside one covered run, so ranges may arrive in any order, twice
+/// or overlapping. [`Self::snapshot`] folds it into low/mid/high bucket
+/// heights.
 pub struct WaveformAnalyzer {
     params: AnalysisParams,
     fft: Arc<dyn RealToComplex<f32>>,
@@ -58,9 +44,7 @@ pub struct WaveformAnalyzer {
     fft_output: Vec<Complex<f32>>,
     fft_scratch: Vec<Complex<f32>>,
     hann: PcmBuf,
-    /// Band energies of reduced windows, by absolute window index.
     bands: BTreeMap<u64, [f32; Band::COUNT]>,
-    /// Windows still waiting for their span to be covered.
     partial: BTreeMap<u64, Partial>,
     pcm_pool: PcmPool,
     band_bin_inv: [f32; Band::COUNT],
@@ -193,9 +177,6 @@ impl WaveformAnalyzer {
         Waveform::from(out)
     }
 
-    /// Drop the oldest partial windows once too many are open at once. Their
-    /// spans stay absent from the series, which is what an uncovered span
-    /// already looks like.
     fn evict_overflow(&mut self) {
         while self.partial.len() > Consts::MAX_PARTIAL {
             let oldest = self
@@ -218,7 +199,6 @@ impl WaveformAnalyzer {
         u64::try_from(self.window_hop).unwrap_or(1)
     }
 
-    /// Run the FFT over `fft_input` and record its band energies at `index`.
     fn reduce(&mut self, index: u64) {
         let bands = if self
             .fft
@@ -262,11 +242,6 @@ impl WaveformAnalyzer {
         self.reduce(index);
     }
 
-    /// Window the leading partial (zero-padded) into one band frame. Only
-    /// needed for a source shorter than one FFT window, which never completes a
-    /// window span and would otherwise analyse to nothing. Runs only once the
-    /// extent is known, so a snapshot taken mid-stream never publishes a
-    /// padded frontier window.
     fn reduce_padded(&mut self, extent: u64) {
         if extent == 0 || extent >= self.size() {
             return;
@@ -284,8 +259,6 @@ impl WaveformAnalyzer {
         self.reduce(0);
     }
 
-    /// Copy the part of `[at, end)` that falls inside window `index` into that
-    /// window's buffer, opening it when this is its first sample.
     fn scatter(&mut self, index: u64, mono: &[f32], at: u64, end: u64) {
         if self.bands.contains_key(&index) {
             return;
@@ -367,9 +340,6 @@ impl WaveformAnalyzer {
         array::from_fn(|i| band[i] * self.band_bin_inv[i])
     }
 
-    /// Window slots the series spans: derived from the extent when it is known,
-    /// so the mapping does not shift as coverage fills in, and from the highest
-    /// reduced window otherwise.
     fn window_count(&self, extent: Option<u64>) -> usize {
         let slots = match extent {
             Some(extent) if extent >= self.size() => (extent - self.size()) / self.hop() + 1,
@@ -407,9 +377,6 @@ fn crossover_bin(hz: f32, bin_hz: f32, bins: usize) -> usize {
     idx.min(bins)
 }
 
-/// Per-bucket band energies -> heights: `sqrt` to magnitude, apply per-band
-/// gain, then divide all three by one shared global max so the relative band
-/// sizes (the loudness tilt) survive while every value lands in `[0, 1]`.
 fn normalize_bands(
     energy: Vec<[f32; Band::COUNT]>,
     gain: [f32; Band::COUNT],
@@ -465,8 +432,6 @@ mod tests {
             self.analyzer.push(pcm, channels, at);
         }
 
-        /// Push one block from frame 0 and snapshot at its end, the shape an
-        /// in-order stream produces.
         fn whole(&mut self, pcm: &[f32], channels: usize, buckets: usize) -> Vec<Bucket> {
             self.push(pcm, channels, 0);
             let extent = u64::try_from(pcm.len() / channels).unwrap_or(0);
@@ -481,13 +446,10 @@ mod tests {
         (a - b).abs() <= Consts::EPS
     }
 
-    /// Tallest band of a bucket (the outer hull height).
     fn peak(b: &Bucket) -> f32 {
         b.low().max(b.mid()).max(b.high())
     }
 
-    /// Unity gain so normalization/routing tests aren't coupled to the
-    /// perceptual band balance.
     fn flat() -> AnalysisParams {
         AnalysisParams::builder().band_gain([1.0; 3]).build()
     }

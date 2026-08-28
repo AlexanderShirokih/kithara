@@ -17,16 +17,11 @@ use crate::{
     coverage::{Coverage, FrameRange},
 };
 
-/// What a pass did with an offered range.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Ingest {
-    /// Folded into the artifacts and added to the coverage.
     Accepted,
-    /// Already covered: the artifacts and the coverage are unchanged.
     Covered,
-    /// Measured on another sample-rate axis than the pass was opened with.
     ForeignRate,
-    /// Reaches past the source extent the pass knows.
     OutOfExtent,
 }
 
@@ -38,15 +33,10 @@ where
 {
     pub(super) beat: Slot<B>,
     pub(super) waveform: waveform::Slot,
-    /// Source frame ranges this pass has observed, in `source_sample_rate`.
     pub(super) coverage: Coverage,
     pub(super) fingerprint: AnalysisFingerprint,
-    /// Source length in frames. Unknown until the pass is told, and pinned to
-    /// the covered frontier at end of stream, which is the decoder's own
-    /// ground truth rather than a second estimate of it.
     pub(super) extent: Option<u64>,
     pub(super) revision: u64,
-    /// Sample-rate axis frozen from the first decoded chunk of this pass.
     #[field(get, copy, vis = "pub(crate)")]
     pub(super) source_sample_rate: NonZeroU32,
     pub(super) token: AnalysisToken,
@@ -56,27 +46,20 @@ impl<B> TrackAnalyzers<B>
 where
     B: ResamplerBackend,
 {
-    /// What this pass has observed, which is what a decode schedule plans
-    /// against. Read by the worker, which the wasm build does not have.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) const fn coverage(&self) -> &Coverage {
         &self.coverage
     }
 
-    /// The source length the caller planned against, which the final snapshot
-    /// measures against instead of the covered frontier. A pass that gave up
-    /// on a range past its last covered frame must still report it missing.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn plan_extent(&mut self, frames: u64) {
         self.extent = Some(self.extent.map_or(frames, |held| held.max(frames)));
     }
 
-    /// Covered source frames, counting an overlap or a repeat once.
     pub(crate) fn covered_frames(&self) -> u64 {
         self.coverage.frames()
     }
 
-    /// Fold one interleaved chunk, positioned by its own metadata.
     pub(crate) fn push(
         &mut self,
         chunk: &PcmChunk,
@@ -97,11 +80,6 @@ where
         self.ingest(&chunk.samples[..], channels, range, detector)
     }
 
-    /// Fold one range that a producer already downmixed.
-    ///
-    /// The transport carries mono measured on the pass's own axis, so there is
-    /// no spec to check here: the producer refused anything else before it was
-    /// written.
     pub(crate) fn push_mono(
         &mut self,
         mono: &[f32],
@@ -138,9 +116,6 @@ where
         Ingest::Accepted
     }
 
-    /// Publish what the pass holds without ending it. `ending` marks end of
-    /// stream: the extent is pinned to the covered frontier and every run's
-    /// trailing detector window is evaluated.
     pub(crate) fn snapshot(
         &mut self,
         detector: Option<&mut beat::Detector>,
@@ -175,7 +150,6 @@ where
             .build()
     }
 
-    /// A grid is final only once the whole known extent is one covered run.
     fn grid_state(&self) -> GridState {
         let covered = self
             .extent

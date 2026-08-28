@@ -5,11 +5,8 @@ use crate::{
     config::BeatConfig,
 };
 
-/// Frames per second of the beat model output.
 const FPS: f32 = 50.0;
 
-/// Decodes raw beat/downbeat logits into timestamped events: max-pool peak
-/// picking, thresholding, deduplication, downbeat-to-beat snapping.
 pub(crate) struct PeakPicker {
     config: BeatConfig,
 }
@@ -19,9 +16,6 @@ impl PeakPicker {
         Self { config }
     }
 
-    /// Decode beat and downbeat logits into `(beats, downbeats)` in seconds.
-    ///
-    /// Both slices must have the same length (one value per mel frame).
     pub(crate) fn decode(
         &self,
         beat_logits: &[f32],
@@ -49,10 +43,6 @@ impl PeakPicker {
     }
 }
 
-/// One picked peak: where it sits in model frames, and the logit that got it
-/// picked. The logit travels with the position because it is the only place
-/// the model says how sure it was, and every later stage can move a peak but
-/// none can recover its evidence.
 #[derive(Clone, Copy, Debug)]
 struct Peak {
     at: f64,
@@ -60,8 +50,6 @@ struct Peak {
 }
 
 impl Peak {
-    /// The mark this peak becomes: seconds from the start of the analysed
-    /// audio, and the probability behind it.
     fn mark(&self) -> BeatMark {
         BeatMark {
             at: (self.at / f64::from(FPS)).as_(),
@@ -70,16 +58,10 @@ impl Peak {
     }
 }
 
-/// The model emits logits; a probability is what a caller can compare. The
-/// default `peak_threshold` of zero is exactly one half here.
 fn sigmoid(logit: f32) -> f32 {
     1.0 / (1.0 + (-logit).exp())
 }
 
-/// Identify local maxima exceeding [`BeatConfig::peak_threshold`].
-///
-/// Max-pool window of `2 * peak_half_width + 1` frames, stride 1: a frame is a
-/// peak if it equals the local maximum and clears the threshold.
 fn find_peaks(logits: &[f32], config: &BeatConfig) -> Vec<Peak> {
     let len = logits.len();
     let mut peaks: Vec<(usize, f32)> = Vec::new();
@@ -109,12 +91,6 @@ fn find_peaks(logits: &[f32], config: &BeatConfig) -> Vec<Peak> {
     deduplicate_peaks(&peaks, config.dedup_width)
 }
 
-/// Merge adjacent peak frame indices using a running mean.
-///
-/// Consecutive peaks at most `width` frames apart collapse to their mean
-/// position and keep the strongest logit among them: the merged peak is one
-/// beat, and how sure the model was about it is its best evidence, not an
-/// average diluted by the frames either side of it.
 fn deduplicate_peaks(peaks: &[(usize, f32)], width: usize) -> Vec<Peak> {
     let Some((&(first, first_logit), rest)) = peaks.split_first() else {
         return Vec::new();
@@ -143,13 +119,6 @@ fn deduplicate_peaks(peaks: &[(usize, f32)], width: usize) -> Vec<Peak> {
     result
 }
 
-/// Move every downbeat onto the nearest beat, then collapse the ones that
-/// landed together.
-///
-/// A downbeat keeps its own confidence: it is what the downbeat head of the
-/// model reported, and the beat head's number is a different answer to a
-/// different question. Two downbeats that collapse keep the higher one, the
-/// same rule dedup uses.
 fn snap_downbeats_to_beats(beats: &[BeatMark], downbeats: &mut Vec<BeatMark>) {
     if beats.is_empty() || downbeats.is_empty() {
         return;
@@ -190,22 +159,18 @@ mod tests {
 
     use super::*;
 
-    /// Where the picked peaks sit, for the tests that only care about that.
     fn at(peaks: &[Peak]) -> Vec<f64> {
         peaks.iter().map(|peak| peak.at).collect()
     }
 
-    /// Where the marks sit, in seconds.
     fn seconds(marks: &[BeatMark]) -> Vec<f32> {
         marks.iter().map(|mark| mark.at).collect()
     }
 
-    /// Frames with no evidence either way, so a test can place its own.
     fn flat(len: usize) -> Vec<f32> {
         vec![-5.0; len]
     }
 
-    /// Marks at the given seconds, for the tests that only care about where.
     fn marks(at: &[f32]) -> Vec<BeatMark> {
         at.iter()
             .map(|&at| BeatMark {
@@ -215,10 +180,6 @@ mod tests {
             .collect()
     }
 
-    /// The model's own answer to how sure it was must reach the caller, and
-    /// must order the way the logits did: a stronger peak cannot come back
-    /// less confident than a weaker one, and neither may saturate to a
-    /// certainty the model never expressed.
     #[kithara::test(native, flash(false))]
     fn a_stronger_peak_comes_back_more_confident() {
         let mut logits = flat(200);
@@ -243,8 +204,6 @@ mod tests {
         }
     }
 
-    /// A logit at the default threshold is one half by construction, which is
-    /// what the threshold is documented to mean.
     #[kithara::test(native, flash(false))]
     fn the_default_threshold_is_an_even_chance() {
         assert!((sigmoid(0.0) - 0.5).abs() < 1e-6);
@@ -252,8 +211,6 @@ mod tests {
         assert!(sigmoid(4.0) > 0.98);
     }
 
-    /// Merged peaks are one beat, and its confidence is the best evidence for
-    /// it, not an average pulled down by the frames beside it.
     #[kithara::test(native, flash(false))]
     fn merged_peaks_keep_their_strongest_evidence() {
         let merged = deduplicate_peaks(&[(10, 0.5), (11, 2.0)], 1);
@@ -263,9 +220,6 @@ mod tests {
         assert_eq!(merged[0].logit, 2.0);
     }
 
-    /// The threshold decides which model outputs become beats at all. Raising
-    /// it past a peak's logit drops that beat; the picker must not carry a
-    /// fixed sensitivity the caller cannot move.
     #[kithara::test(native, flash(false))]
     fn a_raised_threshold_drops_a_weak_peak() {
         let logits = [0.0, 0.0, 0.5, 1.0, 0.5, 0.0, 0.0];
@@ -275,8 +229,6 @@ mod tests {
         assert!(find_peaks(&logits, &strict).is_empty());
     }
 
-    /// The max-pool half-width is the shortest gap two beats may be reported
-    /// at. Widening it must suppress a smaller neighbour the default keeps.
     #[kithara::test(native, flash(false))]
     fn a_wider_window_suppresses_a_neighbour_the_default_keeps() {
         // 4 frames apart: each wins its own +-3 window, neither wins a +-4 one.
@@ -292,8 +244,6 @@ mod tests {
         assert_eq!(at(&find_peaks(&logits, &wide)), vec![2.0]);
     }
 
-    /// Dedup width is how far apart two surviving peaks still count as one
-    /// beat. A wider one must merge peaks the default reports separately.
     #[kithara::test(native, flash(false))]
     fn a_wider_dedup_merges_peaks_the_default_reports_apart() {
         let peaks = [(10, 1.0), (14, 1.0)];

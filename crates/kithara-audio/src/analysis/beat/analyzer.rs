@@ -12,7 +12,6 @@ use super::{
 };
 use crate::{analysis::analyzer::BeatAnalysisConfig, coverage::FrameRange, waveform::BeatGrid};
 
-/// Detector windows of mono a pass keeps before the earliest is reclaimed.
 const BUDGET_WINDOWS: usize = 4;
 
 #[derive(Builder)]
@@ -27,14 +26,6 @@ where
     source_rate: u32,
 }
 
-/// Position-addressed front-end for beat detection. Downmixes interleaved PCM
-/// to mono and hands it to [`Runs`], which resamples each contiguous covered
-/// span to the detector's input rate under its own resampler. A detector window
-/// is a fixed span of the absolute detector-rate timeline, so it is detected
-/// once, wherever in the arrival order its span happens to complete, and its
-/// markers sit at the source position they were found at. `finalize` flushes
-/// every run, detects the trailing window of each, and builds the cleaned
-/// [`BeatGrid`] in source frames.
 #[derive(fieldwork::Fieldwork)]
 #[fieldwork(opt_in, get)]
 pub(crate) struct BeatAnalyzer<B>
@@ -45,10 +36,7 @@ where
     failure: Option<BeatDetectError>,
     pcm_pool: PcmPool,
     runs: Runs<B>,
-    /// Markers of every detected window, by absolute window index.
     windows: BTreeMap<usize, RawBeats>,
-    /// Windows detected over less than a full span. They are re-detected once
-    /// their span fills, so an early estimate is refined rather than kept.
     short: BTreeSet<usize>,
     hop_frames: usize,
     min_frames: usize,
@@ -101,7 +89,6 @@ where
         }
     }
 
-    /// Source ranges the mono budget reclaimed before their window completed.
     pub(crate) fn unanalysed(&self) -> Vec<FrameRange> {
         self.runs
             .dropped()
@@ -110,12 +97,6 @@ where
             .collect()
     }
 
-    /// Build the grid from what is detected so far, leaving the pass able to
-    /// accept further ranges. With `ending` the frontier resamplers are
-    /// flushed and each run's trailing window is detected first.
-    ///
-    /// # Errors
-    /// Propagates the detector failure.
     pub(crate) fn snapshot(
         &mut self,
         detector: &mut dyn BeatDetector,
@@ -144,7 +125,6 @@ where
             .map_err(|_| BeatDetectError::Buffer)
     }
 
-    /// Fold one interleaved block starting at source frame `at`.
     pub(crate) fn push_interleaved(
         &mut self,
         pcm: &[f32],
@@ -171,12 +151,6 @@ where
         self.failure = self.detect(detector, false).err();
     }
 
-    /// Detect every window whose span is complete inside one run, plus the
-    /// leading incomplete one once it is at least `min_frames` long: that is
-    /// what turns the first covered piece of a track into a usable grid. A
-    /// window detected short is re-detected when its span fills, so the early
-    /// estimate is refined instead of kept. With `trailing`, whatever is left
-    /// of each run is detected regardless of length.
     fn detect(
         &mut self,
         detector: &mut dyn BeatDetector,
@@ -249,11 +223,6 @@ where
     }
 }
 
-/// Window-relative detector times to absolute source seconds, dropping what
-/// belongs to the next window's own span.
-/// Move a window's marks onto the track timeline, dropping the tail the next
-/// window owns. Only the position moves: where a mark sits is a property of
-/// the window it came from, how sure the detector was is not.
 fn window_marks(marks: Vec<BeatMark>, offset: f32, keep_until: f32) -> Vec<BeatMark> {
     marks
         .into_iter()
@@ -269,9 +238,6 @@ fn frames_for_seconds(sample_rate: u32, seconds: u32) -> usize {
     usize::try_from(u64::from(sample_rate) * u64::from(seconds)).unwrap_or(usize::MAX)
 }
 
-/// Sort the gathered marks and collapse the ones two windows both reported.
-/// A collapsed pair keeps the higher confidence, the same rule the detector's
-/// own deduplication uses.
 fn normalize_marks(marks: &mut Vec<BeatMark>) {
     marks.retain(|mark| mark.at.is_finite() && mark.at >= 0.0);
     marks.sort_by(|a, b| a.at.total_cmp(&b.at));
@@ -306,9 +272,6 @@ mod tests {
         const TARGET: usize = 22_050;
     }
 
-    /// A window is a decode accident: where the detector was asked to look
-    /// says nothing about how sure it was. Moving a window's marks onto the
-    /// track timeline must move only their positions.
     #[kithara::test(native, flash(false))]
     fn a_block_boundary_moves_a_mark_without_touching_its_confidence() {
         let marks = vec![
@@ -336,8 +299,6 @@ mod tests {
         );
     }
 
-    /// Two windows overlapping on one beat report it twice. The collapsed
-    /// mark keeps the better evidence, not whichever window came second.
     #[kithara::test(native, flash(false))]
     fn two_windows_reporting_one_beat_keep_the_surer_answer() {
         let mut marks = vec![
@@ -386,8 +347,6 @@ mod tests {
         )
     }
 
-    /// Mocked detector, called exactly once: `check` asserts on the mono
-    /// input it received and scripts the raw outcome.
     fn detector(check: impl Fn(&[f32]) -> RawBeats + Send + Sync + 'static) -> Unimock {
         Unimock::new(
             BeatDetectorMock
@@ -396,7 +355,6 @@ mod tests {
         )
     }
 
-    /// Interleaved stereo, both channels equal to `f(frame_idx)`.
     fn stereo(frames: usize, f: impl Fn(usize) -> f32) -> Vec<f32> {
         let mut out = Vec::with_capacity(frames * 2);
         for n in 0..frames {
@@ -571,9 +529,6 @@ mod tests {
         assert_eq!(seen.as_slice(), &[44_100, 44_100, 44_100]);
     }
 
-    /// A run that reaches the minimum but never fills a window plus its
-    /// overlap is detected once, as soon as it is long enough: waiting for the
-    /// flush is what kept a short track unusable until the end of its decode.
     #[kithara::test]
     fn a_run_at_the_minimum_is_detected_before_the_flush() {
         let config = BeatAnalysisConfig::builder()
@@ -609,9 +564,6 @@ mod tests {
         );
     }
 
-    /// The first covered piece of a track yields markers long before a full
-    /// detector window exists, and the estimate is replaced once the window
-    /// fills rather than kept.
     #[kithara::test]
     fn a_short_run_yields_a_grid_and_is_refined_when_it_fills() {
         let config = BeatAnalysisConfig::builder()

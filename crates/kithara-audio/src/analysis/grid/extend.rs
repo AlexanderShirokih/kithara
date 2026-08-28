@@ -2,18 +2,8 @@ use num_traits::cast::ToPrimitive;
 
 use crate::waveform::{BeatGrid, MarkedBeat};
 
-/// Beats a gap must be wider than before it is filled, so a marker that is
-/// merely late does not gain a neighbour.
 const FILL_THRESHOLD: f64 = 1.5;
 
-/// Spread a grid across the whole source extent at its own tempo, keeping every
-/// detected marker where it was found.
-///
-/// A pass publishes long before the track is covered, and a grid that stops at
-/// the analysed span cannot drive a beat clock. Filling the rest at the tempo
-/// the detected markers imply makes the grid usable from the first covered
-/// piece; a later revision replaces the filled positions with detected ones as
-/// coverage arrives.
 pub(crate) fn extend_over(grid: BeatGrid, extent: u64, source_rate: u32) -> BeatGrid {
     let Some(beat) = beat_period(grid.bpm(), source_rate) else {
         return grid;
@@ -33,8 +23,6 @@ pub(crate) fn extend_over(grid: BeatGrid, extent: u64, source_rate: u32) -> Beat
     BeatGrid::new(grid.bpm(), beats, downbeats, grid.segments().to_vec())
 }
 
-/// Frames between beats, from the tempo the grid reports. `build_grid` already
-/// derived that tempo from these markers, so there is no second estimate here.
 fn beat_period(bpm: f64, source_rate: u32) -> Option<f64> {
     if bpm <= 0.0 {
         return None;
@@ -42,9 +30,6 @@ fn beat_period(bpm: f64, source_rate: u32) -> Option<f64> {
     Some(60.0 / bpm * f64::from(source_rate))
 }
 
-/// Frames between bars: whichever whole number of beats the first observed
-/// downbeat gap comes to, so a bar cannot drift away from the beat it is
-/// built on.
 fn bar_period(downbeats: &[u64], beat: f64) -> f64 {
     let observed = downbeats
         .windows(2)
@@ -57,13 +42,6 @@ fn bar_period(downbeats: &[u64], beat: f64) -> f64 {
     (gap / beat).round().max(1.0) * beat
 }
 
-/// Fill the gaps between `marks` and continue past both ends until `extent`.
-/// Pair each spread marker with a confidence: the one it was detected with if
-/// it was already in the grid, and none if this pass invented it.
-///
-/// An invented marker gets `None` rather than a zero. Zero is a real answer -
-/// the detector saw this and was sure it was not a beat - and nothing here saw
-/// anything.
 fn marked(spread: Vec<u64>, detected: &[u64], confidence: &[Option<f32>]) -> Vec<MarkedBeat> {
     spread
         .into_iter()
@@ -109,7 +87,6 @@ fn spread(marks: &[u64], period: f64, extent: u64) -> Vec<u64> {
     out
 }
 
-/// Markers before the first detected one, nearest first.
 fn walk_back(first: u64, period: f64) -> Vec<u64> {
     let mut out = Vec::new();
     let Some(anchor) = first.to_f64() else {
@@ -125,8 +102,6 @@ fn walk_back(first: u64, period: f64) -> Vec<u64> {
     out
 }
 
-/// Evenly divide a gap wide enough to be missing markers, so the inserted ones
-/// meet the detected marker that closes it.
 fn fill_between(out: &mut Vec<u64>, from: u64, to: u64, period: f64) {
     let Some(gap) = to.checked_sub(from).and_then(|gap| gap.to_f64()) else {
         return;
@@ -161,8 +136,6 @@ mod tests {
 
     const RATE: u32 = 44_100;
 
-    /// 120 bpm at 44.1 kHz: one beat every 22 050 frames, every marker
-    /// detected so extrapolated ones stand out.
     fn grid(beats: Vec<u64>) -> BeatGrid {
         let downbeats = beats.iter().step_by(4).map(detected).collect();
         BeatGrid::new(
@@ -173,14 +146,10 @@ mod tests {
         )
     }
 
-    /// A marker the detector reported, sure enough to keep.
     fn detected(frame: &u64) -> (u64, Option<f32>) {
         (*frame, Some(0.9))
     }
 
-    /// Extrapolation is the grid guessing where beats must be, not the
-    /// detector reporting where they are. A guessed marker must say so, and
-    /// the detected ones it was built from must keep their own answer.
     #[kithara::test]
     fn an_extrapolated_marker_claims_nothing_and_a_detected_one_keeps_its_answer() {
         let detected = vec![0, 22_050, 44_100, 66_150];

@@ -101,8 +101,6 @@ fn cancel_racing_finalize_drops_sender_without_emitting() {
     assert!(results.has_changed().is_err(), "task sender is dropped");
 }
 
-/// Drive a node whose reader only stalls, offering `ranges` through the
-/// producer first, and return the last analysis it published.
 #[cfg(feature = "analysis-waveform")]
 fn offered(ranges: &[(u64, usize)]) -> Option<TrackAnalysis> {
     let rate = super::fixtures::spec().sample_rate;
@@ -153,8 +151,6 @@ fn offered_ranges_land_where_they_were_offered() {
     );
 }
 
-/// A handle names its pass when it is made, so there is no lookup that
-/// could route a range to the wrong one.
 #[cfg(feature = "analysis-waveform")]
 #[kithara::test]
 fn an_offer_reaches_only_the_pass_its_handle_names() {
@@ -350,12 +346,6 @@ fn a_pass_fed_by_a_producer_publishes_as_it_goes() {
     );
 }
 
-/// Run the transport dry so a range is genuinely refused, then carry on
-/// past the hole as the worker catches up. With `reoffer`, the refused
-/// range is offered a second time before end of stream.
-///
-/// Returns the pass's last publication, the range that was refused, and
-/// the frame the offers reached.
 #[cfg(feature = "analysis-waveform")]
 fn refusal_run(reoffer: bool) -> (TrackAnalysis, FrameRange, u64) {
     const BLOCK: u64 = 8192;

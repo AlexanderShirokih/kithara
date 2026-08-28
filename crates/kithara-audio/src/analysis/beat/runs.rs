@@ -7,27 +7,16 @@ use tracing::{debug, warn};
 
 use crate::analysis::analyzer::BeatAnalysisConfig;
 
-/// One contiguous covered span of the source, held as detector-rate mono
-/// anchored at its own source start.
-///
-/// The run, not the pass, owns the resampler: `MonoStream` is sequential, so a
-/// range decoded later in the track cannot be pushed through the stream that
-/// produced an earlier one. A run keeps its stream only while it is the
-/// frontier; the moment another segment is appended behind it, the stream is
-/// flushed into `mono` and dropped.
 struct Run<B>
 where
     B: ResamplerBackend,
 {
     start: u64,
     end: u64,
-    /// Detector-rate mono from `start`, drawn from the pass's pool so a run
-    /// cannot grow outside the pool's byte budget.
     mono: PcmBuf,
     stream: Option<MonoStream<B>>,
 }
 
-/// The contiguous runs a beat pass has assembled, in source order.
 #[derive(fieldwork::Fieldwork)]
 #[fieldwork(opt_in, get)]
 pub(super) struct Runs<B>
@@ -37,12 +26,7 @@ where
     runs: Vec<Run<B>>,
     config: BeatAnalysisConfig<B>,
     pcm_pool: PcmPool,
-    /// Detector frames the runs may hold between them. Detection consumes the
-    /// front of a run and never its back, so the budget is spent from the
-    /// earliest run forward.
     budget: usize,
-    /// Source ranges whose detector-rate mono the budget reclaimed. They stay
-    /// covered for every other consumer; beat simply cannot analyse them again.
     #[field(get, vis = "pub(super)")]
     dropped: Vec<(u64, u64)>,
     ratio: f64,
@@ -75,7 +59,6 @@ where
         }
     }
 
-    /// Detector frames the runs hold between them.
     fn held(&self) -> usize {
         self.runs.iter().map(|run| run.mono.len()).sum()
     }
@@ -85,8 +68,6 @@ where
         self.held()
     }
 
-    /// Spend the budget from the earliest run forward, which is where
-    /// detection has already been.
     fn enforce_budget(&mut self) {
         let mut held = self.held();
         while held > self.budget {
@@ -126,8 +107,6 @@ where
         }
     }
 
-    /// Detector frames a source span of `frames` becomes, using the same
-    /// rounding `MonoStream` uses for its own output budget.
     fn detector_frames(&self, frames: u64) -> usize {
         let frames: f64 = frames.to_f64().unwrap_or(0.0);
         (frames * self.ratio)
@@ -136,7 +115,6 @@ where
             .unwrap_or(usize::MAX)
     }
 
-    /// Flush every frontier stream so each run holds its whole source span.
     pub(super) fn flush(&mut self) {
         for index in 0..self.runs.len() {
             let Some((span, stream)) = self
@@ -160,11 +138,6 @@ where
         }
     }
 
-    /// Source-rate mono, in the same order the caller wants it analysed.
-    ///
-    /// The block may extend a run, sit before one, bridge two, or start its
-    /// own; every shape is the same walk from the leftmost touched run to the
-    /// rightmost, appending the pieces of the block that fill the gaps.
     pub(super) fn push(&mut self, mono: &[f32], at: u64) {
         let Ok(span) = u64::try_from(mono.len()) else {
             return;
@@ -191,20 +164,14 @@ where
         self.enforce_budget();
     }
 
-    /// Detector-rate mono of every run, with the source frame each begins at.
     pub(super) fn spans(&self) -> impl Iterator<Item = (u64, &[f32])> {
         self.runs.iter().map(|run| (run.start, &run.mono[..]))
     }
 
-    /// Detector frames a source frame maps to inside a run starting at `start`.
     pub(super) fn offset_in_run(&self, start: u64, frame: u64) -> usize {
         self.detector_frames(frame.saturating_sub(start))
     }
 
-    /// Fold `absorbed` and the block into one run, left to right. Every stream
-    /// but the frontier's is flushed and every join is pinned to the detector
-    /// frame its source position implies, so a rounding difference cannot
-    /// accumulate into a drift of the markers downstream of it.
     fn merge(&mut self, absorbed: Vec<Run<B>>, mono: &[f32], at: u64, end: u64) -> Option<Run<B>> {
         let base = absorbed.first().map_or(at, |run| run.start.min(at));
         let mut out = self.pcm_pool.get_with(Vec::clear);
@@ -252,7 +219,6 @@ where
         })
     }
 
-    /// Start a run at `at`, keeping its stream as the frontier.
     fn open(&mut self, mono: &[f32], at: u64, end: u64) -> Option<Run<B>> {
         let mut out = self.pcm_pool.get_with(Vec::clear);
         let stream = if self.source_rate == self.target_rate {
@@ -279,9 +245,6 @@ where
         })
     }
 
-    /// Resample one closed segment into `out`: its stream never becomes a
-    /// frontier, so it is flushed straight away and the output is exact for its
-    /// source span.
     fn segment(&mut self, out: &mut PcmBuf, mono: &[f32]) -> Option<()> {
         if self.source_rate == self.target_rate {
             append(out, mono);
@@ -329,9 +292,6 @@ where
     }
 }
 
-/// Truncate or zero-extend to `expected`. The correction is under one detector
-/// frame per join: `MonoStream` rounds its own budget, and rounding each
-/// segment separately does not always sum to rounding the whole.
 fn pad(out: &mut PcmBuf, expected: usize) {
     if out.len() > expected {
         out.truncate(expected);
@@ -343,7 +303,6 @@ fn pad(out: &mut PcmBuf, expected: usize) {
     }
 }
 
-/// Append to a pooled buffer, which grows only inside the pool's budget.
 fn append(out: &mut PcmBuf, src: &[f32]) {
     let at = out.len();
     if let Err(e) = out.ensure_len(at.saturating_add(src.len())) {
@@ -358,7 +317,6 @@ fn append(out: &mut PcmBuf, src: &[f32]) {
     }
 }
 
-/// The `[from, to)` part of a block that starts at source frame `at`.
 fn slice(mono: &[f32], at: u64, from: u64, to: u64) -> Option<&[f32]> {
     let start = usize::try_from(from.saturating_sub(at)).ok()?;
     let end = usize::try_from(to.saturating_sub(at)).ok()?;

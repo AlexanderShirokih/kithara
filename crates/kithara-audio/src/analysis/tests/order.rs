@@ -9,7 +9,6 @@ use crate::analysis::beat::GridParams;
 
 const BUCKETS: usize = 64;
 
-/// Feed `blocks` in the given order and publish once at end of stream.
 fn analyse(samples: &[f32], blocks: &[(u64, usize, usize)]) -> Artifacts {
     let mut builder = AnalyzerBuilder::<RubatoBackend>::default()
         .with_waveform(BUCKETS)
@@ -25,7 +24,6 @@ fn analyse(samples: &[f32], blocks: &[(u64, usize, usize)]) -> Artifacts {
     artifacts(&analyzers.snapshot(beat.as_mut(), true))
 }
 
-/// `count` equal blocks covering the whole signal.
 fn blocks(frames: usize, count: usize) -> Vec<(u64, usize, usize)> {
     let per = frames / count;
     (0..count)

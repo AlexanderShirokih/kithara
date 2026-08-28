@@ -19,17 +19,12 @@ use crate::{
     runtime::TickResult,
 };
 
-/// Source seconds between publications while decoding. Keyed to decoded
-/// frames rather than wall-clock time so a run publishes the same revision
-/// sequence every time.
 const PUBLISH_SECONDS: u64 = 5;
 
 pub(crate) struct Job {
     pub(crate) reader: Box<dyn PcmReader>,
     pub(crate) cancel: CancelToken,
-    /// The consumer half of this pass's producer transport.
     pub(crate) ingest: ring::Reader,
-    /// The axis every range of this pass is measured on.
     pub(crate) rate: NonZeroU32,
     pub(crate) token: AnalysisToken,
     pub(crate) tx: watch::Sender<Option<TrackAnalysis>>,
@@ -42,12 +37,6 @@ enum TaskPhase {
     Done,
 }
 
-/// One decoded run: the position it was scheduled to, where its first chunk
-/// came from, how far it has decoded, and whether any of that was new.
-///
-/// `at` is seeded with the scheduled position and replaced by the first chunk
-/// the run decodes: a seek reports where it was asked to go, not where the
-/// decoder resumed, so only a chunk says where the run really starts.
 struct Run {
     chosen: u64,
     at: u64,
@@ -64,19 +53,12 @@ where
     cancel: CancelToken,
     analyzers: Option<TrackAnalyzers<B>>,
     ingest: ring::Reader,
-    /// Where a drained range is read into. Held across ticks so draining
-    /// costs no allocation.
     scratch: Option<PcmBuf>,
     rate: NonZeroU32,
     token: AnalysisToken,
     tx: watch::Sender<Option<TrackAnalysis>>,
     phase: TaskPhase,
-    /// Covered frames at the last publication.
     published_at: u64,
-    /// Source length the schedule plans against, on the pass's axis. Read
-    /// from the reader rather than from the pass, which pins its own extent
-    /// only at end of stream. Until the source names one, the reader is left
-    /// where it is and decoded in order.
     extent: Extent,
     schedule: Schedule,
     run: Option<Run>,
@@ -104,23 +86,18 @@ where
         }
     }
 
-    /// Whether the pass already holds `range` in one covered run.
     fn is_covered(&self, range: FrameRange) -> bool {
         self.analyzers
             .as_ref()
             .is_some_and(|analyzers| analyzers.coverage().contains(range))
     }
 
-    /// Whether the whole known extent sits in one covered run. Asked before
-    /// the run in flight is, because a run waiting on its reader is never the
-    /// one that notices a producer covered the last of the track.
     fn is_complete(&self) -> bool {
         self.extent
             .frames()
             .is_some_and(|extent| self.is_covered(FrameRange::new(0, extent)))
     }
 
-    /// The position to decode from next, chosen from what no producer covered.
     fn choose(&self) -> Option<u64> {
         let empty = Coverage::default();
         let coverage = self
@@ -157,12 +134,7 @@ where
             }
             Ok(ChunkOutcome::Pending { .. }) => TickResult::UpstreamPending,
             Ok(ChunkOutcome::Eof { .. }) => {
-                // End of stream ends the run, and bounds the extent: the
-                // source has just proved where it ends, whatever length it
-                // reports. It ends the pass only when there is nothing to
-                // schedule in its place - a run that reached the end of the
-                // source may still have gaps behind it, and a pass with no
-                // extent has no schedule at all.
+                // End of stream bounds the extent; gaps behind it may remain.
                 if self.extent.frames().is_none() {
                     self.finish();
                 } else {
@@ -174,8 +146,7 @@ where
                 TickResult::Progress
             }
             Err(error) => {
-                // What was covered is still worth publishing: the reader
-                // failed, the ranges it already delivered did not.
+                // The reader failed; the ranges it delivered did not.
                 warn!(?error, "analysis: decode error; pass ended");
                 self.finish();
                 TickResult::Progress
@@ -183,13 +154,6 @@ where
         }
     }
 
-    /// Fold everything a producer left in the transport, one range per
-    /// descriptor.
-    ///
-    /// Contiguous ranges are deliberately not joined into one block: the beat
-    /// pass segments its resampler at every block boundary, so joining them
-    /// would make the artifacts depend on how many ranges happened to be
-    /// waiting. Returns whether anything was folded.
     fn drain(&mut self, builder: &AnalyzerBuilder<B>, detector: Option<&mut Detector>) -> bool {
         let scratch = self
             .scratch
@@ -208,7 +172,6 @@ where
         folded
     }
 
-    /// Whether enough new source has been covered to be worth publishing.
     fn due(&self) -> bool {
         let Some(analyzers) = &self.analyzers else {
             return false;
@@ -218,10 +181,6 @@ where
         analyzers.covered_frames().saturating_sub(self.published_at) >= interval
     }
 
-    /// End the pass, handing the length it planned against to the snapshot so
-    /// a range it gave up on is still reported missing. Safe here and not
-    /// earlier: nothing is ingested once the phase leaves `Decode`, so an
-    /// extent the source under-reports cannot refuse its own tail.
     fn finish(&mut self) {
         let planned = self.extent.frames();
         let Some(analyzers) = &mut self.analyzers else {
@@ -238,12 +197,6 @@ where
         self.phase == TaskPhase::Done
     }
 
-    /// Publish what the pass holds. `ending` marks end of stream, which pins
-    /// the extent and evaluates every run's trailing detector window.
-    ///
-    /// A pass that covered nothing publishes nothing, the same way a stream
-    /// that decoded nothing is not an analysis. It is reachable when every
-    /// range the reader produced was measured on another axis.
     fn publish(&mut self, detector: Option<&mut Detector>, ending: bool) {
         let Some(analyzers) = &mut self.analyzers else {
             return;
@@ -256,9 +209,6 @@ where
         self.tx.send(Some(snapshot)).ok();
     }
 
-    /// Seek to the next scheduled position and open a run there, or end the
-    /// pass when there is nothing left to schedule: the extent is covered, or
-    /// what is left of it has already proved unreachable.
     fn reschedule(&mut self) -> TickResult {
         self.retire();
         let Some(at) = self.choose() else {
@@ -267,9 +217,7 @@ where
         };
 
         match self.reader.seek(duration_for_frames(self.rate.get(), at)) {
-            // Where the seek says it landed is only an echo of the target on
-            // the readers this runs against, so the run opens on the position
-            // it asked for and takes its real start from its first chunk.
+            // `landed_at` only echoes the target here; the first chunk says where.
             Ok(SeekOutcome::Landed { .. }) => {
                 self.run = Some(Run {
                     chosen: at,
@@ -293,25 +241,18 @@ where
         TickResult::Progress
     }
 
-    /// Close the current run, retiring the position it was scheduled to when
-    /// it decoded nothing the pass did not already hold.
-    ///
-    /// Whether the run itself grew the coverage, not whether the coverage
-    /// grew: a producer folds ranges from anywhere in the track on every
-    /// tick, and counting those would keep an unreachable position eligible.
     fn retire(&mut self) {
         let Some(run) = self.run.take() else {
             return;
         };
+        // What the run itself decoded, not what the pass covered while it ran:
+        // a producer folds ranges from anywhere and would keep this alive.
         if !run.grew {
             debug!(at = run.chosen, "analysis: position added nothing; retired");
             self.schedule.barren(run.chosen);
         }
     }
 
-    /// Whether the current run has done its work: nothing open, the next
-    /// frame already covered, the extent reached, or a whole detector window
-    /// decoded.
     fn run_over(&self, run_frames: Option<u64>) -> bool {
         let Some(run) = &self.run else {
             return true;
@@ -323,19 +264,14 @@ where
         {
             return true;
         }
-        // Only once it has decoded something: a run that has not yet has not
-        // run into anything either. A seek lands on a frame boundary of its
-        // own choosing, so the position it parks at can be just inside
-        // covered audio while the range it was scheduled for is still ahead
-        // of it, and abandoning it there would retire that range unread.
+        // Only after a chunk: a seek can park inside covered audio with its
+        // scheduled range still ahead, and abandoning it retires that unread.
         if run.frontier > run.at && self.is_covered(FrameRange::new(run.frontier, 1)) {
             return true;
         }
         run_frames.is_some_and(|window| run.frontier.saturating_sub(run.at) >= window)
     }
 
-    /// One decode step: linear while the source reports no length, and
-    /// scheduled once it does.
     fn step(
         &mut self,
         builder: &AnalyzerBuilder<B>,
@@ -369,9 +305,7 @@ where
             TaskPhase::Decode => {
                 let mut detector = detector;
                 let drained = self.drain(builder, detector.as_deref_mut());
-                // Re-read rather than cached: the decode path refines a
-                // duration upward as it learns more, and a subdivision
-                // computed against a short extent leaves the tail unplanned.
+                // Re-read: the decode path refines a duration upward as it goes.
                 self.extent.report(self.reader.duration(), self.rate);
                 let result = self.step(builder, detector.as_deref_mut());
                 if self.phase == TaskPhase::Decode && self.due() {
@@ -393,7 +327,6 @@ where
     }
 }
 
-/// The pass, opened on its axis by whichever range reaches it first.
 fn open<'a, B>(
     slot: &'a mut Option<TrackAnalyzers<B>>,
     builder: &AnalyzerBuilder<B>,
