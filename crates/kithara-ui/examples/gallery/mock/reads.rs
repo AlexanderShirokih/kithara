@@ -516,6 +516,7 @@ impl Reads for MockReads {
                 buckets: &self.waveform,
                 beats: &self.wave_beats,
                 downbeats: &self.wave_downbeats,
+                unready: &Consts::WAVE_UNREADY,
                 bpm: Some(Consts::BPM_VALUE),
                 r#loop: self.transport.loop_region(),
                 cues: self.transport.cues(),

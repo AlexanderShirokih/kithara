@@ -1,6 +1,11 @@
+#[cfg(test)]
+use std::num::NonZeroU32;
+
+#[cfg(test)]
+use kithara::audio::Coverage;
 use kithara::{
     abr::AbrHandle,
-    audio::effects::eq::GainDb,
+    audio::{FrameRange, effects::eq::GainDb},
     events::{AbrMode, BpmInfo, DjEvent, Event, MediaTime, PlayerEvent, SlotId, VariantInfo},
     play::StretchControls,
     prelude::EngineLoadSnapshot,
@@ -27,6 +32,9 @@ pub struct UiState {
     pub beat_marks: Arc<[f32]>,
     /// Downbeat positions as track fractions in `[0, 1]`, derived from `analysis.beat`.
     pub downbeat_marks: Arc<[f32]>,
+    /// Ranges the analysis has not covered, as track fractions in `[0, 1]`,
+    /// derived from `analysis.coverage`.
+    pub unready_ranges: Arc<[[f32; 2]]>,
     pub engine_load: EngineLoadSnapshot,
     /// Source analysis of the current track; `None` until analysed.
     pub analysis: Option<TrackAnalysis>,
@@ -69,6 +77,7 @@ impl UiState {
             analysis: None,
             beat_marks: Arc::from(Vec::new()),
             downbeat_marks: Arc::from(Vec::new()),
+            unready_ranges: Arc::from(Vec::new()),
             is_seeking: false,
             seek_position: 0.0,
             engine_load: EngineLoadSnapshot::default(),
@@ -89,6 +98,7 @@ impl UiState {
             analysis: None,
             beat_marks: Arc::from(Vec::new()),
             downbeat_marks: Arc::from(Vec::new()),
+            unready_ranges: Arc::from(Vec::new()),
             abr_mode_is_auto: true,
             is_seeking: false,
             playing: false,
@@ -117,8 +127,18 @@ impl UiState {
             .unwrap_or_else(|| (Arc::from(Vec::new()), Arc::from(Vec::new())));
         self.beat_marks = beats;
         self.downbeat_marks = downbeats;
+        self.unready_ranges = analysis
+            .as_ref()
+            .map_or_else(|| Arc::from(Vec::new()), unready_ranges);
         self.analysis = analysis;
     }
+}
+
+/// Map one source frame to a track fraction in `[0, 1]`, clamping past the end.
+fn fraction(frame: u64, total: f64) -> f32 {
+    let frame_f: f64 = frame.as_();
+    let frac: f32 = (frame_f / total).clamp(0.0, 1.0).as_();
+    frac
 }
 
 /// Map source-frame positions to track fractions in `[0, 1]`, clamping
@@ -130,13 +150,58 @@ fn frames_to_fractions(frames: &[u64], total: u64) -> Arc<[f32]> {
     let total_f: f64 = total.as_();
     let out: Vec<f32> = frames
         .iter()
-        .map(|&frame| {
-            let frame_f: f64 = frame.as_();
-            let frac: f32 = (frame_f / total_f).clamp(0.0, 1.0).as_();
-            frac
+        .map(|&frame| fraction(frame, total_f))
+        .collect();
+    Arc::from(out)
+}
+
+/// Map source-frame ranges to track fractions in `[0, 1]`. Empty input or
+/// `total == 0` yields empty, and an empty range is dropped.
+fn ranges_to_fractions(ranges: &[FrameRange], total: u64) -> Arc<[[f32; 2]]> {
+    if ranges.is_empty() || total == 0 {
+        return Arc::from(Vec::new());
+    }
+    let total_f: f64 = total.as_();
+    let out: Vec<[f32; 2]> = ranges
+        .iter()
+        .filter(|range| !range.is_empty())
+        .map(|range| {
+            [
+                fraction(range.start(), total_f),
+                fraction(range.end(), total_f),
+            ]
         })
         .collect();
     Arc::from(out)
+}
+
+/// A snapshot covering `runs` of a track `extent` frames long, or of unknown
+/// length when `extent` is `None`.
+#[cfg(test)]
+pub(crate) fn covered(runs: &[(u64, u64)], extent: Option<u64>) -> TrackAnalysis {
+    let mut coverage = Coverage::default();
+    for &(start, end) in runs {
+        coverage.insert(FrameRange::new(start, end - start));
+    }
+    TrackAnalysis::builder()
+        .token("track".into())
+        .revision(1)
+        .source_sample_rate(NonZeroU32::new(44_100).expect("a positive rate"))
+        .maybe_extent(extent)
+        .coverage(coverage)
+        .build()
+}
+
+/// The ranges a snapshot has not covered, as track fractions.
+///
+/// Empty once the coverage holds the whole extent, and empty while the extent
+/// is unknown: with no known length there is no rest of the track to be
+/// missing, so a live source claims nothing rather than guessing.
+fn unready_ranges(analysis: &TrackAnalysis) -> Arc<[[f32; 2]]> {
+    if analysis.extent().is_none() || analysis.is_complete() {
+        return Arc::from(Vec::new());
+    }
+    ranges_to_fractions(&analysis.missing(), analysis.source_frames())
 }
 
 /// Owns the canonical [`UiState`] and bridges queue events to it.
@@ -487,7 +552,9 @@ mod tests {
     };
     use kithara_test_utils::kithara;
 
-    use super::{bpm_info_from_state, codec_label, frames_to_fractions};
+    use super::{
+        UiState, bpm_info_from_state, codec_label, covered, frames_to_fractions, unready_ranges,
+    };
 
     fn beat(beats: Vec<(u64, Option<f32>)>) -> BeatSnapshot {
         BeatSnapshot::new(
@@ -544,6 +611,71 @@ mod tests {
             "over-range clamps: {clamped:?}"
         );
         assert!(clamped[0] < clamped[1], "ascending preserved");
+    }
+
+    /// A snapshot that holds the whole track has nothing left to mark, and
+    /// must say so before any range is derived.
+    #[kithara::test(native, flash(false))]
+    fn a_fully_covered_track_has_no_unready_ranges() {
+        let full = covered(&[(0, 1_000)], Some(1_000));
+
+        assert!(unready_ranges(&full).is_empty());
+    }
+
+    /// Coverage spread over the track leaves holes between the runs and after
+    /// the last one, each reported on the track's own fraction axis.
+    #[kithara::test(native, flash(false))]
+    fn a_partly_covered_track_names_the_holes_it_left() {
+        let partial = covered(&[(0, 200), (400, 600), (800, 900)], Some(1_000));
+
+        let ranges = unready_ranges(&partial);
+
+        assert_eq!(ranges.len(), 3, "{ranges:?}");
+        assert_eq!(ranges[0], [0.2, 0.4], "{ranges:?}");
+        assert_eq!(ranges[1], [0.6, 0.8], "{ranges:?}");
+        assert_eq!(ranges[2], [0.9, 1.0], "{ranges:?}");
+    }
+
+    /// Without an extent there is no rest of the track to be missing, so a
+    /// live source claims nothing rather than guessing a length.
+    #[kithara::test(native, flash(false))]
+    fn a_track_of_unknown_length_claims_nothing_unready() {
+        let live = covered(&[(0, 200), (400, 600)], None);
+
+        assert!(unready_ranges(&live).is_empty());
+    }
+
+    /// A revision carries the whole coverage, so a growing analysis only ever
+    /// takes ranges out of the unready set; one coming back would mean a
+    /// revision had contradicted an earlier one.
+    #[kithara::test(native, flash(false))]
+    fn growing_coverage_only_shrinks_the_unready_set() {
+        let revisions = [
+            &[(0, 200)][..],
+            &[(0, 200), (600, 800)][..],
+            &[(0, 400), (600, 800)][..],
+            &[(0, 1_000)][..],
+        ];
+        let mut ui = UiState::empty();
+        let mut previous: Option<Vec<[f32; 2]>> = None;
+
+        for runs in revisions {
+            ui.set_analysis(Some(covered(runs, Some(1_000))));
+            let unready = ui.unready_ranges.to_vec();
+            if let Some(previous) = previous {
+                for range in &unready {
+                    assert!(
+                        previous
+                            .iter()
+                            .any(|was| was[0] <= range[0] && range[1] <= was[1]),
+                        "{range:?} was ready in {previous:?}"
+                    );
+                }
+            }
+            previous = Some(unready);
+        }
+
+        assert!(ui.unready_ranges.is_empty(), "the last revision covers all");
     }
 
     #[kithara::test(native, flash(false))]
