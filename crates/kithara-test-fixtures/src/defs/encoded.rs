@@ -28,7 +28,7 @@ fn sine_mp3(total_frames: usize, peak: i16) -> Vec<u8> {
             peak,
         },
     );
-    EncoderFactory::encode_bytes(BytesEncodeRequest {
+    EncoderFactory::encode_bytes(&BytesEncodeRequest {
         pcm: &pcm,
         target: BytesEncodeTarget::Mp3,
         bit_rate: None,
@@ -54,7 +54,7 @@ fn flac_unknown_length(total_frames: usize) -> Vec<u8> {
         total_frames,
         Wave::Sawtooth,
     );
-    EncoderFactory::encode_bytes(BytesEncodeRequest {
+    EncoderFactory::encode_bytes(&BytesEncodeRequest {
         pcm: &pcm,
         target: BytesEncodeTarget::Flac,
         bit_rate: None,
@@ -74,7 +74,7 @@ fn alac(total_frames: usize) -> Vec<u8> {
         total_frames,
         Wave::Silence,
     );
-    EncoderFactory::encode_bytes(BytesEncodeRequest {
+    EncoderFactory::encode_bytes(&BytesEncodeRequest {
         pcm: &pcm,
         target: BytesEncodeTarget::Alac,
         bit_rate: None,

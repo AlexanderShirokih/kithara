@@ -45,7 +45,7 @@ fn he_aac(codec: AudioCodec, bit_rate: u64) -> Vec<u8> {
         .build();
 
     let track = EncoderFactory::encode_packaged(
-        PackagedEncodeRequest::for_pools(BytePool::default(), SamplePool::default())
+        &PackagedEncodeRequest::for_pools(BytePool::default(), SamplePool::default())
             .pcm(&pcm)
             .media_info(media_info)
             .timescale(Consts::SAMPLE_RATE)
