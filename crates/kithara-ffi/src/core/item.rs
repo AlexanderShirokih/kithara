@@ -1,6 +1,8 @@
 #[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
 
+#[cfg(not(target_arch = "wasm32"))]
+use kithara::{events::EventBus, platform::CancelToken};
 use kithara::{
     events::TrackId,
     platform::sync::{Arc, Mutex},
@@ -107,7 +109,7 @@ pub struct AudioPlayerItem {
     /// captured even when [`set_observer`] is called later. Native-only:
     /// the wasm worker owns the queue and its event bus.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) bus: Mutex<Option<kithara::events::EventBus>>,
+    pub(crate) bus: Mutex<Option<EventBus>>,
     /// Inserted-into-queue flag — flipped by `AudioPlayer::insert` so
     /// [`Self::load`] can tell "still detached" from "loaded enough to
     /// answer playable". Pre-insert / post-remove value is `false`.
@@ -309,7 +311,7 @@ impl AudioPlayerItem {
             observer,
             None,
             Arc::clone(&self.state),
-            kithara::platform::CancelToken::never(),
+            CancelToken::never(),
         );
         *self.event_bridge.lock() = Some(bridge);
     }

@@ -173,8 +173,8 @@ impl Backend for IcedBackend<'_> {
             self.frame.fill(
                 &path(geom),
                 Fill {
-                    rule: rule(geom),
                     style,
+                    rule: rule(geom),
                 },
             );
         } else {
@@ -257,11 +257,11 @@ fn draw_segment(
         };
         let mut pen = IcedOutline {
             builder,
+            transform,
             glyph: Pt {
                 x: glyph.x,
                 y: glyph.y,
             },
-            transform,
         };
         let settings = DrawSettings::unhinted(FontSize::new(size), location);
         if let Err(error) = outline.draw(settings, &mut pen) {
@@ -284,8 +284,8 @@ pub(crate) const fn font(family: FontFamily, weight: FontWeight) -> Font {
         FontWeight::Bold => Weight::Bold,
     };
     Font {
-        family: Family::Name(face.family_name()),
         weight,
+        family: Family::Name(face.family_name()),
         stretch: Stretch::Normal,
         style: Style::Normal,
     }

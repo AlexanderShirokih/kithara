@@ -63,17 +63,14 @@ use crate::{
 #[derive(fieldwork::Fieldwork)]
 #[fieldwork(opt_in, get)]
 pub struct Resource {
-    /// Per-track cancel guard, declared first so reader teardown observes
-    /// cancellation. Disarmed when the live reader moves into analysis.
-    cancel: CancelGuard,
-    pub(crate) inner: Box<dyn AudioReader>,
-    priority: Option<TrackPriority>,
-    #[field(with)]
-    playback_rate: PlaybackRate,
     #[field(get, deref = false)]
     src: Arc<str>,
     #[field(get = event_bus)]
     bus: EventBus,
+    priority: Option<TrackPriority>,
+    #[field(with)]
+    playback_rate: PlaybackRate,
+    reader: ReaderOwner,
 }
 
 /// Cancels the wrapped per-track token on drop. A `Resource` field rather than
@@ -81,6 +78,9 @@ pub struct Resource {
 /// `inner` out of the wrapper after [`disarm`](CancelGuard::disarm)ing. Passive
 /// when `None`.
 struct CancelGuard(Option<CancelToken>);
+
+/// Cancels before dropping the reader; tuple fields drop in declaration order.
+struct ReaderOwner(CancelGuard, Box<dyn AudioReader>);
 
 enum PlaybackRate {
     Fixed,
@@ -201,7 +201,7 @@ impl Resource {
                 Self::from_stream_audio(track, src, &worker).await?
             }
         };
-        resource.cancel = CancelGuard(cancel);
+        resource.reader.0 = CancelGuard(cancel);
         Ok(resource)
     }
 
@@ -222,14 +222,13 @@ impl Resource {
         let inner: Box<dyn AudioReader> = Box::new(reader);
         let src = src.unwrap_or_else(|| Arc::from("unknown"));
         let mut resource = Self {
-            inner,
+            src,
+            bus,
             priority: None,
             playback_rate: PlaybackRate::Fixed,
-            bus,
-            src,
-            cancel: CancelGuard(None),
+            reader: ReaderOwner(CancelGuard(None), inner),
         };
-        if preload && let Err(error) = resource.inner.preload() {
+        if preload && let Err(error) = resource.reader.1.preload() {
             warn!(src = %resource.src, %error, "resource preload failed");
         }
         resource
@@ -287,10 +286,10 @@ impl Resource {
     /// producer channel closed or the initial fill hit a decoder
     /// failure.
     pub async fn preload(&mut self) -> Result<(), DecodeError> {
-        if let Some(gate) = self.inner.preload_gate() {
-            gate.wait_for_epoch(self.inner.preload_epoch()).await;
+        if let Some(gate) = self.reader.1.preload_gate() {
+            gate.wait_for_epoch(self.reader.1.preload_epoch()).await;
         }
-        self.inner.preload()
+        self.reader.1.preload()
     }
 
     /// Subscribe to unified events.
@@ -303,7 +302,7 @@ impl Resource {
     }
 
     delegate! {
-        to self.inner {
+        to self.reader.1 {
             /// Runtime ABR handle for adaptive sources (HLS). `None` for files.
             #[must_use]
             pub fn abr_handle(&self) -> Option<kithara_abr::AbrHandle>;
@@ -358,9 +357,8 @@ impl Resource {
 /// loops. Teardown then rides the analysis run-scope cancel.
 impl From<Resource> for Box<dyn AudioReader> {
     fn from(resource: Resource) -> Self {
-        let Resource {
-            inner, mut cancel, ..
-        } = resource;
+        let Resource { reader, .. } = resource;
+        let ReaderOwner(mut cancel, inner) = reader;
         cancel.disarm();
         inner
     }
@@ -739,7 +737,7 @@ mod tests {
         let audio_sub = track.child(); // Audio subtree A = T.child()
 
         let mut resource = Resource::from_reader(EofReader::default(), None);
-        resource.cancel = CancelGuard(Some(track.clone()));
+        resource.reader.0 = CancelGuard(Some(track.clone()));
 
         assert!(!stream_sub.is_cancelled() && !audio_sub.is_cancelled());
         drop(resource);
@@ -765,7 +763,7 @@ mod tests {
         let state = Arc::new(AtomicU8::new(DropState::NOT_DROPPED));
         let reader = EofReader::with_drop_probe(track.clone(), Arc::clone(&state));
         let mut resource = Resource::from_reader(reader, None);
-        resource.cancel = CancelGuard(Some(track));
+        resource.reader.0 = CancelGuard(Some(track));
 
         drop(resource);
 
@@ -778,7 +776,7 @@ mod tests {
         let state = Arc::new(AtomicU8::new(DropState::NOT_DROPPED));
         let reader = EofReader::with_drop_probe(track.clone(), Arc::clone(&state));
         let mut resource = Resource::from_reader(reader, None);
-        resource.cancel = CancelGuard(Some(track.clone()));
+        resource.reader.0 = CancelGuard(Some(track.clone()));
 
         let reader: Box<dyn AudioReader> = resource.into();
 

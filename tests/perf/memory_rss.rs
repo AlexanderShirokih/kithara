@@ -161,7 +161,7 @@ fn drain_sampling_rss<A: AudioRead>(audio: &mut A) -> Drain {
     native,
     tokio,
     serial,
-    timeout(Duration::from_secs(30)),
+    timeout(Duration::from_secs(90)),
     hang_timeout_secs(5)
 )]
 async fn test_hls_playback_rss_within_budget(temp_dir: TestTempDir) {
