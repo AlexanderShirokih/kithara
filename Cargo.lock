@@ -5474,6 +5474,7 @@ dependencies = [
  "kithara-platform",
  "kithara-signal",
  "kithara-stretch",
+ "kithara-test-macros",
  "kithara-test-utils",
  "kithara-workspace-hack",
  "num-traits",
