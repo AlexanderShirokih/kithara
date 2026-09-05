@@ -29,8 +29,8 @@ use kithara_test_utils::kithara;
 #[cfg(all(feature = "analysis-beat", feature = "analysis-waveform"))]
 use kithara_worker::TaskContext;
 use kithara_worker::{
-    Dispatcher, DispatcherConfig, PendingTask, RayonConfig, Task, TaskConfig, TickResult, Worker,
-    WorkerConfig,
+    Dispatcher, DispatcherConfig, OwnedPoolConfig, PendingTask, Task, TaskConfig, TickResult,
+    Worker, WorkerConfig,
 };
 #[cfg(feature = "analysis-beat")]
 use num_traits::cast::ToPrimitive;
@@ -118,7 +118,7 @@ where
         let worker = Worker::new(
             WorkerConfig::new()
                 .with_max_compute_tasks(compute_tasks)
-                .with_owned_pool(RayonConfig::new(compute_tasks, "analysis-node-test")),
+                .with_owned_pool(OwnedPoolConfig::new(compute_tasks, "analysis-node-test")),
         );
         let dispatcher = worker.dispatcher(
             DispatcherConfig::builder()
