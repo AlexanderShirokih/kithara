@@ -41,6 +41,16 @@ the change that lands the work, and keep it short.
 
 - `suite_network` has been dark since `#260`; the handover census found it.
 
+- `kithara-analysis` compiles for `wasm32`. The worker's compute seam submits
+  an admitted job to a spawned thread there, under one owned-pool configuration
+  shared with the native Rayon backend, so beat detection has a path off the
+  dispatcher thread in the browser. `just platform wasm check` covers
+  `kithara-analysis` and `kithara-play`, and `just test wasm` carries the
+  `kithara-worker` and `kithara-analysis` library tests. Left: the FFI surface,
+  and a browser run of that lane -- Safari's driver is killed by the runner on
+  this machine and chromedriver is not installable here, so no browser
+  execution of these tests has been observed.
+
 ## Next
 
 - 678 comment findings are decisions `--fix` cannot make.
