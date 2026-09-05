@@ -46,10 +46,20 @@ the change that lands the work, and keep it short.
   shared with the native Rayon backend, so beat detection has a path off the
   dispatcher thread in the browser. `just platform wasm check` covers
   `kithara-analysis` and `kithara-play`, and `just test wasm` carries the
-  `kithara-worker` and `kithara-analysis` library tests. Left: the FFI surface,
-  and a browser run of that lane -- Safari's driver is killed by the runner on
-  this machine and chromedriver is not installable here, so no browser
-  execution of these tests has been observed.
+  `kithara-worker` and `kithara-analysis` library tests.
+
+- The browser FFI computes track analysis. `kithara-ffi`'s wasm arm enables
+  `analysis-waveform` and `beat-dsp`; `AudioPlayer.analyze(trackId)` starts a
+  pass and `AudioPlayer.setAnalysisObserver(fn)` receives every publication as
+  one plain object with the waveform and beat grid as copied typed arrays.
+  One pass is live per track; analysing again begins a new revision sequence
+  and the pass it replaces falls silent. Web warm-up creates the audio context
+  at the session's own rate, and a built resource config carries the playback
+  worker, so the analysis reader opens. The `/signal` route serves a 126 BPM
+  click track. In Safari the pass covers all 30 s and settles in about 2.5 s;
+  `web-analysis` is 1 of 2. Left: the browser detector answers with an empty
+  grid, while the beat analyzer and the DSP detector are green there on
+  synthetic clicks.
 
 ## Next
 
