@@ -41,28 +41,12 @@ the change that lands the work, and keep it short.
 
 - `suite_network` has been dark since `#260`; the handover census found it.
 
-- `kithara-analysis` compiles for `wasm32`. The worker's compute seam submits
-  an admitted job to a spawned thread there, under one owned-pool configuration
-  shared with the native Rayon backend, so beat detection has a path off the
-  dispatcher thread in the browser. `just platform wasm check` covers
-  `kithara-analysis` and `kithara-play`, and `just test wasm` carries the
-  `kithara-worker` and `kithara-analysis` library tests; both pass in Safari,
-  2 of 2 and 190 of 190. A test driving the pass itself waits on the compute
-  job with an `await`: a browser runs a spawned thread only while the context
-  that spawned it keeps taking events.
-
-- The browser FFI computes track analysis. `kithara-ffi`'s wasm arm enables
-  `analysis-waveform` and `beat-dsp`; `AudioPlayer.analyze(trackId)` starts a
-  pass and `AudioPlayer.setAnalysisObserver(fn)` receives every publication as
-  one plain object with the waveform and beat grid as copied typed arrays.
-  One pass is live per track; analysing again begins a new revision sequence
-  and the pass it replaces falls silent. Web warm-up creates the audio context
-  at the session's own rate, and a built resource config carries the playback
-  worker, so the analysis reader opens. The `/signal` route serves a 126 BPM
-  click track. In Safari the pass covers all 30 s and settles in about 2.5 s;
-  `web-analysis` is 1 of 2. Left: the browser detector answers with an empty
-  grid, while the beat analyzer and the DSP detector are green there on
-  synthetic clicks.
+- `kithara-analysis` builds and runs its pass on `wasm32`: the worker's compute
+  seam spawns a thread per admitted job under the `OwnedPoolConfig` the native
+  Rayon backend takes. `kithara-ffi --features wasm` exposes
+  `AudioPlayer.analyze(trackId)` and `AudioPlayer.setAnalysisObserver(fn)`; a
+  publication is one plain object with waveform and beat grid as copied typed
+  arrays, one pass live per track, under `just platform wasm check`.
 
 ## Next
 
@@ -78,4 +62,17 @@ the change that lands the work, and keep it short.
 
 ## Blocked
 
-- Nothing.
+- Open defect, its own `kithara-analysis` task: a browser MP3 decodes from
+  frame 1105, the LAME delay, while `prepare_detection` places windows on the
+  global hop grid, `release_detected` drops the unread head, and `beat_state()`
+  compares coverage against `Runs::taken`, which grows on intake, not on read.
+  On `MP3_CLICKS126_30S` a pass publishes `settled=true, beats=0` in 4 of 6
+  Safari runs, so `web-analysis` asserts the field set, the waveform and
+  `beats >= 0`. The native scheduler opens runs the same way on a mid-gap
+  seek, uncaught by any native test.
+
+- Flake: one Safari run in five of `kithara-analysis --lib` fails in
+  `tests::worker::a_pass_publishes_above_the_revision_its_caller_holds` with
+  `Out of bounds memory access` in `Node::cancel` at teardown. Unconfirmed:
+  `wasm_safe_thread` 0.1.1 decrements `exit_state` in three JS handlers
+  without a once-guard while kithara drops the `JoinHandle` at spawn.
