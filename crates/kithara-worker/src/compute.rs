@@ -228,10 +228,10 @@ mod tests {
         sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
-            mpsc,
+            mpsc::{self, TryRecvError},
         },
         thread::current_thread_id,
-        time::{Duration, Instant},
+        time::{self, Duration, Instant},
     };
     use kithara_test_utils::kithara;
 
@@ -284,12 +284,24 @@ mod tests {
         }
     }
 
-    /// The compute seam runs an admitted job off the dispatcher thread and
-    /// wakes the dispatcher when the job releases its permits. A tick that
-    /// observes the job's result inside the one-second deadline can only come
-    /// from that wake: the scheduler waits two seconds between its own visits.
-    #[kithara::test(native, browser, flash(false))]
-    fn compute_job_runs_off_the_dispatcher_thread_and_wakes_it() {
+    async fn next_step(observed: &mpsc::Receiver<Step>, deadline: Instant, what: &str) -> Step {
+        loop {
+            match observed.try_recv() {
+                Ok(step) => return step,
+                Err(TryRecvError::Empty) => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "the dispatcher must report {what}"
+                    );
+                    time::sleep(Duration::from_millis(5)).await;
+                }
+                Err(closed) => panic!("the probe stopped reporting {what}: {closed:?}"),
+            }
+        }
+    }
+
+    #[kithara::test(tokio, browser, flash(false))]
+    async fn compute_job_runs_off_the_dispatcher_thread_and_wakes_it() {
         let worker = Worker::new(WorkerConfig::new().with_owned_pool(OwnedPoolConfig::new(
             NonZeroUsize::MIN,
             "compute-thread-test",
@@ -311,15 +323,13 @@ mod tests {
             })
             .expect("probe task admission");
 
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let run_by = Instant::now() + Duration::from_secs(10);
         let mut recorded = Vec::new();
-        while recorded.len() < 3 {
-            recorded.push(
-                observed
-                    .recv_timeout(deadline)
-                    .expect("dispatcher must report admission, run and wake"),
-            );
+        while recorded.len() < 2 {
+            recorded.push(next_step(&observed, run_by, "admission and the run").await);
         }
+        let woken_by = Instant::now() + Duration::from_secs(1);
+        recorded.push(next_step(&observed, woken_by, "the wake that follows the run").await);
 
         let Some(&Step::Admitted { dispatcher, ok }) = recorded
             .iter()

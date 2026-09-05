@@ -46,7 +46,10 @@ the change that lands the work, and keep it short.
   shared with the native Rayon backend, so beat detection has a path off the
   dispatcher thread in the browser. `just platform wasm check` covers
   `kithara-analysis` and `kithara-play`, and `just test wasm` carries the
-  `kithara-worker` and `kithara-analysis` library tests.
+  `kithara-worker` and `kithara-analysis` library tests; both pass in Safari,
+  2 of 2 and 190 of 190. A test driving the pass itself waits on the compute
+  job with an `await`: a browser runs a spawned thread only while the context
+  that spawned it keeps taking events.
 
 - The browser FFI computes track analysis. `kithara-ffi`'s wasm arm enables
   `analysis-waveform` and `beat-dsp`; `AudioPlayer.analyze(trackId)` starts a
