@@ -1130,7 +1130,7 @@ steps = [
   { args = [
     "test",
     "rtsan",
-  ], label = "RTSan tripwire", env = { KITHARA_RTSAN_BACKEND = "standalone" } },
+  ], label = "RTSan tripwire", env = { KITHARA_RTSAN_BACKEND = "standalone", KITHARA_STABLE_TOOLCHAIN = "{pin.stable_toolchain}" } },
 ]
 role = "gate"
 kinds = []
@@ -1148,7 +1148,7 @@ steps = [
   { args = [
     "test",
     "rtsan-file",
-  ], label = "RTSan file playback", env = { KITHARA_RTSAN_BACKEND = "standalone" } },
+  ], label = "RTSan file playback", env = { KITHARA_RTSAN_BACKEND = "standalone", KITHARA_STABLE_TOOLCHAIN = "{pin.stable_toolchain}" } },
 ]
 role = "gate"
 kinds = []
@@ -1166,7 +1166,7 @@ steps = [
   { args = [
     "test",
     "rtsan-hls",
-  ], label = "RTSan HLS playback", env = { KITHARA_RTSAN_BACKEND = "standalone" } },
+  ], label = "RTSan HLS playback", env = { KITHARA_RTSAN_BACKEND = "standalone", KITHARA_STABLE_TOOLCHAIN = "{pin.stable_toolchain}" } },
 ]
 role = "gate"
 kinds = []
