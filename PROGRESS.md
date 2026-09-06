@@ -8,65 +8,50 @@ the change that lands the work, and keep it short.
 
 ## In Flight
 
-- Build and test warnings, cleared. `Atomic*::fetch_update` is deprecated as of
-  1.95 and its replacement cannot be named here: `loom` 0.7.2 carries only the
-  old name, so routing through `kithara_platform::sync::atomic` would break the
-  loom lane. The four sites moved to the `compare_exchange_weak` loop it
-  compiles into, keeping every ordering. MSRV is 1.95; `rkyv` 0.8.18 and
-  `bytecheck` 0.8.3 retire theirs, and `kithara-app`'s GUI-only modules are
-  gated on `gui` so a `lib-only` build no longer warns on 57 items.
+- Build and test warnings, cleared. The four `Atomic*::fetch_update` sites
+  moved to the `compare_exchange_weak` loop it compiles into, keeping every
+  ordering, because `loom` 0.7.2 carries only the deprecated name. MSRV is
+  1.95, and `kithara-app`'s GUI-only modules are gated on `gui`.
 
-- The `sccache` trap in the Clippy path, closed. A workstation Clippy run set
-  `CARGO_INCREMENTAL=1` to cancel the blanket `0` the `justfile` exports, but
-  `sccache` reads that variable too and aborts rather than fall back, for any
-  language: `btls-sys` reached its C compiler through a CMake launcher that
-  refused to run, so no compiler error was printed. No site sets a non-zero
-  `CARGO_INCREMENTAL` now.
+- The `sccache` trap in the Clippy path, closed: a non-zero `CARGO_INCREMENTAL`
+  makes `sccache` abort rather than fall back, for any language, and no site
+  sets one now.
+
+- Lint debt worked down by autofix. `struct_init_order`, `derivable_from` and
+  `qualified_path_depth` answer to the clippy gate they used to break, the arch
+  baseline drops what nothing violates, and `lint fast` runs `style`, so the
+  commit hook refuses what used to reach CI.
 
 - Configuration document for `kithara-app`: `app.yaml` plus an optional
-  overlay, merged and env-expanded before typing, each section carrying its
-  owning crate's `#[derive(Patch)]` type from the new `kithara-macros`. No
-  patch struct is hand-written. Open: assembly sits in `main.rs` where no test
-  pins it, so `downloader` and `flush` parsed and were dropped until a read
-  found them; twenty-two files still take pools from `PoolsSection::default()`.
+  overlay, env-expanded before typing, each section carrying its owning
+  crate's `#[derive(Patch)]` type. Open: assembly sits in `main.rs` where no
+  test pins it, and twenty-two files take pools from `PoolsSection::default()`.
 
-- Tooling parameter ownership. Every policy number and list `xtask` and
-  `kithara-devtools` held as a `const` has a config owner, spawned programs
-  resolve through `ToolsConfig`, and Rust binaries replace their embedded
-  shell. Cleanup pruned `target-slots`, every Linux job's `CARGO_TARGET_DIR`,
-  as retired.
+- Tooling parameter ownership: every policy number `xtask` and
+  `kithara-devtools` held as a `const` has a config owner, and spawned programs
+  resolve through `ToolsConfig`.
 
-- Mac CI host cleanup gave the hourly pass a watchdog at
-  `cleanup_deadline_seconds` and reclaim against the volume's soft floor rather
-  than one cache's ceiling. Open: the lane gates a quarantine pipeline directly
-  instead of reporting to the verdict, so one network stall holds every pull
+- Mac CI host cleanup gave the hourly pass a watchdog. Open: `deps:deny` gates
+  a quarantine pipeline directly, so one network stall holds every pull
   request.
 
 - One owner of track analysis in `kithara-app`, `AnalysisService`, and one
-  extent per pass in `kithara-analysis`, published at the tempo the detector
-  reports and tagged `grid_bpm_from_beats_v4`. Left: the deck scenario on a
-  release build with the full model, and the size of the resume blob.
+  extent per pass in `kithara-analysis`. Left: the deck scenario on a release
+  build with the full model, and the size of the resume blob.
+
+- `suite_network` has been dark since `#260`; the handover census found it.
 
 ## Next
 
-- `suite_network` has been dark since `#260`; the handover census found it.
-- The workspace's own crates are still at `"z"`: a per-package glob reaches
-  every third-party package but not them, and raising them is its own
-  measured change.
-- No runtime number backs the release optimization: decode throughput, stretch
-  cost and render-budget headroom were never measured, so the case rests on
-  codegen rather than on a benchmark.
-- `crates/kithara-ffi/.wasm-slim.toml` budgets the wasm bundle at
-  29000/31000/33000 KiB against a May baseline of ~28.2 MiB while a local
-  `dist` weighs 3565 KiB; the `web-size` lane on GitLab settles whether the
-  gate is stale or the two numbers weigh different things.
-- `block` 0.1.6 is a future-incompat report nothing here can answer: it reaches
-  the tree through `cpal` and has no published successor.
+- 678 comment findings are decisions `--fix` cannot make.
 - `kithara-ui` warns on 627 items where the widget layer compiles without a
-  host: `--no-default-features --features render`, and `--features vello`.
-- Lint debt: 678 comment findings are decisions `--fix` cannot make, and the
-  612 ordering findings clear under one `just lint style --fix` that rewrites
-  declarations across every crate.
+  host, under `--features render` and `--features vello`.
+- `.wasm-slim.toml` budgets wasm at 29000 KiB against a local `dist` of 3565
+  KiB; the `web-size` lane on GitLab settles which number is real.
+- No runtime number backs the release optimization, and the workspace's own
+  crates are still at `"z"`.
+- `block` 0.1.6 is a future-incompat report nothing here can answer: it reaches
+  the tree through `cpal` and has no successor.
 
 ## Blocked
 
