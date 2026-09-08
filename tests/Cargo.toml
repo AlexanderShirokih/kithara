@@ -6,7 +6,6 @@ authors.workspace = true
 license.workspace = true
 publish = false
 autotests = false
-build = "build.rs"
 
 [package.metadata.cargo-machete]
 ignored = ["serial_test"]
@@ -14,11 +13,6 @@ ignored = ["serial_test"]
 [[bin]]
 name = "test_server"
 path = "bin/test_server.rs"
-test = false
-
-[[bin]]
-name = "cold-fixture-cache"
-path = "bin/cold-fixture-cache.rs"
 test = false
 
 [[bin]]

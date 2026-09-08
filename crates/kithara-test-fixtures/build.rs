@@ -14,6 +14,8 @@ mod defs;
 mod registry;
 #[path = "src/remote_file.rs"]
 mod remote_file;
+#[path = "src/variant_input.rs"]
+pub mod variant_input;
 // `fmp4`, `signal`, and `store` keep the visibility they have in the library:
 // the same source files, reached from two roots.
 #[path = "src/fmp4/mod.rs"]
@@ -260,7 +262,9 @@ fn main() {
     let resolved = resolve(&defs);
 
     let fingerprint = store::CACHE_VERSION.trim();
-    let namespace = store::namespace(&store::root_from_env(), fingerprint);
+    let root =
+        store::root_from_env().unwrap_or_else(|error| panic!("kithara-test-fixtures: {error}"));
+    let namespace = store::namespace(&root, fingerprint);
     let unavailable = materialize(&namespace, &resolved);
 
     // Written once per namespace so its mtime stays put on a no-op rerun; a
