@@ -144,8 +144,10 @@ fn eq_maps_silence_to_exact_silence(dsp_silence: Vec<f32>, #[case] gain_db: Gain
 
     for (index, sample) in output.iter().enumerate() {
         assert_eq!(
-            *sample, 0.0,
-            "silence in must be silence out at {gain_db} dB, sample {index} = {sample}"
+            *sample,
+            0.0,
+            "silence in must be silence out at {gain_db} dB, sample {index} = {sample}",
+            gain_db = f32::from(gain_db)
         );
     }
 }
