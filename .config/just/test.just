@@ -112,6 +112,14 @@ wasm BROWSER="chrome" SUITE="all":
         -Z build-std=std,panic_abort,core,alloc \
         -Z build-std-features=optimize_for_size \
         -p kithara-integration-tests --test suite_heavy
+      # `wasm-bindgen-test` picks its thread per binary, and the live-graph
+      # oracle needs the page's main thread.
+      WASM_BINDGEN_TEST_TIMEOUT=300 WASM_BINDGEN_USE_BROWSER=1 \
+        cargo "+$toolchain" test --profile test-release \
+        --target wasm32-unknown-unknown \
+        -Z build-std=std,panic_abort,core,alloc \
+        -Z build-std-features=optimize_for_size \
+        -p kithara-integration-tests --test suite_live_web_audio
     fi
     # `webcodecs_browser` belongs to kithara-decode, not to any integration
     # suite, so it is its own cargo invocation. WebCodecs is a Chromium API;
