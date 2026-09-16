@@ -2,12 +2,10 @@ use kithara::platform::sync::{Arc, Mutex};
 
 use crate::{observer::ItemObserver, types::FfiItemEvent};
 
-pub(crate) type ObserverId = u64;
-
 #[derive(Default)]
 struct Registrations {
-    next_id: ObserverId,
-    entries: Vec<(ObserverId, Arc<dyn ItemObserver>)>,
+    next_id: u64,
+    entries: Vec<(u64, Arc<dyn ItemObserver>)>,
 }
 
 #[derive(Default)]
@@ -16,7 +14,7 @@ pub(crate) struct ObserverSet {
 }
 
 impl ObserverSet {
-    pub(crate) fn add(&self, observer: Arc<dyn ItemObserver>) -> ObserverId {
+    pub(crate) fn add(&self, observer: Arc<dyn ItemObserver>) -> u64 {
         let mut registrations = self.registrations.lock();
         let id = registrations.next_id;
         registrations.next_id += 1;
@@ -24,13 +22,15 @@ impl ObserverSet {
         id
     }
 
-    pub(crate) fn remove(&self, id: ObserverId) {
+    pub(crate) fn remove(&self, id: u64) {
         self.registrations
             .lock()
             .entries
             .retain(|(known, _)| *known != id);
     }
 
+    /// Observers are called outside the lock: one may unsubscribe from
+    /// inside its callback.
     fn snapshot(&self) -> Vec<Arc<dyn ItemObserver>> {
         self.registrations
             .lock()
@@ -43,8 +43,13 @@ impl ObserverSet {
 
 impl ItemObserver for ObserverSet {
     fn on_event(&self, event: FfiItemEvent) {
-        for observer in self.snapshot() {
+        let observers = self.snapshot();
+        let Some((last, rest)) = observers.split_last() else {
+            return;
+        };
+        for observer in rest {
             observer.on_event(event.clone());
         }
+        last.on_event(event);
     }
 }

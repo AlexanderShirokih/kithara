@@ -9,18 +9,16 @@ use kithara::{
         tokio::sync::broadcast,
     },
     play::{PlayerEvent, TimeControlStatus},
-    queue::{QueueEvent, TrackStatus},
+    queue::QueueEvent,
 };
 
 use crate::{
     core::event_set::QueueBusEvent,
-    item::AudioPlayerItem,
-    observer::{ItemObserver, PlayerObserver},
+    observer::PlayerObserver,
     pools::FfiQueueControl,
     registry::ItemRegistry,
     types::{
-        FfiAdvanceReason, FfiItemEvent, FfiItemStatus, FfiPlayerEvent, FfiRepeatMode, FfiTimeRange,
-        FfiTrackStatus,
+        FfiAdvanceReason, FfiItemEvent, FfiPlayerEvent, FfiRepeatMode, FfiTimeRange, FfiTrackStatus,
     },
 };
 
@@ -30,11 +28,11 @@ pub(crate) struct EventBridge {
 }
 
 impl EventBridge {
-    /// Polling interval for time/duration updates (~10 Hz).
     /// Failure reason recorded when the player reports an item failure
     /// without one.
     const ITEM_DID_FAIL: &'static str = "item did fail";
 
+    /// Polling interval for time/duration updates (~10 Hz).
     const TIME_POLL_INTERVAL_MS: u64 = 100;
 
     /// Threshold for suppressing redundant time/duration updates (seconds).
@@ -95,10 +93,11 @@ impl EventBridge {
                 let Some(item) = items.lock().get(id).cloned() else {
                     return;
                 };
-                Self::route_track_status_to_item(&item, &item.observer(), status);
+                let status = FfiTrackStatus::from(status.clone());
+                item.apply_track_status(&status);
                 observer.on_event(FfiPlayerEvent::TrackStatusChanged {
                     item_id: *id,
-                    status: FfiTrackStatus::from(status.clone()),
+                    status,
                 });
             }
             QueueEvent::QueueEnded => {
@@ -182,11 +181,10 @@ impl EventBridge {
         let Some(item) = items.lock().get(&track_id).cloned() else {
             return;
         };
-        let ranges = Self::loaded_ranges(available);
-        item.state.lock().replace_loaded_ranges(ranges.clone());
         *last = Some(available);
-        item.observer()
-            .on_event(FfiItemEvent::LoadedRangesChanged { ranges });
+        item.deliver(FfiItemEvent::LoadedRangesChanged {
+            ranges: Self::loaded_ranges(available),
+        });
     }
 
     /// Build loaded ranges from the available window.
@@ -231,48 +229,13 @@ impl EventBridge {
         let ffi_event = match event {
             PlayerEvent::ItemDidPlayToEnd { .. } => FfiItemEvent::DidReachEnd,
             PlayerEvent::ItemDidFail { .. } => {
-                item.state
-                    .lock()
-                    .mark_failed(Self::ITEM_DID_FAIL.to_owned());
+                item.settle_failed(Self::ITEM_DID_FAIL);
                 FfiItemEvent::DidFail
             }
             PlayerEvent::TimeControlStatusChanged { .. } => FfiItemEvent::DidStall,
             _ => return,
         };
-        item.observer().on_event(ffi_event);
-    }
-
-    /// Forward queue settlement to the item observer. An item reports its
-    /// terminal pair once: whichever source settles it first emits, and the
-    /// other finds it already failed and stays silent. A protocol failure
-    /// reaches the item through [`crate::native::item_bridge::ItemEventBridge`]
-    /// carrying the exact reason, and usually arrives first; a queue failure
-    /// with no protocol event behind it — a decode, DRM, or storage refusal —
-    /// still reaches the item from here.
-    fn route_track_status_to_item(
-        item: &AudioPlayerItem,
-        observer: &Arc<dyn ItemObserver>,
-        status: &TrackStatus,
-    ) {
-        if matches!(status, TrackStatus::Loaded) {
-            item.state.lock().mark_ready();
-            observer.on_event(FfiItemEvent::StatusChanged {
-                status: FfiItemStatus::ReadyToPlay,
-            });
-            return;
-        }
-        let TrackStatus::Failed(reason) = status else {
-            return;
-        };
-        if !item.state.lock().mark_failed(reason.clone()) {
-            return;
-        }
-        observer.on_event(FfiItemEvent::StatusChanged {
-            status: FfiItemStatus::Failed,
-        });
-        observer.on_event(FfiItemEvent::Error {
-            error: reason.clone(),
-        });
+        item.deliver(ffi_event);
     }
 
     /// Spawn background tasks that translate queue/player events into
@@ -399,10 +362,11 @@ mod tests {
     use super::*;
     use crate::{
         core::event_set::ItemBusEvent,
+        item::AudioPlayerItem,
         observer::ItemObserver,
         pools,
         pools::{FfiQueue, FfiWorker},
-        types::{FfiItemConfig, FfiItemEvent},
+        types::{FfiItemConfig, FfiItemEvent, FfiItemStatus},
     };
 
     type QueueEventCase = (QueueEvent, fn(&FfiPlayerEvent) -> bool);
@@ -465,16 +429,7 @@ mod tests {
     fn assert_send<T: Send>() {}
 
     fn item_config() -> FfiItemConfig {
-        FfiItemConfig {
-            abr_mode: None,
-            audio_id: None,
-            headers: None,
-            uuid_i64: None,
-            url: "https://example.com/quiet-intro.flac".to_string(),
-            is_live_stream: false,
-            preferred_peak_bitrate: 0.0,
-            preferred_peak_bitrate_expensive: 0.0,
-        }
+        FfiItemConfig::for_test("https://example.com/quiet-intro.flac")
     }
 
     fn register_observed_item(
@@ -518,7 +473,7 @@ mod tests {
         let scoped = root.scoped();
         let item = AudioPlayerItem::new(item_config());
         *item.inserted.lock() = true;
-        item.state.lock().resolve_duration(42.0);
+        item.deliver(FfiItemEvent::DurationChanged { seconds: 42.0 });
 
         let item_observer_impl = Arc::new(CollectingItemObserver::default());
         let item_observer: Arc<dyn ItemObserver> = item_observer_impl.clone();
@@ -676,8 +631,18 @@ mod tests {
 
         assert!(matches!(
             delayed_observer.take_events().as_slice(),
-            [FfiItemEvent::DidFail]
+            [
+                FfiItemEvent::StatusChanged {
+                    status: FfiItemStatus::Failed
+                },
+                FfiItemEvent::Error { .. },
+                FfiItemEvent::DidFail
+            ]
         ));
+        assert_eq!(
+            delayed.state().error.as_deref(),
+            Some(EventBridge::ITEM_DID_FAIL)
+        );
         assert!(
             current_observer.take_events().is_empty(),
             "an outgoing failure must not be delivered to another item with the same source"

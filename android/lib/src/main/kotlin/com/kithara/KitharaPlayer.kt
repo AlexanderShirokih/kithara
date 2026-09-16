@@ -300,16 +300,12 @@ class KitharaPlayer(config: Config = Config()) {
         inner.removeAllItems()
     }
 
-    /**
-     * Select an item at the given queue index.
-     */
+    /** Select the item at the given position of [items]. */
     @Throws(KitharaError::class)
     fun selectItem(at: Int, transition: Transition = Transition.None) {
-        try {
-            inner.selectItem(at.toUInt(), transition.toFfi())
-        } catch (error: FfiException) {
-            throw KitharaError.fromFfi(error)
-        }
+        val item = items.getOrNull(at)
+            ?: throw KitharaError.InvalidArgument("item index $at out of range")
+        selectItem(item, transition)
     }
 
     /** Select an item by identity (AVQueuePlayer-style). */

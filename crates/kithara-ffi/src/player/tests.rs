@@ -123,14 +123,5 @@ fn anchorless_insert_goes_to_the_head_and_append_to_the_tail() {
 }
 
 fn test_item(url: &str) -> std::sync::Arc<crate::item::AudioPlayerItem> {
-    crate::item::AudioPlayerItem::new(crate::types::FfiItemConfig {
-        abr_mode: None,
-        audio_id: None,
-        headers: None,
-        uuid_i64: None,
-        url: url.to_owned(),
-        is_live_stream: false,
-        preferred_peak_bitrate: 0.0,
-        preferred_peak_bitrate_expensive: 0.0,
-    })
+    crate::item::AudioPlayerItem::new(crate::types::FfiItemConfig::for_test(url))
 }

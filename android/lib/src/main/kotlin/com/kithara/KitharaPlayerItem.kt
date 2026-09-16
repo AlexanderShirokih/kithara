@@ -12,11 +12,13 @@ import com.kithara.ffi.ItemLoadCallback
 import com.kithara.ffi.ItemObserver
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.onStart
@@ -75,6 +77,14 @@ class KitharaPlayerItem internal constructor(
     /** Synonym for [audioId]. */
     val id: String get() = audioId
 
+    private val queueId: ULong = inner.queueId()
+
+    /** Two wrappers are equal when they stand for the same queued item. */
+    override fun equals(other: Any?): Boolean =
+        other is KitharaPlayerItem && other.queueId == queueId
+
+    override fun hashCode(): Int = queueId.hashCode()
+
     /** Numeric form of [audioId] derived from the first 16 hex digits. */
     val uuid: Long
         get() = inner.uuidI64()
@@ -98,7 +108,11 @@ class KitharaPlayerItem internal constructor(
      * value is the state as it stands when collection starts.
      */
     val state: Flow<ItemState>
-        get() = ffiEvents.map { snapshot() }.onStart { emit(snapshot()) }.distinctUntilChanged()
+        get() = ffiEvents
+            .filter { it.changesState() }
+            .map { snapshot() }
+            .onStart { emit(snapshot()) }
+            .distinctUntilChanged()
 
     /** One-shot item events. */
     val events: Flow<KitharaItemEvent>
@@ -155,16 +169,33 @@ class KitharaPlayerItem internal constructor(
             ranges.map { FfiTimeRange(durationSeconds = it.duration, startSeconds = it.start) },
         )
 
-    private val ffiEvents: Flow<FfiItemEvent>
-        get() = callbackFlow {
-            val observer = object : ItemObserver {
-                override fun onEvent(event: FfiItemEvent) {
-                    trySendBlocking(event)
-                }
+    /**
+     * Cold: each collector registers its own observer on the item. The
+     * native event thread never waits on a collector; a slow collector
+     * loses the oldest buffered events.
+     */
+    private val ffiEvents: Flow<FfiItemEvent> = callbackFlow {
+        val observer = object : ItemObserver {
+            override fun onEvent(event: FfiItemEvent) {
+                trySend(event)
             }
-            val id = inner.addObserver(observer)
-            awaitClose { inner.removeObserver(id) }
         }
+        val id = inner.addObserver(observer)
+        awaitClose { inner.removeObserver(id) }
+    }.buffer(EVENT_BUFFER, BufferOverflow.DROP_OLDEST)
+
+    private fun FfiItemEvent.toKitharaItemEvent(): KitharaItemEvent? = when (this) {
+        is FfiItemEvent.DurationChanged -> KitharaItemEvent.DurationChanged(seconds)
+        is FfiItemEvent.VariantsDiscovered -> KitharaItemEvent.VariantsDiscovered(variants.map { it.toKitharaVariant() })
+        is FfiItemEvent.VariantSelected -> KitharaItemEvent.VariantSelected(variant.toKitharaVariant())
+        is FfiItemEvent.VariantApplied -> KitharaItemEvent.VariantApplied(variant.toKitharaVariant())
+        is FfiItemEvent.Error -> KitharaItemEvent.Error(error)
+        else -> null
+    }
+
+    private companion object {
+        const val EVENT_BUFFER = 64
+    }
 
     private fun snapshot(): ItemState {
         val state = inner.state()
@@ -172,7 +203,7 @@ class KitharaPlayerItem internal constructor(
             loadedRanges = state.loadedRanges.map {
                 ItemLoadedRange(start = it.startSeconds, duration = it.durationSeconds)
             },
-            duration = state.durationSeconds.takeIf { it > 0.0 },
+            duration = state.durationSeconds,
             error = state.error?.let { KitharaError.ItemFailed(it) },
             status = state.status.toItemStatus(),
         )
@@ -191,14 +222,13 @@ data class ItemLoadedRange(
     val duration: Double,
 )
 
-private fun FfiItemEvent.toKitharaItemEvent(): KitharaItemEvent? = when (this) {
-    is FfiItemEvent.DurationChanged -> KitharaItemEvent.DurationChanged(seconds)
-    is FfiItemEvent.VariantsDiscovered -> KitharaItemEvent.VariantsDiscovered(variants.map { it.toKitharaVariant() })
-    is FfiItemEvent.VariantSelected -> KitharaItemEvent.VariantSelected(variant.toKitharaVariant())
-    is FfiItemEvent.VariantApplied -> KitharaItemEvent.VariantApplied(variant.toKitharaVariant())
-    is FfiItemEvent.DidFail -> KitharaItemEvent.Error("item did fail")
-    is FfiItemEvent.Error -> KitharaItemEvent.Error(error)
-    else -> null
+private fun FfiItemEvent.changesState(): Boolean = when (this) {
+    is FfiItemEvent.StatusChanged,
+    is FfiItemEvent.DurationChanged,
+    is FfiItemEvent.LoadedRangesChanged,
+    is FfiItemEvent.DidFail,
+    is FfiItemEvent.Error -> true
+    else -> false
 }
 
 private fun FfiVariant.toKitharaVariant(): KitharaVariant =

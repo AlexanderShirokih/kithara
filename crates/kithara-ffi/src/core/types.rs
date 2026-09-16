@@ -159,6 +159,22 @@ pub struct FfiItemConfig {
     pub preferred_peak_bitrate_expensive: f64,
 }
 
+#[cfg(test)]
+impl FfiItemConfig {
+    pub(crate) fn for_test(url: &str) -> Self {
+        Self {
+            abr_mode: None,
+            audio_id: None,
+            headers: None,
+            uuid_i64: None,
+            url: url.to_owned(),
+            is_live_stream: false,
+            preferred_peak_bitrate: 0.0,
+            preferred_peak_bitrate_expensive: 0.0,
+        }
+    }
+}
+
 /// FFI-friendly mirror of [`PlayerStatus`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
@@ -185,7 +201,8 @@ impl From<PlayerStatus> for FfiPlayerStatus {
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct FfiItemState {
     pub status: FfiItemStatus,
-    pub duration_seconds: f64,
+    /// Playable duration once the metadata layer answers.
+    pub duration_seconds: Option<f64>,
     pub error: Option<String>,
     pub loaded_ranges: Vec<FfiTimeRange>,
 }
