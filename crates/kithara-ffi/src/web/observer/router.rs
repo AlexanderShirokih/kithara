@@ -116,9 +116,7 @@ impl Routes {
             return;
         };
         update_item_state(&item, status);
-        if let Some(item_obs) = item.observer() {
-            dispatch_track_status_to_item(&item_obs, status);
-        }
+        dispatch_track_status_to_item(&item.observer(), status);
     }
 
     fn route_item_message(&self, data: &JsValue) {
@@ -130,9 +128,7 @@ impl Routes {
         let Some(item) = self.item(track_id) else {
             return;
         };
-        if let Some(obs) = item.observer() {
-            obs.on_event(item_event);
-        }
+        item.observer().on_event(item_event);
     }
 }
 
@@ -150,8 +146,8 @@ fn update_item_state(item: &Arc<AudioPlayerItem>, status: &FfiTrackStatus) {
             let duration = item.duration_sec();
             item.state.lock().resolve_duration(duration);
         }
-        FfiTrackStatus::Failed { .. } => {
-            item.state.lock().mark_failed();
+        FfiTrackStatus::Failed { reason } => {
+            item.state.lock().mark_failed(reason.clone());
         }
         _ => {}
     }

@@ -56,15 +56,14 @@ impl ItemEventBridge {
             observer.on_event(event);
         }
 
-        if let Ok(error) = FfiError::try_from(event)
-            && state.lock().mark_failed()
-        {
-            observer.on_event(FfiItemEvent::StatusChanged {
-                status: FfiItemStatus::Failed,
-            });
-            observer.on_event(FfiItemEvent::Error {
-                error: error.to_string(),
-            });
+        if let Ok(error) = FfiError::try_from(event) {
+            let reason = error.to_string();
+            if state.lock().mark_failed(reason.clone()) {
+                observer.on_event(FfiItemEvent::StatusChanged {
+                    status: FfiItemStatus::Failed,
+                });
+                observer.on_event(FfiItemEvent::Error { error: reason });
+            }
         }
     }
 
@@ -327,7 +326,10 @@ mod tests {
         let observer_impl = Arc::new(CollectingItemObserver::default());
         let observer: Arc<dyn ItemObserver> = observer_impl.clone();
         let state = item_state();
-        assert!(state.lock().mark_failed(), "the item settles first");
+        assert!(
+            state.lock().mark_failed("test failure".to_owned()),
+            "the item settles first"
+        );
 
         dispatch_file_error(&observer, &state);
 

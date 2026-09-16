@@ -201,6 +201,8 @@ open class KitharaPlayerItem: KitharaPlayerItemProtocol, @unchecked Sendable {
 
     nonisolated let _inner: AudioPlayerItem
 
+    private nonisolated let _observerId: UInt64
+
     // MARK: - Init
 
     /// Create a new item.
@@ -247,7 +249,7 @@ open class KitharaPlayerItem: KitharaPlayerItemProtocol, @unchecked Sendable {
         self.url = URL(string: url) ?? URL(fileURLWithPath: url)
 
         let observer = ItemObserverBridge(subject: _eventSubject)
-        _inner.setObserver(observer: observer)
+        self._observerId = _inner.addObserver(observer: observer)
     }
 
     /// Internal init wrapping an existing FFI item (used by ``KitharaPlayer/items``).
@@ -259,7 +261,11 @@ open class KitharaPlayerItem: KitharaPlayerItemProtocol, @unchecked Sendable {
         self.url = URL(string: urlString) ?? URL(fileURLWithPath: urlString)
 
         let observer = ItemObserverBridge(subject: _eventSubject)
-        inner.setObserver(observer: observer)
+        self._observerId = inner.addObserver(observer: observer)
+    }
+
+    deinit {
+        _inner.removeObserver(id: _observerId)
     }
 
     private static func ffiTrackId(from id: TrackId) -> KitharaFFI.TrackId {

@@ -64,8 +64,6 @@ class KitharaPlayer(config: Config = Config()) {
     private val eventsFlow = MutableSharedFlow<KitharaPlayerEvent>(extraBufferCapacity = 16)
     private val stateFlow = MutableStateFlow(PlayerState())
 
-    private val wrappers = mutableMapOf<String, KitharaPlayerItem>()
-
     init {
         inner.setObserver(observer)
     }
@@ -101,11 +99,7 @@ class KitharaPlayer(config: Config = Config()) {
      * the iOS `AudioPlayerProtocol.currentAudioItem`.
      */
     val currentAudioItem: KitharaPlayerItem?
-        get() {
-            val ffiItem = inner.currentItem() ?: return null
-            val id = ffiItem.audioId().toString()
-            return state.value.items.firstOrNull { it.id == id }
-        }
+        get() = inner.currentItem()?.let { KitharaPlayerItem(it) }
 
     /** Last loaded ranges reported by the underlying resource. */
     val loadedRanges: List<ItemLoadedRange>
@@ -115,9 +109,9 @@ class KitharaPlayer(config: Config = Config()) {
     val error: KitharaError?
         get() = state.value.error
 
-    /** Current queue in native order, with the instances given to [insert] and [append]. */
+    /** Current queue in native order. */
     val items: List<KitharaPlayerItem>
-        get() = state.value.items
+        get() = inner.items().map { KitharaPlayerItem(it) }
 
     /**
      * Target playback speed used by [play]. While the player is
@@ -167,7 +161,6 @@ class KitharaPlayer(config: Config = Config()) {
      */
     fun stop() {
         inner.stop()
-        updateState { current -> current.copy(items = emptyList()) }
     }
 
     /**
@@ -280,7 +273,6 @@ class KitharaPlayer(config: Config = Config()) {
     fun insert(item: KitharaPlayerItem, after: KitharaPlayerItem? = null) {
         try {
             inner.insert(item.inner, after?.inner)
-            republishQueue(item)
         } catch (error: FfiException) {
             throw KitharaError.fromFfi(error)
         }
@@ -291,7 +283,6 @@ class KitharaPlayer(config: Config = Config()) {
     fun append(item: KitharaPlayerItem) {
         try {
             inner.append(item.inner)
-            republishQueue(item)
         } catch (error: FfiException) {
             throw KitharaError.fromFfi(error)
         }
@@ -302,7 +293,6 @@ class KitharaPlayer(config: Config = Config()) {
     fun remove(item: KitharaPlayerItem) {
         try {
             inner.remove(item.inner)
-            republishQueue()
         } catch (error: FfiException) {
             throw KitharaError.fromFfi(error)
         }
@@ -311,7 +301,6 @@ class KitharaPlayer(config: Config = Config()) {
     /** Clears the queue. */
     fun removeAllItems() {
         inner.removeAllItems()
-        republishQueue()
     }
 
     /**
@@ -334,13 +323,6 @@ class KitharaPlayer(config: Config = Config()) {
         } catch (error: FfiException) {
             throw KitharaError.fromFfi(error)
         }
-    }
-
-    private fun republishQueue(queued: KitharaPlayerItem? = null) {
-        queued?.let { wrappers[it.id] = it }
-        val ordered = inner.items().mapNotNull { wrappers[it.audioId().toString()] }
-        wrappers.keys.retainAll(ordered.mapTo(mutableSetOf()) { it.id })
-        updateState { current -> current.copy(items = ordered) }
     }
 
     private fun updateState(update: (PlayerState) -> PlayerState) {

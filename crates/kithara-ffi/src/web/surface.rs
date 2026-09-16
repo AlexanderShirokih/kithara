@@ -301,7 +301,7 @@ impl AudioPlayer {
             .into_iter()
             .nth(index as usize)
             .ok_or_else(|| JsValue::from_str("item index out of range"))?;
-        item.set_observer(Arc::new(ItemObserverJs::new(func)));
+        item.add_observer(Arc::new(ItemObserverJs::new(func)));
         Ok(())
     }
 
