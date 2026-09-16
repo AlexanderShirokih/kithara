@@ -28,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -133,7 +134,7 @@ private fun PlaylistRow(
     onClick: () -> Unit,
 ) {
     val statusColor = trackStatusColor(entry.trackStatus)
-    val background = if (isCurrent) AccentGold.copy(alpha = 0.18f) else PanelBackground
+    val background = if (isCurrent) AccentGold.copy(alpha = 0.18f).compositeOver(PanelBackground) else PanelBackground
     val indexColor = statusColor ?: if (isCurrent) AccentGold else KitharaMuted
     val nameColor = statusColor ?: if (isCurrent) PrimaryText else SecondaryText
 
