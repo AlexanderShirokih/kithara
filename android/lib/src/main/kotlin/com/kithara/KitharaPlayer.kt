@@ -64,6 +64,8 @@ class KitharaPlayer(config: Config = Config()) {
     private val eventsFlow = MutableSharedFlow<KitharaPlayerEvent>(extraBufferCapacity = 16)
     private val stateFlow = MutableStateFlow(PlayerState())
 
+    private val wrappers = mutableMapOf<String, KitharaPlayerItem>()
+
     init {
         inner.setObserver(observer)
     }
@@ -113,7 +115,7 @@ class KitharaPlayer(config: Config = Config()) {
     val error: KitharaError?
         get() = state.value.error
 
-    /** Current queue snapshot. */
+    /** Current queue in native order, with the instances given to [insert] and [append]. */
     val items: List<KitharaPlayerItem>
         get() = state.value.items
 
@@ -271,15 +273,25 @@ class KitharaPlayer(config: Config = Config()) {
     }
 
     /**
-     * Inserts an item into the queue.
+     * Inserts an item after [after], or at the head of the queue when
+     * [after] is null. Use [append] to add to the tail.
      */
     @Throws(KitharaError::class)
     fun insert(item: KitharaPlayerItem, after: KitharaPlayerItem? = null) {
         try {
             inner.insert(item.inner, after?.inner)
-            updateState { current ->
-                current.copy(items = current.items.inserted(item, after))
-            }
+            republishQueue(item)
+        } catch (error: FfiException) {
+            throw KitharaError.fromFfi(error)
+        }
+    }
+
+    /** Adds an item to the tail of the queue. */
+    @Throws(KitharaError::class)
+    fun append(item: KitharaPlayerItem) {
+        try {
+            inner.append(item.inner)
+            republishQueue(item)
         } catch (error: FfiException) {
             throw KitharaError.fromFfi(error)
         }
@@ -290,9 +302,7 @@ class KitharaPlayer(config: Config = Config()) {
     fun remove(item: KitharaPlayerItem) {
         try {
             inner.remove(item.inner)
-            updateState { current ->
-                current.copy(items = current.items.filterNot { queued -> queued.id == item.id })
-            }
+            republishQueue()
         } catch (error: FfiException) {
             throw KitharaError.fromFfi(error)
         }
@@ -301,7 +311,7 @@ class KitharaPlayer(config: Config = Config()) {
     /** Clears the queue. */
     fun removeAllItems() {
         inner.removeAllItems()
-        updateState { current -> current.copy(items = emptyList()) }
+        republishQueue()
     }
 
     /**
@@ -319,11 +329,18 @@ class KitharaPlayer(config: Config = Config()) {
     /** Select an item by identity (AVQueuePlayer-style). */
     @Throws(KitharaError::class)
     fun selectItem(item: KitharaPlayerItem, transition: Transition = Transition.None) {
-        val idx = items.indexOfFirst { queued -> queued.id == item.id }
-        if (idx < 0) {
-            throw KitharaError.InvalidArgument("item ${item.id} not in queue")
+        try {
+            inner.select(item.inner, transition.toFfi())
+        } catch (error: FfiException) {
+            throw KitharaError.fromFfi(error)
         }
-        selectItem(at = idx, transition = transition)
+    }
+
+    private fun republishQueue(queued: KitharaPlayerItem? = null) {
+        queued?.let { wrappers[it.id] = it }
+        val ordered = inner.items().mapNotNull { wrappers[it.audioId().toString()] }
+        wrappers.keys.retainAll(ordered.mapTo(mutableSetOf()) { it.id })
+        updateState { current -> current.copy(items = ordered) }
     }
 
     private fun updateState(update: (PlayerState) -> PlayerState) {
@@ -479,20 +496,3 @@ internal fun KitharaPlayer.Config.toFfi(): FfiPlayerConfig {
     )
 }
 
-private fun List<KitharaPlayerItem>.inserted(
-    item: KitharaPlayerItem,
-    after: KitharaPlayerItem?,
-): List<KitharaPlayerItem> = buildList {
-    addAll(this@inserted)
-    if (after == null) {
-        add(item)
-        return@buildList
-    }
-
-    val index = indexOfFirst { queued -> queued.id == after.id }
-    if (index >= 0) {
-        add(index + 1, item)
-    } else {
-        add(item)
-    }
-}

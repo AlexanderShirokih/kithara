@@ -269,7 +269,7 @@ internal class PlayerViewModel(application: Application) : AndroidViewModel(appl
     ) {
         val item = KitharaPlayerItem(url)
         try {
-            player.insert(item)
+            player.append(item)
         } catch (e: KitharaError) {
             Log.e(TAG, "Failed to insert: $url", e)
             setLocalError(e.message ?: e::class.simpleName.orEmpty())

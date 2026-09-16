@@ -439,6 +439,22 @@ impl NativeInner {
             })
     }
 
+    pub(crate) fn select(
+        &self,
+        item: &AudioPlayerItem,
+        transition: crate::types::FfiTransition,
+    ) -> Result<(), FfiError> {
+        let _rt = crate::FFI_RUNTIME.enter();
+        self.queue
+            .select(item.track_id(), transition.into())
+            .map_err(|e| match e {
+                QueueError::NotReady(_) => FfiError::NotReady,
+                other => FfiError::Internal {
+                    description: other.to_string(),
+                },
+            })
+    }
+
     pub(crate) fn set_abr_mode(&self, mode: FfiAbrMode) {
         let Some(handle) = self.queue.current_abr_handle() else {
             return;
