@@ -229,14 +229,11 @@ class KitharaPlayer(config: Config = Config()) {
     }
 
     /**
-     * Register a runtime DRM key decryptor on every host (default
-     * `"*"` wildcard). The lambda receives the encrypted key bytes
-     * plus the player-generated salt that was attached to outgoing
-     * requests under `X-Encrypted-Key`. Returning `null` preserves
-     * the input ciphertext unchanged.
+     * Register a runtime DRM key processor on every host (default
+     * `"*"` wildcard).
      */
-    fun setupHlsAes(keyDecryptor: (key: ByteArray, salt: String) -> ByteArray?) {
-        inner.setupHlsAes(ClosureKeyProcessorBridge(keyDecryptor))
+    fun setupHlsAes(processor: KeyProcessor) {
+        inner.setupHlsAes(KeyProcessorBridge(processor))
     }
 
     /**
@@ -445,20 +442,13 @@ private fun Transition.toFfi(): FfiTransition = when (this) {
  * cipher can ignore the argument; implementations that derive the
  * cipher per-session should rebuild it from `salt` on every call.
  */
-fun interface KeyProcessor {
+interface KeyProcessor {
     fun processKey(key: ByteArray, salt: String): ByteArray
 }
 
 private class KeyProcessorBridge(private val processor: KeyProcessor) : FfiKeyProcessor {
     override fun processKey(key: ByteArray, salt: String): ByteArray =
         processor.processKey(key, salt)
-}
-
-private class ClosureKeyProcessorBridge(
-    private val decrypt: (ByteArray, String) -> ByteArray?,
-) : FfiKeyProcessor {
-    override fun processKey(key: ByteArray, salt: String): ByteArray =
-        decrypt(key, salt) ?: key
 }
 
 internal fun KitharaPlayer.Config.toFfi(): FfiPlayerConfig {
