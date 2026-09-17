@@ -10,6 +10,7 @@ keywords = ["android", "audio", "mediacodec", "jni"]
 categories = ["multimedia::audio", "os::android-apis"]
 
 [dependencies]
+derive_more = { workspace = true }
 jni = { workspace = true }
 ndk-context = { workspace = true }
 thiserror = { workspace = true }
