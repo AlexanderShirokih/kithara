@@ -1,4 +1,8 @@
 //! The runtime handle is asked for in a process that never published it.
+//!
+//! The device harness links every test binary against `init_context`, so on
+//! Android the global is published before the test runs.
+#![cfg(not(target_os = "android"))]
 
 use kithara_test_utils::{hang::suppress_expected_panic_dumps, kithara};
 
