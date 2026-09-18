@@ -640,7 +640,7 @@ fn an_open_merge_request_runs_the_complete_apple_review_matrix() {
         ("apple:test", ".rules-verify-and-branch", true),
         ("apple:xcframework", ".rules-verify-and-branch", false),
         ("apple:ios", ".rules-verify", false),
-        ("apple:ios-test", ".rules-integration-and-review", true),
+        ("apple:ios-test", ".rules-verify-and-branch", false),
     ] {
         assert_active_review_job(&config, job, owner, judged);
     }
@@ -818,7 +818,7 @@ fn superseded_review_checks_are_cancelable_in_the_child_pipeline() {
     );
     assert_eq!(rules[1]["when"].as_str(), Some("always"));
     let config = GitlabConfig::load(root);
-    for owner in [".rules-integration-and-review", ".rules-review-or-nightly"] {
+    for owner in [".rules-review-or-nightly"] {
         let rules = config.definition(owner)["rules"]
             .as_sequence()
             .expect("job rules");
@@ -840,8 +840,57 @@ fn superseded_review_checks_are_cancelable_in_the_child_pipeline() {
             "non-review jobs retain their policy"
         );
     }
+    // `.rules-verify-and-branch` spells the same policy the other way round:
+    // the set is cancelable, and the kinds that guard a landed commit opt out
+    // rule by rule inside `.rules-verify`.
+    assert_eq!(
+        config.definition(".rules-verify-and-branch")["interruptible"].as_bool(),
+        Some(true)
+    );
+    let verify = config.definition(".rules-verify")["rules"]
+        .as_sequence()
+        .expect("job rules");
+    for kind in ["main", "nightly", "release"] {
+        let condition = format!("$KITHARA_PIPELINE_KIND == \"{kind}\"");
+        let rule = verify
+            .iter()
+            .find(|rule| rule.get("if").and_then(Value::as_str) == Some(condition.as_str()))
+            .expect("verify rule");
+        assert_eq!(rule["interruptible"].as_bool(), Some(false), "{kind}");
+    }
     assert_eq!(
         config.definition(".rules-release")["interruptible"].as_bool(),
         Some(false)
+    );
+}
+
+/// The same contract on the Mac mini: provisioning runs on a protected kind
+/// and only when the run asks for it. A merge-request or quarantine ref
+/// carries code no one has reviewed, and this writes to the machine every
+/// lane depends on.
+#[test]
+fn the_mac_host_provisions_itself_only_from_a_protected_ref_that_asks() {
+    let config = GitlabConfig::load(workspace_root());
+    let rules = config.definition("host:provision")["rules"]
+        .as_sequence()
+        .expect("job rules");
+    assert_eq!(
+        rules[0]["if"].as_str(),
+        Some("$KITHARA_PROVISION != \"1\""),
+        "the opt-in is what the first rule tests"
+    );
+    assert_eq!(rules[0]["when"].as_str(), Some("never"));
+
+    let kinds: BTreeSet<&str> = rules[1..]
+        .iter()
+        .filter_map(|rule| rule.get("if").and_then(Value::as_str))
+        .collect();
+    assert_eq!(
+        kinds,
+        BTreeSet::from([
+            "$KITHARA_PIPELINE_KIND == \"main\"",
+            "$KITHARA_PIPELINE_KIND == \"nightly\"",
+            "$KITHARA_PIPELINE_KIND == \"release\"",
+        ])
     );
 }
