@@ -18,7 +18,10 @@ pub trait MediaDataSource: Send + 'static {
 
 /// Container parsing through `AMediaExtractor`, fed by a caller-supplied
 /// [`MediaDataSource`].
+#[derive(fieldwork::Fieldwork)]
+#[fieldwork(opt_in, get_mut)]
 pub struct OwnedExtractor<S> {
+    #[field(get_mut)]
     source: Box<S>,
     data_source: NonNull<sys::AMediaDataSource>,
     raw: NonNull<sys::AMediaExtractor>,
@@ -152,15 +155,6 @@ impl<S: MediaDataSource> OwnedExtractor<S> {
             ));
         }
         Ok(())
-    }
-
-    #[must_use]
-    pub fn source(&self) -> &S {
-        &self.source
-    }
-
-    pub fn source_mut(&mut self) -> &mut S {
-        &mut self.source
     }
 
     /// Format of one track.

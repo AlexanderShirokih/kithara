@@ -11,6 +11,7 @@ categories = ["multimedia::audio", "os::android-apis"]
 
 [dependencies]
 derive_more = { workspace = true }
+fieldwork = { workspace = true }
 jni = { workspace = true }
 ndk-context = { workspace = true }
 thiserror = { workspace = true }
