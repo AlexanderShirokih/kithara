@@ -59,11 +59,6 @@ impl TryFrom<&ItemBusEvent> for FfiError {
             ItemBusEvent::Hls(HlsEvent::Error { error }) => Ok(Self::ItemFailed {
                 reason: error.to_string(),
             }),
-            ItemBusEvent::Downloader(DownloaderEvent::RequestFailed { error, .. }) => {
-                Ok(Self::ItemFailed {
-                    reason: error.to_string(),
-                })
-            }
             _ => Err(NotForwarded),
         }
     }
@@ -1621,16 +1616,13 @@ mod tests {
     }
 
     #[kithara::test]
-    fn event_to_ffi_error_maps_request_failed() {
+    fn event_to_ffi_error_skips_request_failed() {
         let event = ItemBusEvent::Downloader(DownloaderEvent::RequestFailed {
             request_id: request_id(13),
             error: kithara::net::NetError::Network("boom".into()),
             retryable: false,
         });
 
-        assert!(matches!(
-            FfiError::try_from(&event),
-            Ok(FfiError::ItemFailed { reason }) if reason == "Network error: boom"
-        ));
+        assert!(matches!(FfiError::try_from(&event), Err(NotForwarded)));
     }
 }
