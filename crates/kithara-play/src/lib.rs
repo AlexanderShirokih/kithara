@@ -50,7 +50,10 @@ pub use player::{
     DEFAULT_CROSSFADE_DURATION, DEFAULT_PLAYING_RATE, PlayerConfig, PlayerConfigPatch, PlayerImpl,
     SelectTransition,
 };
-pub use resource::{PlaybackResamplerBackend, Resource, ResourceConfig, ResourceSrc, SourceType};
+pub use resource::{
+    ArtifactDocument, ArtifactFetch, ArtifactLoadError, ArtifactSource, MAX_ARTIFACT_BYTES,
+    PlaybackResamplerBackend, PreparedGrid, Resource, ResourceConfig, ResourceSrc, SourceType,
+};
 pub use rt::{PlayerNode, StreamShape};
 pub use worker::{
     EngineLoad, EngineLoadSnapshot, PlayWorker, PlayWorkerConfig, PlayWorkerConfigPatch,
