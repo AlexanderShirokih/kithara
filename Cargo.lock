@@ -5530,6 +5530,7 @@ dependencies = [
  "kithara-derive",
  "kithara-download",
  "kithara-events",
+ "kithara-net",
  "kithara-platform",
  "kithara-play",
  "kithara-queue",
