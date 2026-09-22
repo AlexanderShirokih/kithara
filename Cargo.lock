@@ -5005,6 +5005,7 @@ dependencies = [
  "js-sys",
  "kithara",
  "kithara-android",
+ "kithara-apple",
  "kithara-audio",
  "kithara-derive",
  "kithara-events",
