@@ -43,6 +43,9 @@ impl<S> Deref for PlayerImpl<S> {
 
 impl<S> PlayerImpl<S> {
     /// Create a new player with the given configuration.
+    ///
+    /// The player owns one persistent track-geometry grid for its whole life: loading, replacing,
+    /// or releasing a track states a later revision rather than changing the group's topology.
     #[must_use]
     pub fn new(mut config: PlayerConfig<S>) -> Self {
         if config.response_budget_frames.is_some() && config.warp.render_quantum_frames().is_none()
@@ -52,9 +55,6 @@ impl<S> PlayerImpl<S> {
             config.warp.apply(patch);
         }
         let pools = config.worker.pools().clone();
-        // The player's one member is its own track geometry: a grid it keeps
-        // for its whole life, so loading, replacing and releasing a track all
-        // state a later revision instead of changing the group's topology.
         let track_grid = TrackGrid::new(config.track_grid_id, config.sample_rate);
         let sync = PlayerSync::owning(
             config.grid_id,
@@ -71,9 +71,6 @@ impl<S> PlayerImpl<S> {
             .clone()
             .unwrap_or_else(|| EventBus::new(config.event_bus_capacity.get()));
 
-        // Composed/standalone seam: `Some(parent)` → the player's master is a
-        // child of it (so a passed cancel reaches the player but the player's
-        // Drop never cancels the passed token); `None` → own root.
         let cancel = CancelScope::new(config.cancel.clone()).token();
         config.cancel = Some(cancel.clone());
 
@@ -94,7 +91,6 @@ impl<S> PlayerImpl<S> {
             config.abr = Some(AbrController::new(abr_settings));
         }
 
-        // Seed the single speed source with the configured default rate.
         config.warp.stretch().set_speed(config.default_rate);
         let params = PlayerParams::from(&config);
         let core = PlayerCore {

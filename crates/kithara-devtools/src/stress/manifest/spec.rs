@@ -477,6 +477,9 @@ impl Manifest {
         );
     }
 
+    /// A job's result covers every lane in it at once, so a red job means one lane failed, not
+    /// necessarily this one; a lane that passed inside a failed job legitimately has a zero exit
+    /// code.
     fn validate_timing(
         &self,
         expected: &ExpectedProvenance,
@@ -505,13 +508,6 @@ impl Manifest {
             ));
             return;
         };
-        // Only success is a claim about every lane. The job's result covers all
-        // of them at once, so a red job says one lane failed, not this one: a
-        // lane that passed inside a failed job has a zero exit code and is
-        // telling the truth. Demanding nonzero here would mark exactly the
-        // clean lanes untrustworthy, and a run comparing two clocks would
-        // lose the half that worked. That a failed job had a failing lane
-        // somewhere is checked once, across the run, by the reporter.
         if matches!(expected.execute_result, ExecuteResult::Success) && exit_code != 0 {
             mismatches.push(ProvenanceMismatch::new(
                 "timing.exit_code",

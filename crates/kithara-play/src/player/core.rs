@@ -109,6 +109,8 @@ impl<S> PlayerRuntime<S> {
         Ok(())
     }
 
+    /// The track geometry the player publishes now belongs to this load: the prepared grid, on the
+    /// axis the engine decodes onto, spans the length this load states.
     pub(crate) fn enqueue_to_processor(
         &self,
         index: usize,
@@ -126,9 +128,6 @@ impl<S> PlayerRuntime<S> {
             return Ok(None);
         };
         self.phase.lock().set_abr_handle(item.abr_handle);
-        // The geometry the player publishes now belongs to this load: its
-        // prepared grid, on the axis the engine decodes onto, over the length
-        // the load states.
         let rate = self.core.engine.master_sample_rate();
         if let Some(sample_rate) = NonZeroU32::new(rate) {
             self.core.track_grid.load(
@@ -161,6 +160,9 @@ impl<S> PlayerRuntime<S> {
     }
 
     /// Remove all items, release the active slot, and stop the engine.
+    ///
+    /// Also clears any held start position, since the item it targeted no longer exists once the
+    /// queue is gone.
     pub fn remove_all_items(&self)
     where
         S: HasPool<f32>,
@@ -169,7 +171,6 @@ impl<S> PlayerRuntime<S> {
         self.core.track_grid.release();
         self.core.items.clear_all();
         self.set_status(PlayerStatus::Unknown);
-        // The item the held start position belongs to is gone with the queue.
         *self.core.start_position.lock() = None;
         let slot = self.slot();
         let _ = self.send_to_slot(PlayerCmd::Clear);

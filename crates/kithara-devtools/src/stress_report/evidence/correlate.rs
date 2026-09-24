@@ -346,6 +346,9 @@ fn attempt_id(case: &CaseTiming, run_id: Option<&str>) -> String {
     )
 }
 
+/// The panic header arrives twice, once in nextest's `message` attribute and once repeated in the
+/// body, so the first body line after it is a duplicate, not the payload; skipping it keeps the
+/// assertion's own message and values.
 fn failure_signature(
     case: &CaseTiming,
     evidence: &StressEvidenceConfig,
@@ -374,12 +377,6 @@ fn failure_signature(
             return normalize_signature(line, budgets);
         }
         if is_panic_header(line) {
-            // The header arrives twice — nextest puts it in the failure
-            // `message` attribute and the body repeats it — so the first line
-            // after it is the duplicate, not the payload. Taking that one line
-            // as the detail spent the whole signature on saying the same thing
-            // twice and dropped what distinguishes one failure from another:
-            // the assertion's own message and its values.
             let detail: Vec<&str> = lines
                 .iter()
                 .skip(index + 1)

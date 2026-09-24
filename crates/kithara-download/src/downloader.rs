@@ -109,14 +109,15 @@ impl Downloader {
     ///
     /// Adopts `config.client` (a clone of the caller's [`HttpClient`])
     /// and the shared [`AbrController`] from `config.abr_settings`.
+    ///
+    /// Composed/standalone seam: a `Some` parent makes this token its child; `None` makes it its
+    /// own root. The loop, peer scopes, and the shared ABR controller all derive from this token.
     #[must_use]
     pub fn new(config: super::DownloaderConfig) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let soft_timeout = config.soft_timeout;
         #[cfg(not(target_arch = "wasm32"))]
         let runtime = config.runtime;
-        // WHY: Composed/standalone seam: `Some` parent -> child of it; `None` -> own root. The loop, peer scopes, and the shared ABR
-        // controller derive from this token.
         let cancel = CancelScope::new(config.cancel).token();
         let mut abr_settings = config.abr_settings;
         abr_settings.cancel = Some(cancel.clone());
@@ -248,15 +249,15 @@ impl Downloader {
         task::spawn_on(&handle, async move { this.run(rx).await });
     }
 
+    /// Runs the download loop on a dedicated Web Worker: the decoder blocks the engine worker in
+    /// `wait_range` via `Atomics.wait`, so a `spawn_local` loop on that same worker would never be
+    /// polled and its fetches would never complete the bytes the blocking read waits for.
     #[cfg(target_arch = "wasm32")]
     fn spawn_run(
         _inner: &DownloaderInner,
         this: Self,
         rx: mpsc::UnboundedReceiver<RegisteredPeerEntry>,
     ) {
-        // WHY: Run the download loop on a dedicated Web Worker (mirrors the pre-`unified-Downloader` `Backend` model). The decoder blocks
-        // the engine worker in `wait_range` (`Atomics.wait`); a `spawn_local` loop on that same worker would never be polled, so its fetches
-        // would never complete the bytes the blocking read waits for.
         spawn(move || {
             keep_worker_alive();
             drop(task::spawn(async move {
