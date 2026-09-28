@@ -349,15 +349,15 @@ fn update_tokens(
     let clear = optional.map(|_| quote! { Clear, });
     let reset = default.as_ref().map(|_| quote! { Reset, });
     let set = if optional.is_some() {
-        quote! { patch.#name = ::core::option::Option::Some(::core::option::Option::Some(value)); }
+        quote! { target.#name = ::core::option::Option::Some(value); }
     } else {
-        quote! { patch.#name = ::core::option::Option::Some(value); }
+        quote! { target.#name = value; }
     };
     let clear_lower = optional.map(|_| {
-        quote! { #enum_name::Clear => { patch.#name = ::core::option::Option::Some(::core::option::Option::None); } }
+        quote! { #enum_name::Clear => { target.#name = ::core::option::Option::None; } }
     });
     let reset_lower = default.map(|default| {
-        quote! { #enum_name::Reset => { patch.#name = ::core::option::Option::Some(#default); } }
+        quote! { #enum_name::Reset => { target.#name = #default; } }
     });
     Ok(Update {
         declaration: quote! {

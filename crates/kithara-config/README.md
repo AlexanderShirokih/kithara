@@ -29,10 +29,11 @@ derives the builder default, setter conversion, and optional patch conversion.
 each writable field also uses `#[config(value, update)]`. The macro emits a
 concrete update enum per property and a `<Name>Update` record. Optional values
 distinguish `Set`, `Clear`, and `Unchanged`; `Reset` is emitted only when the
-same field declares a bon builder default. `apply_update` lowers through the
-existing generated `Patch::apply`, so its staged validation remains the only
-commit gate. Prepared engines and delegated live owners keep their own explicit
-operations.
+same field declares a bon builder default. A configuration that declares
+`#[patch(validate = ..., error = ...)]` stages each update and commits it only
+through that check, the same gate a document merge holds; any other takes the
+update in place. Prepared engines and delegated live owners keep their own
+explicit operations.
 
 The attribute emits `<Name>Values` with public snapshot fields, preserving field
 documentation and configuration gates. Resource generics stay on the original
