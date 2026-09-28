@@ -711,9 +711,11 @@ prefix_args = [
 
 [test.lanes.analysis]
 program = "cargo"
+default_features = ["kithara-beat/dsp", "kithara-waveform/dsp"]
 owns = [
   "crates/kithara-analysis/",
   "crates/kithara-beat/",
+  "crates/kithara-waveform/",
   "tests/crates/analysis/",
 ]
 prefix_args = [
@@ -723,6 +725,8 @@ prefix_args = [
   "kithara-analysis",
   "-p",
   "kithara-beat",
+  "-p",
+  "kithara-waveform",
   "-p",
   "kithara-analysis-tests",
   "--cargo-profile",
@@ -778,6 +782,7 @@ prefix_args = [
 [test.lanes.dsp]
 program = "cargo"
 default_backend = "none"
+default_features = ["kithara-dsp/spectrum"]
 owns = ["crates/kithara-dsp/", "tests/crates/dsp/"]
 prefix_args = [
   "nextest",
