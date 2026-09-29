@@ -1,10 +1,10 @@
 use std::io::Error;
 
-use kithara_config::{Config as _, Patch, config};
+use kithara_config::{Config, Patch};
 use kithara_test_utils::kithara;
 
-#[config(default, update)]
-#[derive(Clone, Patch)]
+#[derive(Clone, Patch, Config)]
+#[config(default, debug, update)]
 struct Levels {
     #[config(value, update, builder(default = 2), field(get, copy))]
     level: u32,
@@ -12,9 +12,8 @@ struct Levels {
     limit: Option<u32>,
 }
 
-#[config(default, update)]
-#[derive(Clone, Patch)]
-#[patch(validate = Self::validated, error = Error)]
+#[derive(Clone, Patch, Config)]
+#[config(default, update, patch(validate = Self::validated, error = Error))]
 struct Bounded {
     #[config(value, update, builder(default = 2), field(get, copy))]
     level: u32,
@@ -55,12 +54,15 @@ fn a_judged_update_commits_whole_or_not_at_all() {
     assert_eq!(bounded.values().limit, None);
 }
 
-#[config]
+#[derive(Config)]
+#[config(debug)]
 struct Session<'a> {
-    #[config(skip = "borrowed construction resource")]
+    #[config(skip = "borrowed construction resource", debug(skip))]
     resource: &'a str,
     #[config(nested)]
     levels: Levels,
+    #[config(skip = "derived from the levels it opens with", builder(skip = levels.level()))]
+    opened: u32,
 }
 
 struct Wrapped<T>(T);
@@ -71,10 +73,13 @@ impl<T> Wrapped<T> {
     }
 }
 
-#[config]
-#[derive(Patch)]
+#[derive(Patch, Config)]
 struct WrappedConfig {
-    #[config(value(u32, self.level.0), wrap(default = 2, with = Wrapped::new, patch))]
+    #[config(
+        value(u32, self.level.0),
+        wrap(default = 2, with = Wrapped::new),
+        patch(wire = u32, from = Wrapped::new)
+    )]
     level: Wrapped<u32>,
 }
 
@@ -94,6 +99,22 @@ fn retained_values_are_owned_and_resources_stay_private() {
     assert_eq!(values.levels.level, 7);
     assert_eq!(values.levels.limit, None);
     assert_eq!(session.resource, "injected");
+    assert_eq!(
+        session.opened, 7,
+        "a skipped field reads the builder's arguments"
+    );
+}
+
+#[kithara::test]
+fn debug_prints_every_field_but_the_skipped_ones() {
+    let session = Session::builder()
+        .resource("secret")
+        .levels(Levels::default())
+        .build();
+    assert_eq!(
+        format!("{session:?}"),
+        "Session { levels: Levels { level: 2, limit: Some(4) }, opened: 2, .. }"
+    );
 }
 
 #[kithara::test]
