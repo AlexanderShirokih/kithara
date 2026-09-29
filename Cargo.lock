@@ -4576,7 +4576,6 @@ dependencies = [
  "bon",
  "bytes",
  "cbc",
- "crossbeam-queue",
  "dashmap",
  "delegate",
  "derive-where",
