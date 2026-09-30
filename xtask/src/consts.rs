@@ -266,7 +266,7 @@ pub(crate) const LISTED: &str = "kithara-ci:linux-20260729\n\
 pub(crate) const FILE: &str = "/etc/kithara-ci/docker-compose.yml";
 
 /// Where a job builds and what it reuses, before the linker entries are added.
-pub(crate) const CACHE_ENVIRONMENT: [&str; 7] = [
+pub(crate) const CACHE_ENVIRONMENT: [&str; 8] = [
     // Encoded audio fixtures. Their default home is the container's own temp
     // directory, and a container serves one job and is thrown away — so every
     // job re-encoded every fixture it touched, and a test that builds one
@@ -274,6 +274,12 @@ pub(crate) const CACHE_ENVIRONMENT: [&str; 7] = [
     // content-addressed and namespaced by a build fingerprint, so sharing them
     // across runners cannot serve one build's bytes to another.
     "KITHARA_FIXTURE_CACHE=/cache/fixtures",
+    // The beat models `kithara-beat` embeds. Their default home is the same
+    // throwaway temp directory, so every job fetched them again, newer than
+    // the lane's build, and Cargo rebuilt every crate that embeds them and
+    // every test binary above those: minutes of a test lane for a commit that
+    // changed no Rust. A model is placed only once its SHA-256 checks out.
+    "KITHARA_BEAT_MODEL_CACHE=/cache/fixtures/beat-models",
     // Every runner mounts this one root, and a lane claims the directory named
     // after it underneath: a lane that lands on a different runner than last
     // time then still finds its own warm build. A runner-owned directory made
@@ -422,14 +428,29 @@ pub(crate) const APFS_LIST: &str = "\
 /// serialized on the host, so another CI lane cannot bind it concurrently.
 pub(crate) const TEST_SERVER_PORT: u16 = 3444;
 
-/// Held by the one job building in the directory.
-pub(crate) const LOCK_FILE: &str = ".kithara-lane.lock";
+/// Where `ci lane` tells the job's later steps its build directory is.
+pub(crate) const LANE_TARGET_ENV: &str = "KITHARA_LANE_TARGET";
 
 /// The content the directory's artifacts may have been built from.
 pub(crate) const SOURCES_FILE: &str = ".kithara-lane-sources";
 
 /// Stands for content a build the record did not see may have used.
 pub(crate) const UNKNOWN_BLOB: &str = "unknown";
+
+/// Hours a lane slot keeps a build unit its builds stopped using, unless the
+/// project config names another window.
+pub(crate) const LANE_UNIT_WINDOW_HOURS: u64 = 24;
+
+/// Makes nightly Cargo mark each unit it reuses as used, which a lane slot's
+/// pruning reads. Stable Cargo ignores it.
+pub(crate) const MTIME_ON_USE_ENV: &str = "CARGO_UNSTABLE_MTIME_ON_USE";
+
+/// Hex digits in the hash Cargo names a build unit's files with.
+pub(crate) const UNIT_HASH_LEN: usize = 16;
+
+/// The window lane slot tests prune by.
+#[cfg(test)]
+pub(crate) const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[cfg(test)]
 pub(crate) const FIXTURE_FAILURE_EXIT_CODE: i32 = 7;
