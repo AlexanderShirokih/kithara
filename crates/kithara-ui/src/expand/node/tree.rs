@@ -590,7 +590,8 @@ pub(crate) struct ControlSite<'a> {
     pub(crate) write: Option<&'a BindingRef>,
     pub(crate) zoom: Option<&'a BindingRef>,
     pub(crate) writes: SlotWrites<'a>,
-    pub(crate) within: Option<&'a BindingRef>,
+    /// What opens the popover a write from this site shuts.
+    pub(crate) shuts: Option<&'a BindingRef>,
 }
 
 impl<'a> ControlSite<'a> {
@@ -608,7 +609,7 @@ impl<'a> ControlSite<'a> {
             write: None,
             zoom: None,
             writes: SlotWrites::default(),
-            within: None,
+            shuts: None,
         }
     }
 }

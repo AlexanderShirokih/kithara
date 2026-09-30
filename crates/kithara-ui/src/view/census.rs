@@ -286,7 +286,7 @@ impl Census {
             self.note_read(site.path, binding, origin);
         }
         let interval = site.read.and_then(endpoint_key);
-        let close = match site.within {
+        let close = match site.shuts {
             Some(BindingRef::View { id, .. }) => Some(id.0.clone()),
             _ => None,
         };

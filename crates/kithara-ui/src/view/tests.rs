@@ -95,6 +95,7 @@ fn registry() -> TestRegistry {
         (EndpointCategory::Model, "fixture.span", ValueKind::Range),
         (EndpointCategory::Model, "fixture.tree", ValueKind::Tree),
         (EndpointCategory::Model, "fixture.query", ValueKind::Text),
+        (EndpointCategory::Model, "fixture.open", ValueKind::Bool),
     ] {
         registry.insert(category, id, EndpointDesc::new(kind).with_scope("deck"));
     }
@@ -396,21 +397,27 @@ fn a_placement_delivers_the_point_it_came_to_rest_at() {
     );
 }
 
-const MENU: &str = r#"Popover(id: "menu", open: View(id: "menu"),
+/// A popover on a view flag, declaring `dismiss` the way the caller spells it.
+fn menu(dismiss: &str) -> String {
+    format!(
+        r#"Popover(id: "menu", open: View(id: "menu"), {dismiss}
     anchor: Pressable(id: "burger", press: View(id: "menu"),
         child: Spacer(id: "icon", size: Some((w: Fixed(20.0), h: Fixed(20.0))))),
     content: Column(size: (w: Fixed(100.0), h: Fixed(60.0)), gap: 0.0, pad: 0.0, children: [
-        Pressable(id: "fire", press: Command(id: "fixture.fire", with: { "deck": "$deck" }),
+        Pressable(id: "fire", press: Command(id: "fixture.fire", with: {{ "deck": "$deck" }}),
             child: Spacer(id: "fire-face", size: Some((w: Fixed(100.0), h: Fixed(20.0))))),
         Pressable(id: "group", press: View(id: "group"),
             child: Spacer(id: "group-face", size: Some((w: Fixed(100.0), h: Fixed(20.0))))),
         Optional(id: "block", hidden: View(id: "group"),
             child: Spacer(id: "block-face", size: Some((w: Fixed(100.0), h: Fixed(20.0))))),
-    ]))"#;
+    ]))"#
+    )
+}
 
 #[kithara::test]
-fn a_write_from_inside_a_view_flag_popover_shuts_it() {
-    let ui = compiled(MENU).unwrap_or_else(|error| panic!("the menu must compile: {error}"));
+fn an_action_inside_a_popover_shut_on_any_action_shuts_it() {
+    let ui = compiled(&menu("dismiss: OnAnyAction,"))
+        .unwrap_or_else(|error| panic!("the menu must compile: {error}"));
 
     let mut view = ViewState::new();
     view.set("deck-b/menu", ViewSet::On);
@@ -422,8 +429,30 @@ fn a_write_from_inside_a_view_flag_popover_shuts_it() {
 }
 
 #[kithara::test]
+fn an_action_inside_a_popover_shut_on_a_tap_outside_leaves_it_open() {
+    for popover in [menu("dismiss: OnTapOutside,"), menu("")] {
+        let ui =
+            compiled(&popover).unwrap_or_else(|error| panic!("the menu must compile: {error}"));
+
+        let mut view = ViewState::new();
+        view.set("deck-b/menu", ViewSet::On);
+
+        let host = settle(&ui, "deck-b/fire", ControlAction::Activate, &mut view);
+
+        assert!(view.flag("deck-b/menu"));
+        assert_eq!(host, write("fixture.fire@deck=b", WriteValue::Trigger));
+
+        let host = settle(&ui, "deck-b/menu", ControlAction::Activate, &mut view);
+
+        assert!(!view.flag("deck-b/menu"), "a tap outside shuts it");
+        assert_eq!(host, None);
+    }
+}
+
+#[kithara::test]
 fn a_view_flag_press_inside_a_popover_leaves_it_open() {
-    let ui = compiled(MENU).unwrap_or_else(|error| panic!("the menu must compile: {error}"));
+    let ui = compiled(&menu("dismiss: OnAnyAction,"))
+        .unwrap_or_else(|error| panic!("the menu must compile: {error}"));
 
     let mut view = ViewState::new();
     view.set("deck-b/menu", ViewSet::On);
@@ -433,6 +462,24 @@ fn a_view_flag_press_inside_a_popover_leaves_it_open() {
     assert!(view.flag("deck-b/menu"));
     assert!(view.flag("deck-b/group"));
     assert_eq!(host, None);
+}
+
+#[kithara::test]
+fn a_popover_any_action_shuts_must_open_on_a_view_flag() {
+    let popover = r#"Popover(id: "menu", open: Model(id: "fixture.open", with: { "deck": "$deck" }),
+        dismiss: OnAnyAction,
+        anchor: Spacer(id: "icon", size: Some((w: Fixed(20.0), h: Fixed(20.0)))),
+        content: Pressable(id: "fire", press: Command(id: "fixture.fire", with: { "deck": "$deck" }),
+            child: Spacer(id: "fire-face", size: Some((w: Fixed(100.0), h: Fixed(20.0))))))"#;
+
+    let Err(error) = compiled(popover) else {
+        panic!("an action cannot shut a popover the host holds open")
+    };
+
+    assert!(
+        matches!(&error, UiDocError::InvalidId { id, .. } if id == "deck-b/menu"),
+        "the refusal must name the popover, got {error}"
+    );
 }
 
 #[kithara::test]

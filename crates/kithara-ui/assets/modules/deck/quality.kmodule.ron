@@ -8,6 +8,7 @@
         id: "pop",
         open: View(id: "quality"),
         align: End,
+        dismiss: OnAnyAction,
         anchor: Pressable(
             id: "cell",
             press: View(id: "quality"),

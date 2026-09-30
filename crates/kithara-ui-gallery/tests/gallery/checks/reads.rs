@@ -634,6 +634,38 @@ fn clock_controls_update_source_tempo_grid_and_key_lock() {
 }
 
 #[kithara::test]
+fn a_panel_stays_open_through_the_writes_it_delivers() {
+    for (page, open, presses) in [
+        (
+            "menu",
+            "app-menu/menu",
+            [
+                "app-menu/menu/module-ov/cell",
+                "app-menu/menu/module-mix/cell",
+                "app-menu/menu/layout-2/apply",
+            ],
+        ),
+        (
+            "clock",
+            "clock-components/clock",
+            [
+                "clock-components/master-clock/surface/tap",
+                "clock-components/master-clock/surface/tap",
+                "clock-components/master-clock/surface/source-c/select",
+            ],
+        ),
+    ] {
+        let mut hand = Hand::at(page);
+        assert!(hand.view.flag(open), "`{page}` is shown with `{open}` open");
+
+        for path in presses {
+            hand.press(path);
+            assert!(hand.view.flag(open), "`{path}` must leave `{open}` open");
+        }
+    }
+}
+
+#[kithara::test]
 fn pivot_controls_follow_the_handoff_ratio_range_and_loop_contract() {
     let mut hand = Hand::at("pivot");
 

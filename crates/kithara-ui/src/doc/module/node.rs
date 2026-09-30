@@ -7,8 +7,8 @@ use super::{
     motion::{Motion, Pose},
     style::{
         ButtonStyle, ChipStyle, DeckSummaryStyle, FaderStyle, GlyphStyle, IconName, PopoverAlign,
-        PopoverAt, ScalarFormat, TableColumn, TextAlign, TextStyle, Tone, WaveStyle,
-        WindowControlsStyle,
+        PopoverAt, PopoverDismiss, ScalarFormat, TableColumn, TextAlign, TextStyle, Tone,
+        WaveStyle, WindowControlsStyle,
     },
 };
 use crate::{
@@ -165,6 +165,9 @@ pub enum ControlNode {
         at: PopoverAt,
         #[serde(default)]
         align: PopoverAlign,
+        /// `Write` needs `open` to be a view flag.
+        #[serde(default)]
+        dismiss: PopoverDismiss,
         anchor: Box<Self>,
         content: Box<Self>,
     },

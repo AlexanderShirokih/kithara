@@ -1414,6 +1414,39 @@ fn the_bar_carries_the_app_menu() {
     }
 }
 
+/// The app menu is a panel of switches: several of them are turned in one
+/// opening, so a write it delivers leaves it standing.
+#[kithara::test]
+fn a_write_from_inside_the_app_menu_leaves_it_open() {
+    for layout in LAYOUTS {
+        let ui = compile_ui(layout).unwrap();
+
+        for (path, key) in [
+            ("bar/menu/module-ov/cell", "ui.module.toggle@module=ov"),
+            ("bar/menu/module-cpu/cell", "ui.module.toggle@module=cpu"),
+            ("bar/menu/layout-2/apply", "ui.layout.apply@layout=2"),
+            ("bar/menu/full-screen", "ui.window.toggle_full_screen"),
+            ("bar/menu/cast", "broadcast.toggle"),
+        ] {
+            let mut view = ViewState::new();
+            view.set("bar/menu", ViewSet::On);
+            let host = settle(&ui, &mut view, path, ControlAction::Activate);
+            assert_eq!(
+                host,
+                Some(UiEvent::Write {
+                    key: key.to_owned(),
+                    value: WriteValue::Trigger,
+                }),
+                "{layout:?}: `{path}` must deliver `{key}`",
+            );
+            assert!(
+                view.flag("bar/menu"),
+                "{layout:?}: `{path}` must leave the menu open",
+            );
+        }
+    }
+}
+
 #[kithara::test]
 fn the_layouts_head_opens_and_folds_the_layouts_block() {
     let ui = compile_ui(DeckLayout::Dual).unwrap();
@@ -1481,6 +1514,32 @@ fn each_deck_picks_its_own_stream_quality() {
                 );
             }
         }
+    }
+}
+
+#[kithara::test]
+fn a_quality_choice_shuts_the_menu_it_was_picked_from() {
+    let ui = compile_ui(DeckLayout::Dual).unwrap();
+
+    for (row, variant) in [("auto", "auto"), ("variant-0", "0")] {
+        let mut view = ViewState::new();
+        view.set("deck-a/quality", ViewSet::On);
+        view.set("deck-b/quality", ViewSet::On);
+        let host = settle(
+            &ui,
+            &mut view,
+            &format!("deck-a/stream/{row}/pick"),
+            ControlAction::Activate,
+        );
+        assert_eq!(
+            host,
+            Some(UiEvent::Write {
+                key: format!("deck.stream.select_variant@deck=a,variant={variant}"),
+                value: WriteValue::Trigger,
+            }),
+        );
+        assert!(!view.flag("deck-a/quality"), "`{row}` shuts its own menu");
+        assert!(view.flag("deck-b/quality"), "`{row}` leaves deck B's open");
     }
 }
 
