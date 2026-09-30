@@ -83,11 +83,11 @@ pub enum PopoverAt {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[non_exhaustive]
 pub enum PopoverDismiss {
-    /// A press outside it or Escape.
+    /// A tap outside it or Escape.
     #[default]
-    Outside,
-    /// The same, and a write delivered from inside it.
-    Write,
+    OnTapOutside,
+    /// The same, and any press inside it that reaches the application.
+    OnAnyAction,
 }
 
 /// Which edge of the popover surface lines up with that geometry.

@@ -117,7 +117,7 @@ impl<'m, 'v> Expander<'m, 'v> {
         origin: &SourceUri,
     ) -> Result<(), UiDocError> {
         let shuts = match &self.popover {
-            Some((open, PopoverDismiss::Write)) => Some(open),
+            Some((open, PopoverDismiss::OnAnyAction)) => Some(open),
             _ => None,
         };
         (self.visitor)(ControlSite { shuts, ..site }, origin)
@@ -433,11 +433,11 @@ fn expand_popover(
         });
     }
     let open = context.substitute(open, &path)?;
-    if dismiss == PopoverDismiss::Write && !matches!(open, BindingRef::View { .. }) {
+    if dismiss == PopoverDismiss::OnAnyAction && !matches!(open, BindingRef::View { .. }) {
         return Err(UiDocError::InvalidId {
             origin: context.origin.clone(),
             id: path,
-            reason: "a popover a write shuts must open on a view flag".to_owned(),
+            reason: "a popover any action shuts must open on a view flag".to_owned(),
         });
     }
     machine.visit(

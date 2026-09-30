@@ -415,8 +415,8 @@ fn menu(dismiss: &str) -> String {
 }
 
 #[kithara::test]
-fn a_write_from_inside_a_popover_it_dismisses_shuts_it() {
-    let ui = compiled(&menu("dismiss: Write,"))
+fn an_action_inside_a_popover_shut_on_any_action_shuts_it() {
+    let ui = compiled(&menu("dismiss: OnAnyAction,"))
         .unwrap_or_else(|error| panic!("the menu must compile: {error}"));
 
     let mut view = ViewState::new();
@@ -429,8 +429,8 @@ fn a_write_from_inside_a_popover_it_dismisses_shuts_it() {
 }
 
 #[kithara::test]
-fn a_write_from_inside_a_popover_only_a_press_outside_dismisses_leaves_it_open() {
-    for popover in [menu("dismiss: Outside,"), menu("")] {
+fn an_action_inside_a_popover_shut_on_a_tap_outside_leaves_it_open() {
+    for popover in [menu("dismiss: OnTapOutside,"), menu("")] {
         let ui =
             compiled(&popover).unwrap_or_else(|error| panic!("the menu must compile: {error}"));
 
@@ -444,14 +444,14 @@ fn a_write_from_inside_a_popover_only_a_press_outside_dismisses_leaves_it_open()
 
         let host = settle(&ui, "deck-b/menu", ControlAction::Activate, &mut view);
 
-        assert!(!view.flag("deck-b/menu"), "a press outside shuts it");
+        assert!(!view.flag("deck-b/menu"), "a tap outside shuts it");
         assert_eq!(host, None);
     }
 }
 
 #[kithara::test]
 fn a_view_flag_press_inside_a_popover_leaves_it_open() {
-    let ui = compiled(&menu("dismiss: Write,"))
+    let ui = compiled(&menu("dismiss: OnAnyAction,"))
         .unwrap_or_else(|error| panic!("the menu must compile: {error}"));
 
     let mut view = ViewState::new();
@@ -465,15 +465,15 @@ fn a_view_flag_press_inside_a_popover_leaves_it_open() {
 }
 
 #[kithara::test]
-fn a_popover_a_write_shuts_must_open_on_a_view_flag() {
+fn a_popover_any_action_shuts_must_open_on_a_view_flag() {
     let popover = r#"Popover(id: "menu", open: Model(id: "fixture.open", with: { "deck": "$deck" }),
-        dismiss: Write,
+        dismiss: OnAnyAction,
         anchor: Spacer(id: "icon", size: Some((w: Fixed(20.0), h: Fixed(20.0)))),
         content: Pressable(id: "fire", press: Command(id: "fixture.fire", with: { "deck": "$deck" }),
             child: Spacer(id: "fire-face", size: Some((w: Fixed(100.0), h: Fixed(20.0))))))"#;
 
     let Err(error) = compiled(popover) else {
-        panic!("a write cannot shut a popover the host holds open")
+        panic!("an action cannot shut a popover the host holds open")
     };
 
     assert!(

@@ -7,7 +7,7 @@
         id: "menu",
         open: View(id: "$row"),
         at: Pointer,
-        dismiss: Write,
+        dismiss: OnAnyAction,
         anchor: Pressable(
             id: "row",
             press: Command(id: "gallery.menu.select", with: { "row": "$row" }),

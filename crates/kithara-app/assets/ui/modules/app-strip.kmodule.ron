@@ -11,7 +11,7 @@
                 id: "eq-menu",
                 open: View(id: "$deck"),
                 at: Pointer,
-                dismiss: Write,
+                dismiss: OnAnyAction,
                 anchor: Pressable(
                     id: "eq-menu-anchor",
                     press: View(id: "$deck", set: Off),
