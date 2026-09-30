@@ -21,7 +21,7 @@ use crate::{
     ids::{Interner, NodeId, SourceUri},
     module::{
         AdaptiveStep, BindingRef, ControlNode, Magnet, Measure, Motion, PopoverAlign, PopoverAt,
-        Pose, TableColumn,
+        PopoverDismiss, Pose, TableColumn,
     },
     param::Param,
     registry::EndpointRegistry,
@@ -81,7 +81,8 @@ pub(crate) struct Expander<'m, 'v> {
     pub(super) budget: &'m mut Budget,
     pub(super) visitor: &'m mut ControlVisitor<'v>,
     text: &'m TextDoc,
-    pub(super) popover: Option<BindingRef>,
+    /// The popover whose content is being expanded: what opens and what shuts it.
+    pub(super) popover: Option<(BindingRef, PopoverDismiss)>,
     max_depth: usize,
 }
 
@@ -109,19 +110,17 @@ impl<'m, 'v> Expander<'m, 'v> {
         }
     }
 
-    /// Hands one site to the visitor, inside whichever popover is open.
+    /// Hands one site to the visitor, naming the popover a write from it shuts.
     pub(super) fn visit(
         &mut self,
         site: ControlSite<'_>,
         origin: &SourceUri,
     ) -> Result<(), UiDocError> {
-        (self.visitor)(
-            ControlSite {
-                within: self.popover.as_ref(),
-                ..site
-            },
-            origin,
-        )
+        let shuts = match &self.popover {
+            Some((open, PopoverDismiss::Write)) => Some(open),
+            _ => None,
+        };
+        (self.visitor)(ControlSite { shuts, ..site }, origin)
     }
 
     pub(crate) fn expand_module(
@@ -418,12 +417,12 @@ fn expand_popover(
     context: &Context<'_>,
     node: &ControlNode,
     id: &NodeId,
-    declared: (&BindingRef, PopoverAt, PopoverAlign),
+    declared: (&BindingRef, PopoverAt, PopoverAlign, PopoverDismiss),
     subtrees: (&ControlNode, &ControlNode),
     depth: usize,
     machine: &mut Expander<'_, '_>,
 ) -> Result<ExpandedNode, UiDocError> {
-    let ((open, at, align), (anchor, content)) = (declared, subtrees);
+    let ((open, at, align, dismiss), (anchor, content)) = (declared, subtrees);
     machine.budget.charge(&context.origin)?;
     let path = child_path(&context.prefix, id);
     if machine.popover.is_some() {
@@ -434,6 +433,13 @@ fn expand_popover(
         });
     }
     let open = context.substitute(open, &path)?;
+    if dismiss == PopoverDismiss::Write && !matches!(open, BindingRef::View { .. }) {
+        return Err(UiDocError::InvalidId {
+            origin: context.origin.clone(),
+            id: path,
+            reason: "a popover a write shuts must open on a view flag".to_owned(),
+        });
+    }
     machine.visit(
         ControlSite {
             read: Some(&open),
@@ -442,7 +448,7 @@ fn expand_popover(
         &context.origin,
     )?;
     let anchor = walk_child(context, anchor, 0, depth, machine)?;
-    machine.popover = Some(open.clone());
+    machine.popover = Some((open.clone(), dismiss));
     let content = walk_child(context, content, 1, depth, machine);
     machine.popover = None;
     Ok(ExpandedNode::Popover {
@@ -700,6 +706,7 @@ pub(in crate::expand) fn walk(
             open,
             at,
             align,
+            dismiss,
             anchor,
             content,
         } => {
@@ -708,7 +715,7 @@ pub(in crate::expand) fn walk(
                 context,
                 node,
                 id,
-                (open, *at, *align),
+                (open, *at, *align, *dismiss),
                 subtrees,
                 depth,
                 machine,
