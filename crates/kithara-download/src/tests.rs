@@ -23,14 +23,10 @@ use kithara_net::{Headers as ResponseHeaders, HttpClient, NetError as FetchError
 use kithara_platform::{
     CancelToken,
     sync::{Arc, Mutex, Notify},
-    time::{self, Duration, Instant},
+    time::{self, Duration, Instant, WallInstant},
     tokio::task::spawn as tokio_spawn,
 };
-#[cfg(feature = "flash")]
-use kithara_platform::{flash::virtual_now, time::WallInstant};
-#[cfg(feature = "flash")]
-use kithara_test_utils::virtual_pace;
-use kithara_test_utils::{TestHttpServer, bufpool::pools as test_pools, kithara};
+use kithara_test_utils::{TestHttpServer, bufpool::pools as test_pools, kithara, pace};
 use url::Url;
 
 use super::{
@@ -504,7 +500,7 @@ async fn run_real_time_ahead(by: Duration) {
 }
 
 #[kithara::test(tokio, timeout(Duration::from_secs(5)))]
-async fn virtual_server_delay_is_part_of_streamed_request_duration() {
+async fn server_delay_is_part_of_streamed_request_duration() {
     const DELAY: Duration = Duration::from_millis(250);
 
     let app = Router::new().route(
@@ -545,16 +541,12 @@ async fn virtual_server_delay_is_part_of_streamed_request_duration() {
         })
         .expect("streaming fetch completion event");
     assert_eq!(bytes, 20_000);
-    assert!(
-        duration >= DELAY,
-        "virtual server delay missing: {duration:?}"
-    );
+    assert!(duration >= DELAY, "server delay missing: {duration:?}");
     drop(handle);
 }
 
-#[cfg(feature = "flash")]
 #[kithara::test(tokio, timeout(Duration::from_secs(5)))]
-async fn streamed_request_duration_excludes_unrelated_virtual_delay() {
+async fn streamed_request_duration_uses_wall_time() {
     const UNRELATED_DELAY: Duration = Duration::from_secs(2);
 
     let app = Router::new().route("/data", get(|| async { Bytes::from(vec![0_u8; 20_000]) }));
@@ -566,13 +558,7 @@ async fn streamed_request_duration_excludes_unrelated_virtual_delay() {
     let cmd = FetchCmd::get(server.url("/data"))
         .writer(Box::new(|_chunk: &[u8]| Ok(())))
         .on_response(Box::new(move |_headers| {
-            let wall = WallInstant::now();
-            let virtual_start = virtual_now();
-            virtual_pace(UNRELATED_DELAY);
-            *measured_cb.lock() = Some((
-                wall.elapsed(),
-                virtual_now().saturating_duration_since(virtual_start),
-            ));
+            *measured_cb.lock() = Some(measure_paced_delay(UNRELATED_DELAY));
         }))
         .on_complete(Box::new(move |_bytes, _headers, _error| {
             gate_cb.complete();
@@ -599,17 +585,28 @@ async fn streamed_request_duration_excludes_unrelated_virtual_delay() {
             _ => None,
         })
         .expect("streaming fetch completion event");
-    let (wall, virtual_elapsed) = (*measured.lock()).expect("clock sample");
+    let (wall, clock_elapsed) = (*measured.lock()).expect("clock sample");
     assert!(bytes >= 16_000, "ABR needs a full-size network sample");
     assert!(
-        virtual_elapsed > wall,
-        "virtual delay must outrun wall time"
+        clock_elapsed >= UNRELATED_DELAY,
+        "the paced delay must advance the test clock"
     );
     assert!(
-        duration < virtual_elapsed,
-        "unrelated virtual delay leaked into {duration:?} fetch duration"
+        duration < wall + Duration::from_secs(1),
+        "request duration {duration:?} exceeds wall time {wall:?}"
     );
     drop(handle);
+}
+
+#[kithara::flash(true)]
+fn measure_paced_delay(delay: Duration) -> (Duration, Duration) {
+    let wall = WallInstant::now();
+    let clock = Instant::now();
+    pace(delay);
+    (
+        wall.elapsed(),
+        Instant::now().saturating_duration_since(clock),
+    )
 }
 
 #[kithara::test(tokio, timeout(Duration::from_secs(5)))]

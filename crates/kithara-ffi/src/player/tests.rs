@@ -1,3 +1,5 @@
+use kithara::platform::sync::mpsc;
+
 use crate::{config::FfiPlayerConfig, player::AudioPlayer};
 
 #[kithara::test]
@@ -128,7 +130,7 @@ fn test_item(url: &str) -> std::sync::Arc<crate::item::AudioPlayerItem> {
     crate::item::AudioPlayerItem::new(crate::types::FfiItemConfig::for_test(url))
 }
 
-struct FailureSignal(std::sync::mpsc::Sender<()>);
+struct FailureSignal(mpsc::Sender<()>);
 
 impl crate::observer::PlayerObserver for FailureSignal {
     fn on_event(&self, event: crate::types::FfiPlayerEvent) {
@@ -148,14 +150,19 @@ impl crate::observer::PlayerObserver for FailureSignal {
 #[kithara::test]
 fn play_retries_a_failed_track_from_a_thread_without_a_runtime() {
     let player = AudioPlayer::new(FfiPlayerConfig::for_test()).expect("create player");
-    let (failed_tx, failed_rx) = std::sync::mpsc::channel();
+    let (failed_tx, failed_rx) = mpsc::channel();
     player.set_observer(std::sync::Arc::new(FailureSignal(failed_tx)));
     player
         .append(test_item("/nonexistent/kithara-ffi/missing.mp3"))
         .expect("queue accepts the item");
-    failed_rx.recv().expect("the missing file fails to load");
+    wait_for_failure(&failed_rx);
 
     player.play();
 
     assert_eq!(player.item_count(), 1);
+}
+
+#[kithara::allow_block]
+fn wait_for_failure(receiver: &mpsc::Receiver<()>) {
+    receiver.recv().expect("the missing file fails to load");
 }

@@ -283,9 +283,11 @@ where
 }
 
 /// Wait until `track_id`'s loader finishes, driven by
-/// `QueueEvent::TrackStatusChanged` (parks on the virtual clock). A fast-path
-/// and `Lagged` re-read guard against an already-terminal status or a dropped
-/// event.
+/// `QueueEvent::TrackStatusChanged`. Loading can include real file I/O, so the
+/// virtual deadline advances at real pace while the load is in flight. A
+/// fast-path and `Lagged` re-read guard against an already-terminal status or
+/// a dropped event.
+#[kithara::flash(io)]
 pub async fn wait_for_loader_done_event<S>(
     rx: &mut EventReceiver<TestEvent>,
     queue: &QueueControl<S>,
@@ -333,14 +335,15 @@ where
 
 /// Wait until the named-thread counter goes quiescent — i.e.
 /// `active_named_thread_count()` holds steady across [`QUIESCE_TICKS`]
-/// consecutive virtual ticks — then return the settled value.
+/// consecutive polls — then return the settled value.
 ///
 /// This waits on the real teardown state (the same counter every leak assertion
 /// reads): the count is decremented when each spawned thread's closure RETURNS
-/// after shutdown/cancel, which is observable under the flash clock. A leak
+/// after shutdown/cancel, which is observable on the wall clock. A leak
 /// keeps the count high — it still stabilizes high, so the assertion still
 /// catches the growth. The watchdog PANICS on genuine non-quiescence rather than
 /// returning a mid-teardown reading that an assertion could pass against.
+#[kithara::flash(io)]
 pub async fn wait_thread_count_quiesced(deadline: Duration) -> usize {
     let watchdog = Instant::now() + deadline;
     let mut last = active_named_thread_count();
