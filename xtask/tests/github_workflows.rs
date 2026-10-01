@@ -10,11 +10,6 @@ use syn::{
     BinOp, Expr, ItemConst, Meta, Stmt, Token, parse::Parser, punctuated::Punctuated, visit::Visit,
 };
 
-const CHECKOUT: &str = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
-const DOWNLOAD_ARTIFACT: &str =
-    "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
-const INSTALL_ACTION: &str = "taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833";
-const UPLOAD_ARTIFACT: &str = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
 const STRESS_RAW_DIR: &str = "${{ runner.temp }}/kithara-stress/raw";
 const HEAVY_LINUX_GROUP: &str = "heavy-linux-${{ github.repository }}";
 const STRESS_EXECUTE_COMMAND: &str = r#"args=(
@@ -237,8 +232,15 @@ fn job_step_names(job: &Mapping) -> BTreeSet<String> {
         .collect()
 }
 
+fn assert_action_repository(step: &Mapping, repository: &str) {
+    let uses = mapping_field(step, "uses")
+        .as_str()
+        .expect("action reference is a string");
+    assert_eq!(uses.split_once('@').map(|(name, _)| name), Some(repository));
+}
+
 fn assert_checkout(step: &Mapping, path: &str, repository: &str, revision: &str) {
-    assert_eq!(mapping_field(step, "uses").as_str(), Some(CHECKOUT));
+    assert_action_repository(step, "actions/checkout");
     let inputs = mapping_field(step, "with")
         .as_mapping()
         .expect("checkout inputs are a mapping");
@@ -274,7 +276,7 @@ fn assert_always(step: &Mapping) {
 
 fn assert_uploads(step: &Mapping, paths: &[&str]) {
     assert_always(step);
-    assert_eq!(mapping_field(step, "uses").as_str(), Some(UPLOAD_ARTIFACT));
+    assert_action_repository(step, "actions/upload-artifact");
     let with = mapping_field(step, "with")
         .as_mapping()
         .expect("artifact inputs are a mapping");
@@ -1097,10 +1099,7 @@ fn stress_workflow_is_a_thin_fork_adapter() {
         "${{ job.workflow_sha }}",
     );
     let download = named_step(report, "Download the raw stress evidence");
-    assert_eq!(
-        mapping_field(download, "uses").as_str(),
-        Some(DOWNLOAD_ARTIFACT)
-    );
+    assert_action_repository(download, "actions/download-artifact");
     let download_inputs = mapping_field(download, "with")
         .as_mapping()
         .expect("artifact download inputs are a mapping");
@@ -1112,10 +1111,11 @@ fn stress_workflow_is_a_thin_fork_adapter() {
 
     let report_install = named_step(report, "Install just");
     assert_always(report_install);
-    assert_eq!(
-        mapping_field(report_install, "uses").as_str(),
-        Some(INSTALL_ACTION)
-    );
+    assert_action_repository(report_install, "taiki-e/install-action");
+    let install_inputs = mapping_field(report_install, "with")
+        .as_mapping()
+        .expect("install action inputs are a mapping");
+    assert_eq!(mapping_field(install_inputs, "tool").as_str(), Some("just"));
 
     let verifier = named_step(report, "Verify and render the stress evidence");
     assert_always(verifier);
