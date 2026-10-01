@@ -441,6 +441,19 @@ pub(crate) const UNITS_FILE: &str = ".kithara-lane-units.json";
 /// Stands for content a build the record did not see may have used.
 pub(crate) const UNKNOWN_BLOB: &str = "unknown";
 
+/// The mtime record's first line while a job holds the slot. One a dead job
+/// left behind tells the next claim that its builds were recorded first.
+pub(crate) const HELD_LINE: &str = "held";
+
+/// What a rebuild check adds to the step it repeats: build without running,
+/// have cargo say why it builds each unit, and say it in plain text, since a
+/// runner that forces colour wraps cargo's status words in escapes.
+pub(crate) const REBUILD_CHECK_ARGS: [&str; 4] =
+    ["--no-run", "--cargo-verbose", "--color", "never"];
+
+/// Lines of a captured command's output a failure carries.
+pub(crate) const TRANSCRIPT_TAIL_LINES: usize = 40;
+
 /// Asks the pinned nightly's cargo to judge what rustc read by checksum.
 pub(crate) const CHECKSUM_FRESHNESS_ENV: &str = "CARGO_UNSTABLE_CHECKSUM_FRESHNESS";
 
