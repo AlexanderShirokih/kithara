@@ -57,12 +57,19 @@ pub(crate) fn build(
         .clone()
         .map(Broadcaster::new)
         .ok_or(EngineError::Missing("broadcast service"))?;
-    Ok(Engine::new(session, config, broadcast, snapshots, |deck| {
-        StateController::new(
-            deck.queue.control().clone(),
-            Arc::clone(&deck.timestretch),
-            deck.cancel_child(),
-            handle.clone(),
-        )
-    }))
+    Ok(Engine::new(
+        session,
+        config,
+        broadcast,
+        snapshots,
+        handle.clone(),
+        |deck| {
+            StateController::new(
+                deck.queue.control().clone(),
+                Arc::clone(&deck.timestretch),
+                deck.cancel_child(),
+                handle.clone(),
+            )
+        },
+    ))
 }
