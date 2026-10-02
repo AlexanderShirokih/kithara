@@ -124,13 +124,9 @@ impl AnalysisService {
                 continue;
             }
             let next = owner.bpms();
-            bpms.send_if_modified(|published| {
-                if **published == next {
-                    return false;
-                }
-                *published = Arc::new(next);
-                true
-            });
+            if **bpms.borrow() != next {
+                bpms.send_replace(Arc::new(next));
+            }
         }
     }
 }

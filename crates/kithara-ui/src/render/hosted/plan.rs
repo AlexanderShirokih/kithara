@@ -850,7 +850,7 @@ mod tests {
                     _ => None,
                 })
                 .expect("the header names Title");
-            assert_eq!(title_left, 38.0);
+            assert_eq!(title_left, 34.0 + skin.table.cell_padding_x);
             let header_right = commands
                 .commands()
                 .iter()
@@ -864,7 +864,7 @@ mod tests {
                     _ => None,
                 })
                 .expect("the header names Time");
-            assert!((header_right - (bounds.w - 38.0)).abs() < 0.01);
+            assert!((header_right - (bounds.w - 34.0 - skin.table.cell_padding_x)).abs() < 0.01);
             let list = commands
                 .commands()
                 .iter()

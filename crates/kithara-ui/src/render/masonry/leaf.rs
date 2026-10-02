@@ -200,6 +200,9 @@ impl Leaf {
                 text,
                 ..
             } => {
+                if content.is_empty() {
+                    return Size::ZERO;
+                }
                 let run = text.shape(content, *role, None);
                 Size::new(run.width() + *padding_x * 2.0, run.height())
             }
