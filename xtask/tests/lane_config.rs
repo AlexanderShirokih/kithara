@@ -254,6 +254,7 @@ fn the_catalog_declares_every_lane_the_github_workflows_will_ask_for() {
 
     for name in [
         "linux-lint",
+        "linux-arch",
         "linux-msrv",
         "linux-perf-memory",
         "linux-test-real-clock",
@@ -436,63 +437,4 @@ fn every_test_lane_judges_freshness_by_checksum() {
         checked += 1;
     }
     assert!(checked > 0, "the catalog runs the suite");
-}
-
-#[test]
-fn ui_lane_filters_can_only_narrow_their_profile_selection() {
-    let root = workspace_root();
-    let config: toml::Value =
-        toml::from_str(&fs::read_to_string(root.join(".config/xtask.toml")).expect("read lanes"))
-            .expect("parse lanes");
-    let nextest: toml::Value = toml::from_str(
-        &fs::read_to_string(root.join(".config/nextest.toml")).expect("read profiles"),
-    )
-    .expect("parse profiles");
-    for (lane, profile) in [("ui", "ui"), ("ui-perf", "perf")] {
-        let lane = &config["test"]["lanes"][lane];
-        let prefix: Vec<_> = lane["prefix_args"]
-            .as_array()
-            .expect("prefix arguments")
-            .iter()
-            .map(|arg| arg.as_str().expect("string argument"))
-            .collect();
-        assert!(
-            prefix.windows(2).any(|pair| pair == ["--profile", profile]),
-            "the profile must bound the selected suite"
-        );
-        assert!(
-            !prefix.contains(&"--ignore-default-filter"),
-            "caller filters must intersect the profile"
-        );
-        let suffix = lane.get("suffix_args").and_then(toml::Value::as_array);
-        assert!(
-            suffix.is_none_or(|args| !args.iter().any(|arg| arg
-                .as_str()
-                .is_some_and(|arg| arg == "-E" || arg.starts_with("--filter-expr")))),
-            "a second expression would union the whole lane back into a narrowed request"
-        );
-        assert!(
-            nextest["profile"][profile]["default-filter"]
-                .as_str()
-                .is_some_and(|filter| !filter.is_empty())
-        );
-    }
-}
-
-#[test]
-fn architecture_checks_are_owned_by_the_lint_gate() {
-    let root = workspace_root();
-    let config: toml::Value =
-        toml::from_str(&fs::read_to_string(root.join(".config/xtask.toml")).expect("read lanes"))
-            .expect("parse lanes");
-    assert!(config["ext"]["ci"]["lanes"].get("linux-arch").is_none());
-    let recipe = fs::read_to_string(root.join(".config/just/lint.just")).expect("read lint recipe");
-    let shared = recipe
-        .split("_shared:\n")
-        .nth(1)
-        .expect("the shared lint chain exists")
-        .split("\n\n")
-        .next()
-        .expect("the chain has a body");
-    assert!(shared.lines().any(|line| line.trim() == "just lint arch"));
 }

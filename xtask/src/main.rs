@@ -18,7 +18,6 @@ mod sysroot;
 mod test_server;
 #[cfg(test)]
 mod testing;
-mod ui;
 mod wasm;
 
 use android::AndroidCommand;
@@ -72,8 +71,6 @@ enum Command {
     /// Photograph the gallery and the shipped studio pages through both hosts
     /// and compare the sets.
     Parity(ParityArgs),
-    /// Run UI acceptance through both hosts and the iced-only feature set.
-    Ui(ParityArgs),
     /// Apple release flow: prepare (stamp manifests) and publish
     /// (GitHub release + `GitLab` mirror).
     Release(ReleaseArgs),
@@ -133,7 +130,6 @@ fn work() -> anyhow::Result<()> {
         Command::Publish(ref args) => publish::run(args, &ctx),
         Command::Mutants(ref args) => mutants::run(args, &ctx),
         Command::Parity(ref args) => parity::run(args, &ctx),
-        Command::Ui(ref args) => ui::run(args, &ctx),
         Command::Release(ref args) => release::run(args, &ctx),
         Command::AgentHook => agent_hook::run(),
         Command::SelfCache(ref args) => self_cache::run(args),
