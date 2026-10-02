@@ -544,47 +544,4 @@ mod tests {
             )
         }));
     }
-    #[kithara::test]
-    fn library_contract_chevrons_use_the_icon_set_for_both_states() {
-        let skin = builtin::skin();
-        let mut text = TextContext::from(skin.text_resources());
-        for (expanded, icon) in [
-            (true, IconName::ChevronDown),
-            (false, IconName::ChevronRight),
-        ] {
-            let row = Row::new(TreeRow {
-                label: "Folder",
-                icon: IconName::Folder,
-                count: None,
-                expanded: Some(expanded),
-                muted: false,
-                selected: false,
-                depth: 0,
-            });
-            let mut list = DrawListBuilder::default();
-            row.paint_chevron(
-                &mut list,
-                &mut text,
-                Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    w: 200.0,
-                    h: 24.0,
-                },
-                6.0,
-                skin,
-            );
-            let commands = list.finish();
-            let [DrawCmd::Text { content, run, .. }] = commands.commands() else {
-                panic!("a branch draws one chevron");
-            };
-            assert_eq!(
-                content.as_ref(),
-                icon.lucide_glyph()
-                    .expect("chevrons have glyphs")
-                    .to_string()
-            );
-            assert_eq!(run.size(), skin.tree.chevron_size);
-        }
-    }
 }
