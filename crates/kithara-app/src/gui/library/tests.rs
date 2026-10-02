@@ -265,7 +265,6 @@ mod startup {
         pub(super) selected: bool,
     }
 
-    /// The rows the page of `source` lists.
     pub(super) fn listed(rig: &Rig, source: &str) -> Vec<Listed> {
         let root = ReadRoot::new(&rig.ui);
         let reads = Walk::new(&root);
@@ -435,14 +434,12 @@ mod explorer {
             .to_owned()
     }
 
-    /// Picks `folder` and opens Music Folders.
     fn pick(rig: &mut Rig, folder: &Path) {
         rig.ui.picker.picked(Some(folder.to_path_buf()));
         rig.frame();
         write(rig, "library.toggle", "Music Folders");
     }
 
-    /// Picks `folder` and selects it; its rows have not landed yet.
     fn show(rig: &mut Rig, folder: &Path) {
         pick(rig, folder);
         write(rig, "library.select", &name(folder));
@@ -455,7 +452,6 @@ mod explorer {
         });
     }
 
-    /// The row drawn as `label`: its chevron, whether it is open, and its count.
     fn drawn(rig: &Rig, label: &str) -> (Option<bool>, Option<u32>) {
         let root = ReadRoot::new(&rig.ui);
         let reads = Walk::new(&root);

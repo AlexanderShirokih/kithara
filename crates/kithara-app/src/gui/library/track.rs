@@ -11,19 +11,16 @@ pub(super) struct Track {
 }
 
 impl Track {
-    /// The source `url`, shown as `title`.
     pub(super) fn new(title: String, url: String) -> Self {
         Self { title, url }
     }
 
-    /// Its playlist row with its playable source as drag data.
     pub(super) fn row(&self, selected: bool) -> TableRow<'_> {
         TableRow::new(vec![TableCell::text("title", &self.title)], selected)
             .with_drag(self.url.as_str())
     }
 }
 
-/// Last path segment without its extension; the whole URL when it has none.
 pub(super) fn display_name(url: &str) -> String {
     url.rsplit('/')
         .find(|segment| !segment.is_empty())

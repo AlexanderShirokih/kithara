@@ -213,7 +213,6 @@ mod library {
         Studio::new(test_fixture::boot(&config, snapshots, commands))
     }
 
-    /// Mounts the studio on the retained host and hands it to `check`.
     fn mounted(check: impl FnOnce(&mut Ui<'_, Studio>)) {
         let studio = studio();
         let package = Rc::clone(&studio.state.ui.package);
@@ -238,7 +237,6 @@ mod library {
         ui.rect_of(path).filter(|rect| rect.w > 0.0 && rect.h > 0.0)
     }
 
-    /// The sources whose page lists rows on screen.
     fn shown(ui: &mut Ui<'_, Studio>) -> Vec<&'static str> {
         ["startup", "explorer"]
             .into_iter()
@@ -246,7 +244,6 @@ mod library {
             .collect()
     }
 
-    /// Where the tree draws row `row`: its chevron at depth 0, or its label.
     fn row(ui: &mut Ui<'_, Studio>, row: u8, chevron: bool) -> Pt {
         let tree = laid_out(ui, "library/tree").expect("the library draws its tree");
         let skin = &ui.app().state.ui.package.skin().tree;

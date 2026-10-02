@@ -250,7 +250,6 @@ fn badge_columns() -> String {
     )
 }
 
-/// The pixels of one row's lead cell in an RGBA photo of the whole window.
 pub(crate) fn lead_cell(photo: &[u8], row: u8) -> Vec<u8> {
     let skin = builtin::skin();
     let body = table_body(

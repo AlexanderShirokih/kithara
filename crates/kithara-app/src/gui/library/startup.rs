@@ -22,15 +22,10 @@ impl StartupSource {
         page: SOURCE_PAGE,
     };
 
-    /// The startup list over `urls`, registered with its page.
     pub(in crate::gui) fn registered(urls: Vec<String>) -> Registration {
         Registration::new(Self::PAGE, move |text| Ok(Box::new(Self::new(urls, text)?)))
     }
 
-    /// One row per distinct entry of `urls`, under the labels `text` words.
-    ///
-    /// # Errors
-    /// Returns [`UiDocError::UnknownTextKey`] when `text` lacks a label.
     pub(in crate::gui) fn new(urls: Vec<String>, text: &TextDoc) -> Result<Self, UiDocError> {
         let mut tracks: Vec<Track> = Vec::with_capacity(urls.len());
         for url in urls {

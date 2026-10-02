@@ -13,7 +13,6 @@ pub(crate) struct Tree<'a> {
 }
 
 impl<'a> Tree<'a> {
-    /// The search field it draws, if any.
     pub(crate) fn search_field(&self) -> Option<SearchField<&'a Binding>> {
         self.search.then_some(SearchField { query: self.query })
     }

@@ -40,10 +40,6 @@ impl Registration {
         }
     }
 
-    /// Builds the source, its fixed labels worded by `text`.
-    ///
-    /// # Errors
-    /// Returns [`UiDocError::UnknownTextKey`] when `text` lacks a label.
     pub(in crate::gui) fn build(
         self,
         text: &TextDoc,
@@ -54,27 +50,20 @@ impl Registration {
 
 /// One branch of the library tree and the page its nodes show.
 pub(in crate::gui) trait LibrarySource {
-    /// The branch this source brings.
     fn branch(&self) -> &BranchNode;
 
-    /// The branch node keyed `node` was expanded; fills unknown children.
     fn expand(&mut self, node: &str);
 
     fn id(&self) -> &str;
 
-    /// The rows its page lists for the node selected last, the one keyed `selected` marked.
     fn rows(&self, selected: Option<&str>) -> Vec<TableRow<'_>>;
 
-    /// The key of the track its page lists at `row`.
     fn row_key(&self, row: usize) -> Option<&str>;
 
-    /// The node of its branch keyed `node` became the selected one.
     fn select(&mut self, node: &str);
 
-    /// Where its page stands.
     fn status(&self) -> PageStatus;
 
-    /// Takes in what its background work finished since the last tick.
     fn tick(&mut self);
 }
 
@@ -102,7 +91,6 @@ pub(in crate::gui) struct BranchNode {
 }
 
 impl BranchNode {
-    /// A node with no count and no children.
     pub(in crate::gui) fn new(key: &str, label: String, icon: IconName) -> Self {
         Self {
             label,
@@ -115,10 +103,6 @@ impl BranchNode {
     }
 }
 
-/// The words `text` has for `key`, which `path` names on the library.
-///
-/// # Errors
-/// Returns [`UiDocError::UnknownTextKey`] when `text` has none.
 pub(in crate::gui) fn worded(text: &TextDoc, key: &str, path: &str) -> Result<String, UiDocError> {
     text.get(key)
         .map(str::to_owned)

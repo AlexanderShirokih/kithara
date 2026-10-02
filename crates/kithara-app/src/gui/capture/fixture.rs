@@ -20,7 +20,6 @@ use crate::gui::{
     ui::{cache::DeckLayout, endpoints::readable_kind, package::Package},
 };
 
-/// The startup list both hosts are drawn with.
 fn startup() -> Vec<Registration> {
     vec![StartupSource::registered(vec![
         "/music/Midnight Signal.flac".to_owned(),
@@ -28,7 +27,6 @@ fn startup() -> Vec<Registration> {
     ])]
 }
 
-/// The package both hosts draw, with the library pages [`startup`] mounts.
 pub(super) fn package() -> Result<Rc<Package>, String> {
     test_fixture::mount(None, startup())
         .map(|(package, _)| package)

@@ -1575,7 +1575,6 @@ fn the_shipped_package_compiles_from_disk() {
     );
 }
 
-/// Only registered sources get a page and binding, embedded or on disk.
 #[kithara::test]
 fn the_pages_module_lists_exactly_the_registered_sources() {
     let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/ui");
@@ -1982,7 +1981,6 @@ mod answered {
         out
     }
 
-    /// The library tree as drawn: depth, label, chevron and selection per row.
     fn drawn_tree(state: &Kithara) -> Vec<(u8, String, Option<bool>, bool)> {
         state
             .library

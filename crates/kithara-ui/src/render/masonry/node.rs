@@ -517,7 +517,6 @@ impl Node {
         self.layout.leaf().is_some_and(|leaf| leaf.set_read(value))
     }
 
-    /// Whether the text this node shows is empty; `None` for other nodes.
     pub(crate) fn text_is_empty(&mut self) -> Option<bool> {
         self.layout.leaf().and_then(|leaf| leaf.text_is_empty())
     }

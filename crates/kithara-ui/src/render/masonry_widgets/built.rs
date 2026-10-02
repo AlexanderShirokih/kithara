@@ -92,7 +92,6 @@ impl StageSize {
         Self { size, children }
     }
 
-    /// Whether the document shows each child, in order.
     pub(crate) fn shown(&self) -> impl Iterator<Item = bool> + '_ {
         self.children
             .iter()
@@ -479,7 +478,6 @@ impl<Action> MasonryNode<Action> {
         area
     }
 
-    /// A stage over `children`, sized at layout by `size` and the children shown.
     pub(in crate::render) fn stage(
         size: Option<SizeSpec>,
         children: Vec<(Option<Rc<BlockState>>, Self)>,
@@ -642,13 +640,11 @@ impl<Action> MasonryNode<Action> {
         }
     }
 
-    /// Makes this node a block `hidden` hides, so what it holds stands inside it.
     pub(crate) fn hidden_by(&mut self, hidden: Binding, state: &Rc<BlockState>) {
         self.registrations.stands_in(state);
         self.block = Some((hidden, Rc::clone(state)));
     }
 
-    /// Registers the flag that lights this node, and its own faces if any.
     pub(crate) fn lights(&mut self, flag: Binding, faces: Option<Faces>) {
         if let Some(faces) = faces {
             self.widget.widget.set_faces(faces);

@@ -19,7 +19,6 @@ use crate::{
     shaping::TextContext,
 };
 
-/// The rows of a tree; `toggle` is where a pressed chevron writes, if any.
 pub(crate) fn tree_rows<'a>(
     path: &str,
     toggle: Option<String>,

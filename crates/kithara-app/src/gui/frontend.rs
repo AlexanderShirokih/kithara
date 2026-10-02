@@ -148,7 +148,6 @@ mod tests {
         Kithara::mounted(boot, Id::unique())
     }
 
-    /// The row follows the folder picker, whichever sources are mounted.
     #[cfg(not(target_arch = "wasm32"))]
     #[kithara::test]
     fn the_add_folder_row_shows_wherever_a_folder_picker_exists() {

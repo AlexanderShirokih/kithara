@@ -253,7 +253,6 @@ impl HostedEngine {
         }
     }
 
-    /// Reconciles the engine to the shown controls, or to none while hidden.
     pub(in crate::render) fn stand(&self, shown: bool) {
         let open = self.has_open_picker();
         let descriptors: Vec<Descriptor> = if shown {
@@ -273,7 +272,6 @@ impl HostedEngine {
         self.targets.iter().map(|target| &target.item)
     }
 
-    /// The controls whose blocks are shown.
     fn standing(&self) -> impl Iterator<Item = &EngineTarget> {
         self.targets
             .iter()

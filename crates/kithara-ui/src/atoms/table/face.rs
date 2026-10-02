@@ -339,7 +339,6 @@ impl TableFace {
     }
 }
 
-/// One chip per letter, centred in the cell, active ones filled.
 fn paint_badges(
     paint: &TableFace,
     list: &mut DrawListBuilder,
@@ -517,7 +516,6 @@ enum TextAlign {
     Right,
 }
 
-/// Where a column of `style` sets its text, header and cells alike.
 const fn aligned(style: TableColumnStyle) -> TextAlign {
     match style {
         TableColumnStyle::Badge => TextAlign::Center,

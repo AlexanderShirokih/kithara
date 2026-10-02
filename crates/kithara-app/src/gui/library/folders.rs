@@ -15,7 +15,6 @@ pub(super) struct MusicFolders {
 }
 
 impl MusicFolders {
-    /// Adds `folder`; one already added keeps its place.
     pub(super) fn add(&mut self, folder: PathBuf) {
         if !self.folders.contains(&folder) {
             self.folders.push(folder);
@@ -34,7 +33,6 @@ impl FolderPicker {
         Self { found }
     }
 
-    /// Opens the system folder dialog on its own thread.
     pub(in crate::gui) fn open(&self) {
         let picker = self.clone();
         drop(thread::spawn_named(
@@ -45,7 +43,6 @@ impl FolderPicker {
         ));
     }
 
-    /// Hands what the dialog answered to Explorer; `None` is a cancelled dialog.
     pub(in crate::gui::library) fn picked(&self, folder: Option<PathBuf>) {
         let Some(folder) = folder else {
             return;

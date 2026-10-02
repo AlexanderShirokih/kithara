@@ -310,7 +310,6 @@ impl Leaf {
         }
     }
 
-    /// Whether this text leaf is empty, which measures zero.
     pub(crate) fn text_is_empty(&self) -> Option<bool> {
         let Self::Text { content, .. } = self else {
             return None;

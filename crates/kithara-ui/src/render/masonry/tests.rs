@@ -2205,7 +2205,6 @@ fn scope_strip_root() -> (MasonryRoot<TestAction>, (f32, f32)) {
     (root, centre(face))
 }
 
-/// A scope strip document on the retained host, with the strip's closed face.
 fn scope_root(ui: &CompiledUi, reads: &dyn Reads) -> (MasonryRoot<TestAction>, Rect) {
     let host = MasonryHost::map_actions(ctx(ui, reads), builtin::skin(), TestAction::Document);
     let (output, built) = DocumentNodes::built(|| document::render(&ui.root, ctx(ui, reads), host));
@@ -2970,7 +2969,6 @@ fn paged_root(ui: &CompiledUi, reads: &PagedReads) -> MasonryRoot<Published> {
     masonry_root(output, 240, 320)
 }
 
-/// The endpoints the immediate host reads for one frame.
 fn immediate_reads(ui: &CompiledUi, reads: &PagedReads) -> BTreeSet<String> {
     reads.take_seen();
     drop(crate::render::tree::render(
@@ -3080,7 +3078,6 @@ fn a_refresh_reads_nothing_below_a_block_a_stage_hides() {
     );
 }
 
-/// The engine stands above the block whose plan it drives.
 #[kithara::test]
 fn a_refresh_leaves_an_engine_plan_in_a_hidden_block_unread() {
     let mut registry = fixture_registry();
@@ -3122,13 +3119,11 @@ fn a_refresh_leaves_an_engine_plan_in_a_hidden_block_unread() {
     }
 }
 
-/// The page comes back with the menu shut, as on the immediate host.
 #[kithara::test]
 fn a_hidden_block_shuts_the_picker_menu_open_in_it() {
     hidden_block_shuts_the_picker_menu("leaf-fixture");
 }
 
-/// The same with the module's engine standing above the page.
 #[kithara::test]
 fn a_hidden_block_shuts_the_menu_of_a_picker_an_outer_engine_drives() {
     hidden_block_shuts_the_picker_menu("gallery-knobs");
@@ -3191,7 +3186,6 @@ fn hidden_block_shuts_the_picker_menu(module_id: &str) {
     );
 }
 
-/// An open popover leaves the screen with its hidden page and comes back with it.
 #[kithara::test]
 fn a_hidden_block_takes_its_open_popover_off_the_screen() {
     let ui = paged_ui();
@@ -3215,7 +3209,6 @@ fn a_hidden_block_takes_its_open_popover_off_the_screen() {
     );
 }
 
-/// Whether the paged fixture's one popover layer shows its surface.
 fn popover_stands(root: &mut MasonryRoot<Published>) -> bool {
     root.redraw()
         .unwrap_or_else(|error| panic!("the paged fixture must draw: {error}"));

@@ -51,7 +51,6 @@ impl StatusWords {
         })
     }
 
-    /// The text-catalog key that words `status`; a ready page has no words.
     const fn key(status: PageStatus) -> Option<&'static str> {
         match status {
             PageStatus::Ready => None,
@@ -78,10 +77,6 @@ struct Shown<'a> {
 }
 
 impl Library {
-    /// Mounts the `registered` sources, selecting the first branch's first leaf.
-    ///
-    /// # Errors
-    /// Returns [`UiDocError::UnknownTextKey`] when `text` lacks a label.
     pub(in crate::gui) fn new(
         registered: Vec<Registration>,
         text: &TextDoc,
@@ -129,7 +124,6 @@ impl Library {
         Ok(library)
     }
 
-    /// Whether the page of source `id` stays hidden; `None` for an unknown id.
     pub(in crate::gui) fn page_hidden(&self, id: &str) -> Option<bool> {
         let source = self.sources.iter().position(|source| source.id() == id)?;
         Some(
@@ -156,7 +150,6 @@ impl Library {
         }
     }
 
-    /// Selects the track the page of source `id` lists at `row`.
     pub(in crate::gui) fn select_row(&mut self, id: &str, row: usize) {
         let Some(at) = self.sources.iter().position(|source| source.id() == id) else {
             return;
@@ -167,12 +160,10 @@ impl Library {
         }
     }
 
-    /// The key of the track the page of source `at` has selected.
     pub(in crate::gui) fn selected_row(&self, at: usize) -> Option<&str> {
         self.rows.get(at).and_then(Option::as_deref)
     }
 
-    /// Selects the node drawn at `row` of the tree.
     pub(in crate::gui) fn select(&mut self, row: usize) {
         if let Some(at) = self.at(row) {
             self.select_at(at);
@@ -183,14 +174,12 @@ impl Library {
         self.sources.iter().map(AsRef::as_ref)
     }
 
-    /// Lets every source take in what its background work finished.
     pub(in crate::gui) fn tick(&mut self) {
         for source in &mut self.sources {
             source.tick();
         }
     }
 
-    /// Expands or collapses the node drawn at `row` of the tree.
     pub(in crate::gui) fn toggle(&mut self, row: usize) {
         let Some(at) = self.at(row) else {
             return;
@@ -202,17 +191,14 @@ impl Library {
         self.open(at);
     }
 
-    /// The tree as drawn: every source's branch, open where it is expanded.
     pub(in crate::gui) fn tree(&self) -> Vec<TreeRow<'_>> {
         self.shown().into_iter().map(|shown| shown.row).collect()
     }
 
-    /// The catalog's words for `status`.
     pub(in crate::gui) fn status_words(&self, status: PageStatus) -> &str {
         self.statuses.of(status)
     }
 
-    /// The node drawn at `row` of the tree.
     fn at(&self, row: usize) -> Option<NodeAt> {
         self.shown().into_iter().nth(row).map(|shown| NodeAt {
             source: shown.source,

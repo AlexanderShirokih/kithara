@@ -5,9 +5,6 @@ use kithara::{
 
 use crate::{config::AppConfig, pools::AppQueueControl, sources::build_source};
 
-/// The queue records sources in url-crate-normalized form; normalize the raw
-/// string the same way so comparisons match. A string that fails to parse is
-/// loaded verbatim as `TrackSource::Uri`, so it stays as-is here too.
 #[must_use]
 pub(crate) fn canonical_source(url: &str) -> String {
     ResourceSrc::parse(url).map_or_else(|_| url.to_string(), |src| src.to_string())

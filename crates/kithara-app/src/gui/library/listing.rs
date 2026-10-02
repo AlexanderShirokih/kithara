@@ -24,7 +24,6 @@ pub(super) struct Folder {
     pub(super) tracks: Vec<Track>,
 }
 
-/// Reads `folder` blocking, skipping hidden entries and non-UTF-8 names.
 pub(super) fn list(folder: &Path) -> Listing {
     match read(folder) {
         Ok(listed) => Listing::Listed(listed),
@@ -64,7 +63,6 @@ fn read(folder: &Path) -> io::Result<Folder> {
     })
 }
 
-/// `file` as a track titled by its stem; none for a path that is not UTF-8.
 fn track(file: &Path) -> Option<Track> {
     let title = file.file_stem()?.to_str()?.to_owned();
     Some(Track::new(title, file.to_str()?.to_owned()))

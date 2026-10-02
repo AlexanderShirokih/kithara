@@ -638,9 +638,6 @@ where
         Ok(handled)
     }
 
-    /// The routers in the order they are asked: from the top of the document
-    /// down, which is the order they were stacked in, reversed, among the
-    /// engines whose blocks are shown.
     fn routers(&self) -> Vec<Rc<HostedEngine>> {
         self.engines
             .iter()
@@ -722,15 +719,6 @@ where
         })
     }
 
-    /// Opens the surfaces the document now holds open, and shuts the rest.
-    ///
-    /// This is the one thing a mounted surface cannot answer for itself. Every
-    /// other read reaches a leaf that is already standing, and re-reading it
-    /// changes what that leaf shows; a popover opening changes nothing inside
-    /// its content, only whether the content stands in the picture. So the flag
-    /// is read here, against the layer the content was mounted into.
-    ///
-    /// A surface inside a hidden block is shut unread.
     fn open_surfaces(&mut self, ctx: Ctx<'_, '_>) {
         let changed: Vec<WidgetId> = self
             .popovers
@@ -884,16 +872,6 @@ where
         moved
     }
 
-    /// Shows the blocks the document now shows, and hides the rest.
-    ///
-    /// A block is the same kind of thing as a surface opening: re-reading a
-    /// leaf changes what that leaf shows, while a block changes whether a
-    /// whole subtree stands in the picture at all. The flow above it hides it
-    /// the way it hides a child the room did not reach, so all this does is
-    /// tell the flow to lay itself out again once the answer has changed, and
-    /// answers whether any answer changed.
-    ///
-    /// Walks blocks in reverse so an outer block settles before its inner ones.
     fn stand_blocks(&mut self, ctx: Ctx<'_, '_>) -> bool {
         let mut changed: Vec<WidgetId> = Vec::new();
         for block in self.blocks.iter().rev() {
@@ -910,7 +888,6 @@ where
         stood
     }
 
-    /// Reconciles each engine to the shown blocks and repaints shut menus.
     fn stand_engines(&mut self) {
         for engine in &self.engines {
             engine.item.stand(engine.within.shown());

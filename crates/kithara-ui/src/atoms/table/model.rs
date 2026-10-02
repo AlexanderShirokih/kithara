@@ -52,7 +52,6 @@ pub(crate) struct BadgeLetter {
 }
 
 impl TableCell {
-    /// The letters a badge column draws.
     pub(crate) fn badges(&self) -> &[BadgeLetter] {
         match self {
             Self::Badges(letters) => letters,

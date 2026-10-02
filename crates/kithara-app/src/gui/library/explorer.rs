@@ -60,7 +60,6 @@ impl Explorer {
         page: SOURCE_PAGE,
     };
 
-    /// Explorer over `home`, registered with its page, plus its folder picker.
     pub(in crate::gui) fn registered(home: Option<PathBuf>) -> (Registration, FolderPicker) {
         let (found, arrivals) = mpsc::unbounded_channel();
         let picker = FolderPicker::new(found.clone());
@@ -98,7 +97,6 @@ impl Explorer {
         Ok(explorer)
     }
 
-    /// The node of `path` under `top`; records each node's folder in `nodes`.
     fn folder(
         &self,
         top: &str,
@@ -122,7 +120,6 @@ impl Explorer {
         folder
     }
 
-    /// Lists `folder` on its own thread unless a listing is already running.
     fn list(&mut self, folder: PathBuf) {
         if !self.listing.insert(folder.clone()) {
             return;
@@ -162,7 +159,6 @@ impl Explorer {
         self.nodes = nodes;
     }
 
-    /// The latest listing of the selected node's folder, if any.
     fn shown(&self) -> Option<&Listing> {
         self.shown
             .as_ref()
@@ -240,7 +236,6 @@ impl LibrarySource for Explorer {
     }
 }
 
-/// A folder named as itself, by its last segment; the whole path for a root.
 fn named(folder: &Path) -> (String, IconName) {
     let name = folder.file_name().map_or_else(
         || folder.display().to_string(),

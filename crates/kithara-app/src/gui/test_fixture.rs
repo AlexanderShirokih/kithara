@@ -66,7 +66,6 @@ pub(super) fn boot(
         .expect("shipped UI compiles")
 }
 
-/// Mounts the package at `root` and the library over the `registered` sources.
 pub(super) fn mount(
     root: Option<&Path>,
     registered: Vec<Registration>,
@@ -76,7 +75,6 @@ pub(super) fn mount(
     Ok((package, library))
 }
 
-/// The package at `root` as the app mounts it with nothing to start with.
 pub(super) fn package(root: Option<&Path>) -> Result<Rc<Package>, UiDocError> {
     Package::load(
         root,
@@ -105,7 +103,6 @@ impl Probe {
         page: SOURCE_PAGE,
     };
 
-    /// A probe labelled by text key `label`, with a log of library calls.
     pub(super) fn registered(label: &'static str) -> (Registration, Rc<RefCell<Calls>>) {
         let calls = Rc::new(RefCell::new(Calls::default()));
         let told = Rc::clone(&calls);

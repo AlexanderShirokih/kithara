@@ -327,15 +327,6 @@ impl NodeLayout {
     }
 }
 
-/// Sizes off the first shown child and offers shown children that box loosely.
-///
-/// This is the whole difference from `stack`, and it is not a detail. A stack
-/// hands its children a tight box because its one child is a popover or a
-/// viewport that must fill it. Handing a stage's children the same tight box
-/// stretches every one of them to the full width and throws away the placement
-/// the document asked for — measured on the gallery's motion page, where the
-/// immediate host drew three sized children and the retained host drew one
-/// stretched chip.
 fn stage(
     ctx: &mut LayoutCtx<'_>,
     children: &mut [WidgetPod<Node>],

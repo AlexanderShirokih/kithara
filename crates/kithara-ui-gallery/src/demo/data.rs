@@ -157,7 +157,6 @@ fn load_catalog() -> Catalog {
     }
 }
 
-/// The deck a track is on, as one active letter; none for a track on no deck.
 fn deck_badges(deck: &'static str) -> Vec<Badge<'static>> {
     if deck.is_empty() {
         return Vec::new();
@@ -168,7 +167,6 @@ fn deck_badges(deck: &'static str) -> Vec<Badge<'static>> {
     }]
 }
 
-/// A row for `track` on `deck`, titled `title` to vary a repeated catalogue.
 fn track_row(
     track: &'static DemoTrack,
     deck: &'static [Badge<'static>],

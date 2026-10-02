@@ -516,7 +516,6 @@ impl HostedLayout {
         targets
     }
 }
-/// The search field, if drawn, and the rows of an immediate-host tree.
 pub(super) fn tree_input_layouts(
     layout: Layout<'_>,
     searched: bool,

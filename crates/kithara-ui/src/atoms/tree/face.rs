@@ -95,7 +95,6 @@ impl Tree {
         self.rows.len()
     }
 
-    /// Visible root rows and nested chevrons that toggle their branches.
     pub(crate) fn toggle_regions(&self, viewport: Rect, offset: f32) -> Vec<(usize, Rect)> {
         let skin = &self.skin;
         let visible = visible_rows(self.rows.len(), skin.tree.row_height, viewport.h, offset);

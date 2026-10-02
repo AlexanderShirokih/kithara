@@ -37,7 +37,6 @@ impl PopoverState {
         self.press.set(Some(point));
     }
 
-    /// Whether the document latches the surface open and its block is shown.
     pub(crate) fn is_open(&self) -> bool {
         self.open.get()
     }

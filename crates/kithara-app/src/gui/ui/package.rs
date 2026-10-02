@@ -61,13 +61,6 @@ impl Package {
         self.screens.document(layout)
     }
 
-    /// Reads the package laid out at `root` over the documents this build
-    /// carries, or only those documents when `root` names nothing, with the
-    /// library's `pages` laid over both.
-    ///
-    /// A path that does not exist means no package was laid out. Anything else
-    /// that stops the package being read - a permission, a broken manifest -
-    /// is an error rather than a quiet return to the built-in documents.
     pub(in crate::gui) fn load(
         root: Option<&Path>,
         pages: &PagesModule,

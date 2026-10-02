@@ -56,7 +56,6 @@ pub struct StageMount<T> {
     pub output: T,
 }
 
-/// A stage's box: its own, else its first shown child's, else `fill`.
 pub(crate) fn stage_box<T>(own: Option<T>, first_shown: Option<T>, fill: T) -> T {
     own.or(first_shown).unwrap_or(fill)
 }

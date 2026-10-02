@@ -553,12 +553,10 @@ fn wave_plan(
 }
 
 impl TreePlan {
-    /// The scroll, plus the search field and chevrons when present.
     fn descriptor_count(&self) -> usize {
         1 + usize::from(self.search_path.is_some()) + usize::from(self.toggle_path.is_some())
     }
 
-    /// The chevron target over `rows`: the chevron under `point`, else an empty box.
     pub(crate) fn append_toggle_targets<'a>(
         &'a self,
         rows: Rect,
@@ -722,7 +720,6 @@ impl TablePlan {
     }
 }
 
-/// A box of no size at the corner of `bounds`: a target that is never hit.
 pub(super) const fn empty_bounds(bounds: Rect) -> Rect {
     Rect {
         x: bounds.x,

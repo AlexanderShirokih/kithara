@@ -72,7 +72,6 @@ impl ChildLayout {
         }
     }
 
-    /// A split cell: its own share of the main axis, the whole cross axis.
     pub(crate) const fn cell(axis: Axis, size: SizeSpec, main_weight: f32) -> Self {
         let declared = match axis {
             Axis::Horizontal => Size::new(main_length(size.w), solve::Length::Fill),
@@ -96,7 +95,6 @@ impl ChildLayout {
 }
 
 impl Flex {
-    /// The flow a split lays its cells out in.
     pub(crate) fn split(axis: Axis, children: Vec<ChildLayout>) -> Self {
         Self::new(
             axis,

@@ -306,7 +306,6 @@ fn both_hosts_lay_a_block_a_slot_holds_out_the_same_way() {
     );
 }
 
-/// Retained-host leaves of the stage document, before and after the swap.
 fn staged_retained() -> [(Vec<&'static str>, Vec<Rect>); 2] {
     let endpoints = Endpoints::default();
     let resolver = documents();
@@ -358,7 +357,6 @@ fn staged_retained() -> [(Vec<&'static str>, Vec<Rect>); 2] {
     [before, laid_out(&mut ui)]
 }
 
-/// Immediate-host leaf boxes of the stage document for either shown block.
 fn staged_neutral(shown: bool) -> Vec<Rect> {
     let ui = compile(
         "stage.klayout.ron",
@@ -395,7 +393,6 @@ fn staged_neutral(shown: bool) -> Vec<Rect> {
     rows
 }
 
-/// Both hosts lay out only the shown block, in its declared box.
 #[kithara::test]
 fn a_stage_lays_out_only_the_blocks_the_document_shows() {
     let [(before, retained_before), (after, retained_after)] = staged_retained();
