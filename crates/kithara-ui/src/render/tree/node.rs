@@ -22,7 +22,7 @@ use crate::{
         document::{
             Ctx, Group, GroupMount, Host as DocumentHost, Measured as MeasuredPlan,
             Module as DocumentModule, PlacedMount, Popover as DocumentPopover, SplitMount,
-            StageMount, stage_box,
+            StageMount,
         },
         drop_outline, placed, window_layers,
     },
@@ -349,9 +349,10 @@ fn stage<'a>(
     children: Vec<Element<'a, Published>>,
     size: Option<SizeSpec>,
 ) -> Element<'a, Published> {
-    let first_shown = children.first().map(|_| None);
-    let Some(size) = stage_box(size.map(Some), first_shown, Some(SizeSpec::FILL)) else {
-        return Stack::with_children(children).into();
+    let size = match (size, children.is_empty()) {
+        (Some(size), _) => size,
+        (None, false) => return Stack::with_children(children).into(),
+        (None, true) => SizeSpec::FILL,
     };
     let mut layers: Vec<Element<'a, Published>> = Vec::with_capacity(children.len() + 1);
     layers.push(Element::from(Space::new()));

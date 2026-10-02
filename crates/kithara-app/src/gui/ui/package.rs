@@ -12,7 +12,6 @@ use kithara::ui::{
 };
 
 use super::cache::DeckLayout;
-use crate::gui::library::PagesModule;
 
 include!(concat!(env!("OUT_DIR"), "/ui_documents.rs"));
 
@@ -63,22 +62,19 @@ impl Package {
 
     pub(in crate::gui) fn load(
         root: Option<&Path>,
-        pages: &PagesModule,
+        modules: MemResolver,
     ) -> Result<Rc<Self>, UiDocError> {
-        root.map_or_else(
-            || Self::read(embedded(), pages),
-            |root| Self::read_folder(root, pages),
-        )
+        match root {
+            Some(root) => Self::read_folder(root, modules),
+            None => Self::read(embedded(), modules),
+        }
     }
 
     fn read<R: SourceResolver + 'static>(
         documents: R,
-        pages: &PagesModule,
+        modules: MemResolver,
     ) -> Result<Rc<Self>, UiDocError> {
-        let mut generated = MemResolver::default();
-        generated.insert(PagesModule::PATH, pages.text());
-        let resolver: Box<dyn SourceResolver> =
-            Box::new(OverlayResolver::new(generated, documents));
+        let resolver: Box<dyn SourceResolver> = Box::new(OverlayResolver::new(modules, documents));
         let manifest = load_package(resolver.as_ref(), Self::MANIFEST)?;
         let screens = Screens::resolve(&manifest, resolver.as_ref())?;
         let text = catalog(resolver.as_ref(), &manifest)?;
@@ -92,22 +88,22 @@ impl Package {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn read_folder(root: &Path, pages: &PagesModule) -> Result<Rc<Self>, UiDocError> {
+    fn read_folder(root: &Path, modules: MemResolver) -> Result<Rc<Self>, UiDocError> {
         use kithara::ui::source::FileResolver;
 
         if !root.exists() {
-            return Self::read(embedded(), pages);
+            return Self::read(embedded(), modules);
         }
         let files = FileResolver::new(root).map_err(|error| UiDocError::Unreadable {
             origin: SourceUri(root.display().to_string()),
             rel: String::new(),
             source: error,
         })?;
-        Self::read(OverlayResolver::new(files, embedded()), pages)
+        Self::read(OverlayResolver::new(files, embedded()), modules)
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn read_folder(root: &Path, _pages: &PagesModule) -> Result<Rc<Self>, UiDocError> {
+    fn read_folder(root: &Path, _modules: MemResolver) -> Result<Rc<Self>, UiDocError> {
         use std::io::ErrorKind;
 
         Err(UiDocError::Unreadable {

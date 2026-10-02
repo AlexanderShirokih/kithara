@@ -187,39 +187,9 @@ audio-artifacts OUTPUT:
       just test run -p kithara-warp-tests --test warp \
         -E 'test(=region::rendered_clicks_follow_the_integral_of_the_tempo_ramp_signalsmith) | test(/^real_track::/)'
 
-# Every UI test target, followed by both hosts drawing the same gallery and
-# shipped studio pages, and the gallery built the other way it ships. This is
-# the UI pipeline's single entrypoint; the general workspace lane deliberately
-# excludes the same tests.
-#
-# The frame and page harnesses live behind their own feature, so the lane above
-# does not compile them and the censuses inside them - one row per control the
-# document can name, one per gallery page - were checked by hand or not at all.
-# They run here as their own lane. Nothing in them judges a duration: what they
-# assert is that a run did the thing it claims to measure, so the numbers stay
-# a report and the censuses become a gate.
-#
-# The memory budget runs last, in its own binary and on one thread: the graphics
-# device counts bytes for the whole process, so a reading taken while another
-# test draws is a reading of that test. One thread is what makes each stage a
-# difference this test alone caused.
-#
-# The last step builds the gallery's suite with the toolkit's default features
-# - iced alone, no retained host - and runs it there. Everything above is one
-# feature set, so a page, a walk or a census that only holds when both hosts
-# are compiled in would pass all of it and fail the first consumer who takes
-# the toolkit without masonry.
+# UI suites, isolated memory checks, host parity, and the iced-only build.
 ui:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    dir="$PWD/target/parity"
-    rm -rf "$dir/scenario"
-    KITHARA_UI_SCENARIO_CAPTURE="$dir/scenario" just test run --lane=ui
-    just test run --lane=ui-doc
-    just test run --lane=ui-perf
-    just test parity --dir "$dir"
-    cargo test -p kithara-ui-gallery --test gallery --profile test-release
-    cargo test -p kithara-ui-gallery --test ui_memory --features kithara-ui-gallery/masonry --profile test-release -- --test-threads=1
+    just _xtask ui
 
 # The picture parity programme on its own. `just test ui` runs it after the UI
 # lanes; run it alone to re-check a drawing change without paying for the

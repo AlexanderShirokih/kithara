@@ -37,6 +37,7 @@ pub(crate) struct Rig {
     pub(crate) shutdown: CancelToken,
     #[cfg(not(feature = "broadcast"))]
     states: Vec<Arc<kithara::platform::sync::Mutex<crate::state::UiState>>>,
+    _runtime: kithara::platform::tokio::runtime::Runtime,
 }
 
 impl Rig {
@@ -78,7 +79,8 @@ impl Rig {
         let deck_tokens = decks.iter().map(Deck::cancel_child).collect();
         let (sender, commands) = mpsc::unbounded_channel();
         let snapshots = Arc::new(ArcSwap::from_pointee(EngineSnapshot::unpublished()));
-        let boot = test_fixture::boot(config, Arc::clone(&snapshots), sender);
+        let runtime = test_fixture::runtime();
+        let boot = test_fixture::boot(runtime.handle(), config, Arc::clone(&snapshots), sender);
         let engine = Engine::new(
             DeckSet::new(host, decks),
             config.clone(),
@@ -89,6 +91,7 @@ impl Rig {
         );
         let ui = Kithara::mounted(boot, Id::unique());
         Self {
+            _runtime: runtime,
             snapshots,
             engine,
             ui,

@@ -14,7 +14,7 @@ use super::{
     frontend::Boot,
     library::{
         BranchNode, Library, LibrarySource, PageStatus, PagesModule, Registration, SourcePage,
-        StartupSource, consts::SOURCE_PAGE, worded,
+        StartupSource, worded,
     },
     ui::package::Package,
 };
@@ -48,7 +48,15 @@ pub(super) fn config() -> AppConfig {
         .build()
 }
 
+pub(super) fn runtime() -> kithara::platform::tokio::runtime::Runtime {
+    kithara::platform::tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime builds")
+}
+
 pub(super) fn boot(
+    runtime: &kithara::platform::tokio::runtime::Handle,
     config: &AppConfig,
     snapshots: Arc<ArcSwap<EngineSnapshot>>,
     commands: UnboundedSender<Envelope>,
@@ -62,6 +70,7 @@ pub(super) fn boot(
         .palette(config.palette)
         .snapshots(snapshots)
         .commands(commands)
+        .runtime(runtime.clone())
         .build()
         .expect("shipped UI compiles")
 }
@@ -70,7 +79,7 @@ pub(super) fn mount(
     root: Option<&Path>,
     registered: Vec<Registration>,
 ) -> Result<(Rc<Package>, Library), UiDocError> {
-    let package = Package::load(root, &PagesModule::new(&registered))?;
+    let package = Package::load(root, PagesModule::new(&registered).into())?;
     let library = Library::new(registered, package.text())?;
     Ok((package, library))
 }
@@ -78,7 +87,7 @@ pub(super) fn mount(
 pub(super) fn package(root: Option<&Path>) -> Result<Rc<Package>, UiDocError> {
     Package::load(
         root,
-        &PagesModule::new(&[StartupSource::registered(Vec::new())]),
+        PagesModule::new(&[StartupSource::registered(Vec::new())]).into(),
     )
 }
 
@@ -98,15 +107,12 @@ pub(super) struct Calls {
 }
 
 impl Probe {
-    pub(super) const PAGE: SourcePage = SourcePage {
-        id: "probe",
-        page: SOURCE_PAGE,
-    };
+    pub(super) const ID: &'static str = "probe";
 
     pub(super) fn registered(label: &'static str) -> (Registration, Rc<RefCell<Calls>>) {
         let calls = Rc::new(RefCell::new(Calls::default()));
         let told = Rc::clone(&calls);
-        let registration = Registration::new(Self::PAGE, move |text| {
+        let registration = Registration::new(SourcePage::table(Self::ID), move |text| {
             Ok(Box::new(Self::new(label, text, told)?))
         });
         (registration, calls)
@@ -118,18 +124,22 @@ impl Probe {
             ..BranchNode::new(key, key.to_owned(), IconName::Folder)
         };
         let mut branch = node(
-            Self::PAGE.id,
+            Self::ID,
             vec![
                 node("crate", vec![node("digger", Vec::new())]),
                 node("leaf", Vec::new()),
             ],
         );
-        branch.label = worded(text, label, Self::PAGE.id)?;
+        branch.label = worded(text, label, Self::ID)?;
         Ok(Self { branch, calls })
     }
 }
 
 impl LibrarySource for Probe {
+    fn analysis_key(&self, _row: usize) -> Option<&str> {
+        None
+    }
+
     fn branch(&self) -> &BranchNode {
         &self.branch
     }
@@ -139,7 +149,7 @@ impl LibrarySource for Probe {
     }
 
     fn id(&self) -> &str {
-        Self::PAGE.id
+        Self::ID
     }
 
     fn row_key(&self, _row: usize) -> Option<&str> {

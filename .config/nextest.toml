@@ -18,8 +18,8 @@
 # these under `profile.support`, which opts back in.
 #
 # The last four terms are the UI, which owns a graphics-backed pipeline of its
-# own: `[test.lanes.ui]` opts out of this filter with `--ignore-default-filter`
-# and runs exactly that set on the GPU runner.
+# own: `[test.lanes.ui]` selects `profile.ui`, whose positive default filter
+# intersects caller filters on the GPU runner.
 [profile.default]
 default-filter = """
 not (
@@ -49,6 +49,19 @@ slow-timeout = { period = "120s", terminate-after = 1 }
 # sync tests that spawn no threads. A real leak (live worker thread
 # blocked on channel) would still exceed 2s and get caught.
 leak-timeout = "2s"
+
+# Lane selection intersects each caller's filter instead of adding another -E.
+[profile.ui]
+default-filter = """
+package(kithara-ui)
++ package(kithara-ui-gallery)
++ package(kithara-ui-input)
++ package(kithara-ui-shaping)
++ (package(kithara-app) & test(/^gui::/))
+"""
+
+[profile.perf]
+default-filter = 'binary(frame_perf) | binary(page_perf)'
 
 [profile.ci]
 fail-fast = false
@@ -167,11 +180,15 @@ store-failure-output = true
 # counted into its readings, which would make the verdict a property of the
 # schedule rather than of the host. Reserving every thread runs it alone.
 # Repeated per profile: nextest inherits settings from `default`, but not
-# override lists, so a lane on `ci` would otherwise run it beside the rest.
+# override lists, so named profiles must reserve the same threads.
 [[profile.default.overrides]]
 filter = 'binary_id(=kithara-ui-gallery::ui_memory) and test(=checks::a_settled_page_stays_inside_its_budget_on_every_host)'
 threads-required = "num-test-threads"
 
 [[profile.ci.overrides]]
+filter = 'binary_id(=kithara-ui-gallery::ui_memory) and test(=checks::a_settled_page_stays_inside_its_budget_on_every_host)'
+threads-required = "num-test-threads"
+
+[[profile.ui.overrides]]
 filter = 'binary_id(=kithara-ui-gallery::ui_memory) and test(=checks::a_settled_page_stays_inside_its_budget_on_every_host)'
 threads-required = "num-test-threads"

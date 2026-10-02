@@ -45,9 +45,12 @@ fn read(folder: &Path) -> io::Result<Folder> {
         if name.starts_with('.') {
             continue;
         }
-        if path.is_dir() {
+        let Ok(metadata) = fs::metadata(&path) else {
+            continue;
+        };
+        if metadata.is_dir() {
             folders.push(path);
-        } else if playable(&path) {
+        } else if metadata.is_file() && playable(&path) {
             files.push(path);
         }
     }

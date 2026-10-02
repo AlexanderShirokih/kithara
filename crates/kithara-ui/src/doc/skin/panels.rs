@@ -810,10 +810,6 @@ pub struct TableSkin {
     pub badge_height: f32,
     pub badge_width: f32,
     pub cell_padding_x: f32,
-    #[serde(default)]
-    pub padding_left: f32,
-    #[serde(default)]
-    pub padding_right: f32,
     pub divider_hit_width: f32,
     pub divider_width: f32,
     pub footer_height: f32,
@@ -841,8 +837,6 @@ pub struct TablePatch {
     pub badge_text: Option<TextRoleSkin>,
     pub badge_width: Option<f32>,
     pub cell_padding_x: Option<f32>,
-    pub padding_left: Option<f32>,
-    pub padding_right: Option<f32>,
     pub divider_hit_width: Option<f32>,
     pub divider_width: Option<f32>,
     pub footer_fill: Option<ColorRole>,
@@ -912,8 +906,6 @@ impl TableSkin {
         super::patch::patch_field(&mut self.row_frame, patch.row_frame);
         super::patch::patch_field(&mut self.size, patch.size);
         super::patch::patch_field(&mut self.cell_padding_x, patch.cell_padding_x);
-        super::patch::patch_field(&mut self.padding_left, patch.padding_left);
-        super::patch::patch_field(&mut self.padding_right, patch.padding_right);
         super::patch::patch_field(&mut self.badge_height, patch.badge_height);
         super::patch::patch_field(&mut self.badge_width, patch.badge_width);
         super::patch::patch_field(&mut self.divider_hit_width, patch.divider_hit_width);

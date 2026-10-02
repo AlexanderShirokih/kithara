@@ -273,12 +273,7 @@ impl Engine {
             })
             .collect();
         EngineSnapshot {
-            track_bpms: self
-                .analysis
-                .bpms()
-                .iter()
-                .map(|(source, bpm)| (source.clone(), format!("{bpm:.2}")))
-                .collect(),
+            track_bpms: Arc::clone(&self.analysis.bpms()),
             decks,
             broadcast: BroadcastPhase::new(&self.broadcast),
             eq_mode: self.eq_mode,

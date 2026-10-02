@@ -40,22 +40,7 @@ fn write(state: &mut Kithara, key: &str, value: WriteValue) -> Option<Message> {
             library_write(state, id, &value);
             None
         }
-        "source" => {
-            match (id, &value) {
-                ("source.select", WriteValue::Index(row)) => {
-                    state.library.select_row(scope.get("source")?, *row);
-                }
-                ("source.column.width", WriteValue::Scalar(width)) => {
-                    state.library.set_column_width(
-                        scope.get("source")?,
-                        scope.get("column")?,
-                        *width,
-                    );
-                }
-                _ => {}
-            }
-            None
-        }
+        "source" => source_write(state, id, scope, &value),
         _ => None,
     }
 }
@@ -192,6 +177,26 @@ fn library_write(state: &mut Kithara, id: &str, value: &WriteValue) {
         ("library.toggle", WriteValue::Index(row)) => state.library.toggle(*row),
         _ => {}
     }
+}
+
+fn source_write(
+    state: &mut Kithara,
+    id: &str,
+    scope: Scope<'_>,
+    value: &WriteValue,
+) -> Option<Message> {
+    match (id, value) {
+        ("source.select", WriteValue::Index(row)) => {
+            state.library.select_row(scope.get("source")?, *row);
+        }
+        ("source.column.width", WriteValue::Scalar(width)) => {
+            state
+                .library
+                .set_column_width(scope.get("source")?, scope.get("column")?, *width);
+        }
+        _ => {}
+    }
+    None
 }
 
 fn deck_id(state: &Kithara, index: usize) -> Option<DeckId> {
@@ -476,7 +481,7 @@ mod tests {
                 ControlAction::SetScalar(240.0),
             );
             assert_eq!(
-                rig.scalar("source.columns.width.artist@source=startup"),
+                rig.scalar("source.column.width@column=artist,source=startup"),
                 240.0
             );
             write(
@@ -485,11 +490,11 @@ mod tests {
                 WriteValue::Scalar(260.0),
             );
             assert_eq!(
-                rig.scalar("source.columns.width.artist@source=explorer"),
+                rig.scalar("source.column.width@column=artist,source=explorer"),
                 260.0
             );
             assert_eq!(
-                rig.scalar("source.columns.width.artist@source=startup"),
+                rig.scalar("source.column.width@column=artist,source=startup"),
                 240.0
             );
         }

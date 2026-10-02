@@ -110,7 +110,7 @@ impl canvas::Program<Published> for TableProgram {
             bounds,
             self.paint.face.columns(),
             state.horizontal.offset(),
-            self.paint.face.skin(),
+            self.paint.face.metrics(),
         );
         for divider in &dividers {
             let Some((_, drag_state)) = state
@@ -173,7 +173,7 @@ impl canvas::Program<Published> for TableProgram {
             return Some(action);
         }
 
-        let body = table_body(bounds, self.paint.face.skin());
+        let body = table_body(bounds, self.paint.face.metrics());
         let vertical_hit = Hit::new(point, body);
         let before = state.vertical.offset();
         let outcome = state.vertical.handle(input, &vertical_hit);
@@ -208,7 +208,7 @@ impl TableProgram {
             bounds,
             self.paint.face.columns(),
             state.horizontal.offset(),
-            self.paint.face.skin(),
+            self.paint.face.metrics(),
         );
         for divider in &dividers {
             let Some((_, drag_state)) = state
@@ -263,7 +263,7 @@ impl TableProgram {
             row_index,
             state.horizontal.offset(),
             state.vertical.offset(),
-            self.paint.face.skin(),
+            self.paint.face.metrics(),
         );
         let row = visible.unwrap_or(Rect {
             h: 0.0,

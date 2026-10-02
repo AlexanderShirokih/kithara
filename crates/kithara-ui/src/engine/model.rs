@@ -63,7 +63,7 @@ pub(super) struct ScrollItems {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum Kind {
+pub(crate) enum Kind {
     Activation,
     Crossing,
     Segmented,

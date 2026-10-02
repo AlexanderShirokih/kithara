@@ -4,9 +4,10 @@ use std::{
 };
 
 use kithara::{
-    platform::{
-        thread,
-        tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
+    platform::tokio::{
+        runtime::Handle,
+        sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
+        task,
     },
     ui::{error::UiDocError, module::IconName, render::TableRow, text::TextDoc},
 };
@@ -14,7 +15,6 @@ use tracing::debug;
 
 use super::{
     BranchNode, LibrarySource, PageStatus, Registration, SourcePage,
-    consts::SOURCE_PAGE,
     folders::{FolderPicker, MusicFolders},
     listing::{self, Listing},
     worded,
@@ -30,6 +30,7 @@ pub(super) enum Found {
 
 /// The user's folders on disk: the ones added to Music Folders, and Home.
 pub(in crate::gui) struct Explorer {
+    runtime: Handle,
     branch: BranchNode,
     /// The latest listing of every folder listed so far.
     listings: HashMap<PathBuf, Listing>,
@@ -55,33 +56,35 @@ struct Names {
 impl Explorer {
     const FOLDERS: &str = "folders";
     const HOME: &str = "home";
-    const PAGE: SourcePage = SourcePage {
-        id: "explorer",
-        page: SOURCE_PAGE,
-    };
+    const ID: &'static str = "explorer";
 
-    pub(in crate::gui) fn registered(home: Option<PathBuf>) -> (Registration, FolderPicker) {
+    pub(in crate::gui) fn registered(
+        home: Option<PathBuf>,
+        runtime: Handle,
+    ) -> (Registration, FolderPicker) {
         let (found, arrivals) = mpsc::unbounded_channel();
-        let picker = FolderPicker::new(found.clone());
-        let registration = Registration::new(Self::PAGE, move |text| {
-            Ok(Box::new(Self::new(home, found, arrivals, text)?))
+        let picker = FolderPicker::new(found.clone(), runtime.clone());
+        let registration = Registration::new(SourcePage::table(Self::ID), move |text| {
+            Ok(Box::new(Self::new(home, runtime, found, arrivals, text)?))
         });
         (registration, picker)
     }
 
     fn new(
         home: Option<PathBuf>,
+        runtime: Handle,
         found: UnboundedSender<Found>,
         arrivals: UnboundedReceiver<Found>,
         text: &TextDoc,
     ) -> Result<Self, UiDocError> {
-        let id = Self::PAGE.id;
+        let id = Self::ID;
         let label = worded(text, "library.source.explorer", id)?;
         let names = Names {
             home: worded(text, "library.node.home", id)?,
             music_folders: worded(text, "library.node.music_folders", id)?,
         };
         let mut explorer = Self {
+            runtime,
             home,
             found,
             arrivals,
@@ -125,15 +128,12 @@ impl Explorer {
             return;
         }
         let found = self.found.clone();
-        drop(thread::spawn_named(
-            "kithara-app-folder-listing",
-            move || {
-                let listing = listing::list(&folder);
-                if found.send(Found::Listed(folder, listing)).is_err() {
-                    debug!("the library closed before a folder listing arrived");
-                }
-            },
-        ));
+        drop(task::spawn_blocking_on(&self.runtime, move || {
+            let listing = listing::list(&folder);
+            if found.send(Found::Listed(folder, listing)).is_err() {
+                debug!("the library closed before a folder listing arrived");
+            }
+        }));
     }
 
     fn rebuild(&mut self) {
@@ -167,6 +167,16 @@ impl Explorer {
 }
 
 impl LibrarySource for Explorer {
+    fn analysis_key(&self, row: usize) -> Option<&str> {
+        match self.shown() {
+            Some(Listing::Listed(folder)) => folder
+                .tracks
+                .get(row)
+                .map(super::track::Track::analysis_key),
+            _ => None,
+        }
+    }
+
     fn branch(&self) -> &BranchNode {
         &self.branch
     }
@@ -178,7 +188,7 @@ impl LibrarySource for Explorer {
     }
 
     fn id(&self) -> &str {
-        Self::PAGE.id
+        Self::ID
     }
 
     fn rows(&self, selected: Option<&str>) -> Vec<TableRow<'_>> {

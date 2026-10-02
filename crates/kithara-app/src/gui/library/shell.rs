@@ -8,13 +8,16 @@ use super::{BranchNode, LibrarySource, PageStatus, Registration, worded};
 #[derive(fieldwork::Fieldwork)]
 #[fieldwork(opt_in)]
 pub(in crate::gui) struct Library {
-    sources: Vec<Box<dyn LibrarySource>>,
+    sources: Vec<Mounted>,
     statuses: StatusWords,
     expanded: Vec<NodeAt>,
     selected: Option<NodeAt>,
-    /// The key of the track each source's page has selected, by source.
-    rows: Vec<Option<String>>,
-    widths: Vec<BTreeMap<String, f64>>,
+}
+
+struct Mounted {
+    source: Box<dyn LibrarySource>,
+    row: Option<String>,
+    widths: BTreeMap<String, f64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -38,26 +41,11 @@ struct StatusWords {
 
 impl StatusWords {
     fn new(text: &TextDoc) -> Result<Self, UiDocError> {
-        let word = |status: PageStatus| {
-            let Some(key) = Self::key(status) else {
-                return Ok(String::new());
-            };
-            worded(text, key, "source.status")
-        };
         Ok(Self {
-            empty: word(PageStatus::Empty)?,
-            loading: word(PageStatus::Loading)?,
-            unreadable: word(PageStatus::Unreadable)?,
+            empty: worded(text, "library.status.empty", "source.status")?,
+            loading: worded(text, "library.status.loading", "source.status")?,
+            unreadable: worded(text, "library.status.error", "source.status")?,
         })
-    }
-
-    const fn key(status: PageStatus) -> Option<&'static str> {
-        match status {
-            PageStatus::Ready => None,
-            PageStatus::Loading => Some("library.status.loading"),
-            PageStatus::Empty => Some("library.status.empty"),
-            PageStatus::Unreadable => Some("library.status.error"),
-        }
     }
 
     fn of(&self, status: PageStatus) -> &str {
@@ -83,18 +71,22 @@ impl Library {
     ) -> Result<Self, UiDocError> {
         let sources = registered
             .into_iter()
-            .map(|source| source.build(text))
+            .map(|source| {
+                source.build(text).map(|source| Mounted {
+                    source,
+                    row: None,
+                    widths: BTreeMap::new(),
+                })
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let mut library = Self {
-            rows: vec![None; sources.len()],
-            widths: vec![BTreeMap::new(); sources.len()],
             sources,
             statuses: StatusWords::new(text)?,
             expanded: Vec::new(),
             selected: None,
         };
         let mut path: Vec<String> = Vec::new();
-        let mut node = library.sources.first().map(|source| source.branch());
+        let mut node = library.sources.first().map(|source| source.source.branch());
         while let Some(branch) = node {
             path.push(branch.key.clone());
             node = branch.children.first();
@@ -103,10 +95,12 @@ impl Library {
             .sources
             .iter()
             .enumerate()
-            .filter(|(_, source)| source.branch().unlisted || !source.branch().children.is_empty())
+            .filter(|(_, source)| {
+                source.source.branch().unlisted || !source.source.branch().children.is_empty()
+            })
             .map(|(source, mounted)| NodeAt {
                 source,
-                key: mounted.branch().key.clone(),
+                key: mounted.source.branch().key.clone(),
             })
             .collect();
         for root in roots {
@@ -124,8 +118,28 @@ impl Library {
         Ok(library)
     }
 
+    pub(in crate::gui) fn index_of(&self, id: &str) -> Option<usize> {
+        self.sources
+            .iter()
+            .position(|mounted| mounted.source.id() == id)
+    }
+
+    delegate::delegate! {
+        to self.sources {
+            #[expr(Some($?.source.as_ref()))]
+            #[call(get)]
+            pub(in crate::gui) fn source(&self, index: usize) -> Option<&dyn LibrarySource>;
+            #[expr($?.row.as_deref())]
+            #[call(get)]
+            pub(in crate::gui) fn selected_row(&self, at: usize) -> Option<&str>;
+            #[expr($.map(|mounted| mounted.source.as_ref()))]
+            #[call(iter)]
+            pub(in crate::gui) fn sources(&self) -> impl Iterator<Item = &dyn LibrarySource>;
+        }
+    }
+
     pub(in crate::gui) fn page_hidden(&self, id: &str) -> Option<bool> {
-        let source = self.sources.iter().position(|source| source.id() == id)?;
+        let source = self.index_of(id)?;
         Some(
             self.selected
                 .as_ref()
@@ -134,34 +148,24 @@ impl Library {
     }
 
     pub(in crate::gui) fn column_width(&self, source: usize, column: &str) -> Option<f64> {
-        self.widths.get(source)?.get(column).copied()
+        self.sources.get(source)?.widths.get(column).copied()
     }
 
     pub(in crate::gui) fn set_column_width(&mut self, source: &str, column: &str, width: f64) {
         if !width.is_finite() || width <= 0.0 {
             return;
         }
-        if let Some(at) = self
-            .sources
-            .iter()
-            .position(|mounted| mounted.id() == source)
-        {
-            self.widths[at].insert(column.to_owned(), width);
+        if let Some(at) = self.index_of(source) {
+            self.sources[at].widths.insert(column.to_owned(), width);
         }
     }
 
     pub(in crate::gui) fn select_row(&mut self, id: &str, row: usize) {
-        let Some(at) = self.sources.iter().position(|source| source.id() == id) else {
+        let Some(at) = self.index_of(id) else {
             return;
         };
-        let key = self.sources[at].row_key(row).map(str::to_owned);
-        if let Some(selected) = self.rows.get_mut(at) {
-            *selected = key;
-        }
-    }
-
-    pub(in crate::gui) fn selected_row(&self, at: usize) -> Option<&str> {
-        self.rows.get(at).and_then(Option::as_deref)
+        let key = self.sources[at].source.row_key(row).map(str::to_owned);
+        self.sources[at].row = key;
     }
 
     pub(in crate::gui) fn select(&mut self, row: usize) {
@@ -170,13 +174,9 @@ impl Library {
         }
     }
 
-    pub(in crate::gui) fn sources(&self) -> impl Iterator<Item = &dyn LibrarySource> {
-        self.sources.iter().map(AsRef::as_ref)
-    }
-
     pub(in crate::gui) fn tick(&mut self) {
         for source in &mut self.sources {
-            source.tick();
+            source.source.tick();
         }
     }
 
@@ -239,19 +239,19 @@ impl Library {
 
     fn open(&mut self, at: NodeAt) {
         if let Some(source) = self.sources.get_mut(at.source) {
-            source.expand(&at.key);
+            source.source.expand(&at.key);
         }
         self.expanded.push(at);
     }
 
     fn select_at(&mut self, at: NodeAt) {
         if let Some(source) = self.sources.get_mut(at.source) {
-            source.select(&at.key);
+            source.source.select(&at.key);
         }
         if self.selected.as_ref() != Some(&at)
-            && let Some(row) = self.rows.get_mut(at.source)
+            && let Some(mounted) = self.sources.get_mut(at.source)
         {
-            *row = None;
+            mounted.row = None;
         }
         self.selected = Some(at);
     }
@@ -259,7 +259,7 @@ impl Library {
     fn shown(&self) -> Vec<Shown<'_>> {
         let mut out = Vec::new();
         for (at, source) in self.sources.iter().enumerate() {
-            self.push(&mut out, at, source.branch(), 0);
+            self.push(&mut out, at, source.source.branch(), 0);
         }
         out
     }

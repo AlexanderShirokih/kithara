@@ -1,7 +1,8 @@
-use num_traits::ToPrimitive;
-
-use super::{ColumnLayout, layout::intersect};
-use crate::{draw::Rect, interact::recognizers::Track, module::TableColumn, render::Skin};
+use super::{
+    ColumnLayout, TableMetrics,
+    layout::{column_cells, intersect},
+};
+use crate::{draw::Rect, interact::recognizers::Track, module::TableColumn};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ColumnDividerLayout {
@@ -15,56 +16,37 @@ pub(crate) fn table_dividers(
     bounds: Rect,
     columns: &[ColumnLayout],
     horizontal_offset: f32,
-    skin: &Skin,
+    table: TableMetrics<'_>,
 ) -> Vec<ColumnDividerLayout> {
-    let free = bounds.w
-        - super::minimum_table_width(columns)
-        - skin.table.padding_left
-        - skin.table.padding_right;
-    let extra = free.max(0.0);
-    let flexible = columns
-        .iter()
-        .filter(|column| column.column.flexible())
-        .count();
-    let flexible_extra = if flexible == 0 {
-        0.0
-    } else {
-        extra / flexible.to_f32().unwrap_or(f32::MAX)
-    };
-    let mut edge = bounds.x + skin.table.padding_left - horizontal_offset;
+    let skin = &table.skin.table;
+    let free = bounds.w - table.width(columns);
     let mut dividers: Vec<ColumnDividerLayout> = Vec::new();
-    for (index, column) in columns.iter().cloned().enumerate() {
-        let start = edge;
-        let width = if column.column.flexible() {
-            column.width + flexible_extra
-        } else {
-            column.width
-        };
-        edge += width;
+    for (index, (column, cell)) in
+        column_cells(bounds, columns, horizontal_offset, table).enumerate()
+    {
         if !super::column_resizable(columns, index) {
             continue;
         }
-        let track = super::column_resize_track(columns, index, bounds.w, skin);
-        let reverse = matches!(track, Track::HorizontalPixels { direction, .. } if direction < 0.0);
+        let reverse = super::column_resize_reverses(columns, index, bounds.w, table);
         if free >= 0.0 && column.column.flexible() || !reverse && index + 1 == columns.len() {
             continue;
         }
-        let divider_edge = if reverse { start } else { edge };
+        let divider_edge = if reverse { cell.x } else { cell.x + cell.w };
         dividers.push(ColumnDividerLayout {
             column: column.column.clone(),
+            track: super::column_resize_track(columns, index, bounds.w, table),
             hit: Rect {
-                h: skin.table.header_height,
-                w: skin.table.divider_hit_width,
-                x: divider_edge - skin.table.divider_hit_width / 2.0,
+                h: skin.header_height,
+                w: skin.divider_hit_width,
+                x: divider_edge - skin.divider_hit_width / 2.0,
                 y: bounds.y,
             },
             paint: Rect {
-                h: skin.table.header_height,
-                w: skin.table.divider_width,
-                x: divider_edge - skin.table.divider_width / 2.0,
+                h: skin.header_height,
+                w: skin.divider_width,
+                x: divider_edge - skin.divider_width / 2.0,
                 y: bounds.y,
             },
-            track,
         });
     }
     dividers
@@ -74,6 +56,27 @@ pub(crate) fn table_visible_divider_hit(bounds: Rect, hit: Rect) -> Option<Rect>
     intersect(hit, bounds)
 }
 
+pub(crate) fn table_divider_hit(
+    bounds: Rect,
+    dividers: &[ColumnDividerLayout],
+    id: &str,
+    captured: bool,
+) -> Option<Rect> {
+    dividers
+        .iter()
+        .find(|divider| divider.column.id() == id)
+        .and_then(|divider| table_visible_divider_hit(bounds, divider.hit))
+        .or_else(|| captured.then(|| empty_bounds(bounds)))
+}
+
+pub(crate) fn empty_bounds(bounds: Rect) -> Rect {
+    Rect {
+        h: 0.0,
+        w: 0.0,
+        ..bounds
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use kithara_test_utils::kithara;
@@ -81,7 +84,7 @@ mod tests {
     use super::*;
     use crate::{
         atoms::table::column_layouts,
-        module::{TableColumn, TableColumnStyle},
+        module::{TableColumn, TableColumnStyle, TableFrame},
         render::{ReadValue, Reads},
     };
 
@@ -109,6 +112,10 @@ mod tests {
     #[kithara::test]
     fn library_contract_dividers_are_invisible_full_height_resizable_handles() {
         let skin = crate::builtin::skin();
+        let table = TableMetrics {
+            skin,
+            frame: TableFrame::new(0.0, 0.0, true),
+        };
         let columns = column_layouts(
             (
                 &[
@@ -116,7 +123,7 @@ mod tests {
                     column("title", 180.0, true),
                     column("artist", 200.0, false),
                 ],
-                true,
+                Some("width"),
             ),
             &ColumnReads(None),
             None,
@@ -131,7 +138,7 @@ mod tests {
             },
             &columns,
             0.0,
-            skin,
+            table,
         );
         assert_eq!(dividers.len(), 2);
         assert_eq!(dividers[1].column.id(), "artist");
@@ -157,7 +164,7 @@ mod tests {
                 x: 0.0,
                 y: 0.0,
             };
-            let before = table_dividers(bounds, &columns, 0.0, skin);
+            let before = table_dividers(bounds, &columns, 0.0, table);
             let divider = before
                 .iter()
                 .find(|divider| divider.column.id() == id)
@@ -203,7 +210,7 @@ mod tests {
                 .find(|column| column.column.id() == id)
                 .unwrap()
                 .width = outcome.value().unwrap();
-            let after = table_dividers(bounds, &resized, 0.0, skin);
+            let after = table_dividers(bounds, &resized, 0.0, table);
             let after = after
                 .iter()
                 .find(|divider| divider.column.id() == id)
@@ -224,7 +231,7 @@ mod tests {
                 },
                 &fixed,
                 0.0,
-                skin
+                table
             )
             .is_empty()
         );

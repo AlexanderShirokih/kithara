@@ -97,7 +97,7 @@ impl HostedControl {
                 &plan.path,
                 plan.columns(),
                 plan.row_count(),
-                plan.picture.borrow().skin(),
+                plan.picture.borrow().metrics(),
                 Rc::clone(&plan.viewport_width),
             ))),
             _ => None,

@@ -9,7 +9,7 @@ use crate::{
     draw::Rect,
     expand::Binding,
     ids::InternId,
-    mount::{self, SearchField},
+    mount,
     render::{
         InputOwner, Published, ReadValue, Skin, Tree, Widget, controls::Paint, document::Ctx,
         scope_picker, vis,
@@ -70,16 +70,15 @@ pub(super) fn table<'a>(cx: &Cx<'a, '_, '_>, table: &mount::Table<'_>) -> Elemen
     let state = table
         .columns_state
         .map(|binding| (cx.ctx.ui.resolve(binding.id), cx.ctx.scope(Some(binding))));
-    let columns = column_layouts((table.columns, table.resizable), &cx.ctx, state, cx.skin);
+    let columns = column_layouts(
+        (table.columns, cx.ctx.endpoint(table.width)),
+        &cx.ctx,
+        state,
+        cx.skin,
+    );
     let rows = rows.iter().map(TableRowData::from).collect();
-    let status = table.status.and_then(|binding| cx.ctx.read(binding));
-    let status = match status {
-        Some(ReadValue::Text(text)) => text,
-        _ => "",
-    };
-    let face = crate::atoms::table::face::TableFace::new(rows, columns, cx.skin)
-        .with_layout(table.padding_left, table.padding_right, table.footer)
-        .with_status(status);
+    let face = crate::atoms::table::face::TableFace::new(rows, columns, cx.skin, table.frame)
+        .with_status(table.status.and_then(|binding| cx.ctx.read(binding)));
     crate::render::table(cx.path, face, cx.owner)
 }
 
@@ -91,8 +90,8 @@ pub(super) fn tree<'a>(
     skin: &'a Skin,
     owner: InputOwner,
 ) -> Element<'a, Published> {
-    let query = tree.search_field().map(|SearchField { query }| {
-        query
+    let query = tree.search.then(|| {
+        tree.query
             .and_then(|binding| ctx.read(binding))
             .and_then(|value| match value {
                 ReadValue::Text(query) => Some(query),

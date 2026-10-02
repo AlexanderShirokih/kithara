@@ -121,7 +121,7 @@ mod tests {
     struct Fixture {
         eq_mode: EqMode,
         library: Library,
-        bpms: std::collections::BTreeMap<String, String>,
+        bpms: std::collections::BTreeMap<String, f64>,
         mix: MixState,
         modules: Modules,
         stage: StageView,
@@ -250,14 +250,14 @@ mod tests {
 
         assert!(walk.get("library.tree").is_some());
         assert!(
-            walk.get(&format!("source.status@source={}", Probe::PAGE.id))
+            walk.get(&format!("source.status@source={}", Probe::ID))
                 .is_some()
         );
         assert!(walk.get("source.rows@source=startup").is_some());
         assert_eq!(calls.borrow().rows, 0, "nothing read the probe's rows");
 
         assert!(
-            walk.get(&format!("source.rows@source={}", Probe::PAGE.id))
+            walk.get(&format!("source.rows@source={}", Probe::ID))
                 .is_some()
         );
         assert_eq!(calls.borrow().rows, 1);
@@ -554,9 +554,7 @@ mod tests {
         let mut fixture = Fixture::new(["0", "0"]);
         let known = crate::analysis::fixtures::grid().artifact().bpm();
         assert_eq!(known, 128.0);
-        fixture
-            .bpms
-            .insert("dropped.mp3".to_owned(), format!("{known:.2}"));
+        fixture.bpms.insert("dropped.mp3".to_owned(), known);
         let root = fixture.root(&[]);
         let walk = Walk::new(&root);
         let Some(ReadValue::Table(rows)) = walk.get("source.rows@source=startup") else {
@@ -568,7 +566,7 @@ mod tests {
                 .iter()
                 .find(|cell| cell.id() == "bpm")
                 .map(|cell| cell.value()),
-            Some(::kithara::ui::render::TableValue::Text("128.00"))
+            Some(&::kithara::ui::render::TableValue::Text("128.00".into()))
         );
     }
 }

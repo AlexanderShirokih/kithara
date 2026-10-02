@@ -1289,38 +1289,6 @@
   <require os> linux
   <require tools> cargo just
   just deps machete
-# linux-arch / branch
-  <require os> linux
-  <require tools> cargo just
-  just lint arch
-# linux-arch / platforms
-  <require os> linux
-  <require tools> cargo just
-  just lint arch
-# linux-arch / merge-request
-  <require os> linux
-  <require tools> cargo just
-  just lint arch
-# linux-arch / quarantine
-  <require os> linux
-  <require tools> cargo just
-  just lint arch
-# linux-arch / main
-  <require os> linux
-  <require tools> cargo just
-  just lint arch
-# linux-arch / nightly
-  <require os> linux
-  <require tools> cargo just
-  just lint arch
-# linux-arch / weekly
-  <require os> linux
-  <require tools> cargo just
-  just lint arch
-# linux-arch / release
-  <require os> linux
-  <require tools> cargo just
-  just lint arch
 # linux-broadcast / branch
   <require os> linux
   <require tools> cargo just sccache

@@ -81,17 +81,17 @@ pub struct Badge<'a> {
 }
 
 /// Borrowed value in one renderer-facing table cell.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum TableValue<'a> {
     Empty,
     Number(u8),
-    Text(&'a str),
+    Text(Cow<'a, str>),
     Badges(&'a [Badge<'a>]),
 }
 
 /// A table cell addressed by the document column id.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TableCell<'a> {
     id: &'a str,
     value: TableValue<'a>,
@@ -128,16 +128,16 @@ impl<'a> TableCell<'a> {
     }
 
     #[must_use]
-    pub const fn text(id: &'a str, value: &'a str) -> Self {
+    pub fn text<T: Into<Cow<'a, str>>>(id: &'a str, value: T) -> Self {
         Self {
             id,
-            value: TableValue::Text(value),
+            value: TableValue::Text(value.into()),
         }
     }
 
     #[must_use]
-    pub const fn value(&self) -> TableValue<'a> {
-        self.value
+    pub const fn value(&self) -> &TableValue<'a> {
+        &self.value
     }
 }
 

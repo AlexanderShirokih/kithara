@@ -3,6 +3,7 @@ use std::{f32::consts::PI, ops::Range};
 use num_traits::ToPrimitive;
 
 use crate::{
+    atoms::icon::mark::Marked,
     draw::{DrawList, DrawListBuilder, Pt, Rect, Rgba, TRANSPARENT, Transform},
     module::IconName,
     render::{Skin, TreeRow},
@@ -212,18 +213,17 @@ impl Row {
             Some(false) => IconName::ChevronRight,
             None => return,
         };
-        let Some(glyph) = icon.lucide_glyph() else {
+        let Some(mark) = icon.mark() else {
             return;
         };
-        let content = glyph.to_string();
-        let run = text.shape_lucide(&content, skin.tree.chevron_size);
-        list.text(
-            &run,
-            &content,
-            Transform::translate(Pt {
-                x: x + (skin.tree.chevron_width - run.width()) / 2.0,
-                y: bounds.y + (bounds.h - run.height()) / 2.0,
-            }),
+        Marked::new(mark, skin.tree.chevron_size).centred(
+            list,
+            text,
+            Rect {
+                x,
+                w: skin.tree.chevron_width,
+                ..bounds
+            },
             skin.rgba(skin.tree.chevron_color),
         );
     }

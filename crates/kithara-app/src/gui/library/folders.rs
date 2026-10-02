@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use kithara::platform::{thread, tokio::sync::mpsc::UnboundedSender};
-use rfd::FileDialog;
+use kithara::platform::tokio::{runtime::Handle, sync::mpsc::UnboundedSender, task};
+use rfd::AsyncFileDialog;
 use tracing::debug;
 
 use super::explorer::Found;
@@ -26,21 +26,24 @@ impl MusicFolders {
 #[derive(Clone)]
 pub(in crate::gui) struct FolderPicker {
     found: UnboundedSender<Found>,
+    runtime: Handle,
 }
 
 impl FolderPicker {
-    pub(super) const fn new(found: UnboundedSender<Found>) -> Self {
-        Self { found }
+    pub(super) const fn new(found: UnboundedSender<Found>, runtime: Handle) -> Self {
+        Self { found, runtime }
     }
 
     pub(in crate::gui) fn open(&self) {
         let picker = self.clone();
-        drop(thread::spawn_named(
-            "kithara-app-folder-picker",
-            move || {
-                picker.picked(FileDialog::new().pick_folder());
-            },
-        ));
+        drop(task::spawn_on(&self.runtime, async move {
+            picker.picked(
+                AsyncFileDialog::new()
+                    .pick_folder()
+                    .await
+                    .map(|folder| folder.path().to_path_buf()),
+            );
+        }));
     }
 
     pub(in crate::gui::library) fn picked(&self, folder: Option<PathBuf>) {

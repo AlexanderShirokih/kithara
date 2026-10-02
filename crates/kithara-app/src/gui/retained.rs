@@ -207,10 +207,16 @@ mod library {
     };
 
     fn studio() -> Studio {
+        let runtime = test_fixture::runtime();
         let config = test_fixture::config();
         let snapshots = Arc::new(ArcSwap::from_pointee(EngineSnapshot::unpublished()));
         let (commands, _receiver) = mpsc::unbounded_channel();
-        Studio::new(test_fixture::boot(&config, snapshots, commands))
+        Studio::new(test_fixture::boot(
+            runtime.handle(),
+            &config,
+            snapshots,
+            commands,
+        ))
     }
 
     fn mounted(check: impl FnOnce(&mut Ui<'_, Studio>)) {

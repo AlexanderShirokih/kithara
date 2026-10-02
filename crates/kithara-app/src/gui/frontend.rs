@@ -1,8 +1,6 @@
 use std::{error::Error, path::Path};
 
 use arc_swap::ArcSwap;
-#[cfg(target_arch = "wasm32")]
-use iced::window::settings::PlatformSpecific;
 use iced::{Size, window::Settings};
 use kithara::{
     platform::{
@@ -65,7 +63,7 @@ pub(crate) fn window_settings(min: Size) -> Settings {
         exit_on_close_request: false,
         transparent: true,
         #[cfg(target_arch = "wasm32")]
-        platform_specific: PlatformSpecific {
+        platform_specific: iced::window::settings::PlatformSpecific {
             target: Some("kithara".to_owned()),
         },
         ..Settings::default()
@@ -94,16 +92,18 @@ impl Boot {
         palette: Palette,
         snapshots: Arc<ArcSwap<EngineSnapshot>>,
         commands: UnboundedSender<Envelope>,
+        #[cfg(not(target_arch = "wasm32"))] runtime: kithara::platform::tokio::runtime::Handle,
         #[builder(default)] chrome_hidden: bool,
     ) -> Result<Self, FrontendError> {
         #[cfg(not(target_arch = "wasm32"))]
-        let (explorer, picker) = super::library::Explorer::registered(std::env::home_dir());
+        let (explorer, picker) =
+            super::library::Explorer::registered(std::env::home_dir(), runtime);
         let registered = vec![
             StartupSource::registered(tracks),
             #[cfg(not(target_arch = "wasm32"))]
             explorer,
         ];
-        let package = Package::load(package, &PagesModule::new(&registered))?;
+        let package = Package::load(package, PagesModule::new(&registered).into())?;
         let library = Library::new(registered, package.text())?;
         let mut ui = AppUi::new(package, settings)?;
         ui.cache.window.set_chrome_hidden(chrome_hidden);
@@ -136,12 +136,14 @@ mod tests {
     fn booted(chrome_hidden: bool) -> Kithara {
         let snapshots = Arc::new(ArcSwap::from_pointee(EngineSnapshot::unpublished()));
         let (commands, _) = mpsc::unbounded_channel();
+        let runtime = test_fixture::runtime();
         let boot = Boot::builder()
             .settings(&UiConfig::default())
             .tracks(Vec::new())
             .palette(Palette::default())
             .snapshots(snapshots)
             .commands(commands)
+            .runtime(runtime.handle().clone())
             .chrome_hidden(chrome_hidden)
             .build()
             .unwrap();
@@ -154,7 +156,11 @@ mod tests {
         let (package, library) =
             test_fixture::mount(None, vec![StartupSource::registered(Vec::new())])
                 .expect("the startup source mounts");
-        let picker = crate::gui::library::Explorer::registered(None).1;
+        let picker = crate::gui::library::Explorer::registered(
+            None,
+            test_fixture::runtime().handle().clone(),
+        )
+        .1;
         let (commands, _) = mpsc::unbounded_channel();
         let boot = Boot {
             ui: AppUi::new(package, &UiConfig::default()).expect("the shipped UI compiles"),

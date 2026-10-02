@@ -13,7 +13,7 @@ use crate::{
         bar::context::Context,
         table::{
             ColumnLayout, TableRowData, column_layouts, column_resizable, column_resize_track,
-            face::TableFace, minimum_table_width, table_content_height,
+            empty_bounds, face::TableFace, table_content_height,
         },
         tree::face::Tree,
         wave::zoom_math::{Zoom, window_bounds, zoom_for_wheel},
@@ -24,7 +24,7 @@ use crate::{
     ids::InternId,
     interact::{CursorShape, Hit, Hover, ScrollAxis, recognizers::WheelStep},
     module::{FaderStyle, TableColumn, WaveStyle},
-    mount::{self, SearchField},
+    mount,
     render::{
         ReadValue, Skin, TableRow, TreeRow, document::Ctx, model::derived, picker_selected_index,
         text_input_layout,
@@ -399,10 +399,8 @@ impl HostedControlPlan {
                     columns,
                     columns_state,
                     status,
-                    footer,
-                    padding_left,
-                    padding_right,
-                    resizable,
+                    frame,
+                    width,
                 },
                 value,
             ) => {
@@ -410,10 +408,8 @@ impl HostedControlPlan {
                     columns,
                     columns_state: columns_state.as_ref(),
                     status: status.as_ref(),
-                    footer: *footer,
-                    padding_left: *padding_left,
-                    padding_right: *padding_right,
-                    resizable: *resizable,
+                    frame: *frame,
+                    width: width.as_ref(),
                 };
                 let rows = match value {
                     Some(ReadValue::Table(rows)) => rows,
@@ -478,9 +474,8 @@ fn tree_plan(
     cx: Resolving<'_>,
 ) -> TreePlan {
     let Resolving { ctx, skin } = cx;
-    let search = tree.search_field();
-    let query_text = search.map(|SearchField { query }| {
-        query
+    let query_text = tree.search.then(|| {
+        tree.query
             .and_then(|binding| ctx.read(binding))
             .and_then(|value| match value {
                 ReadValue::Text(query) => Some(query),
@@ -491,7 +486,7 @@ fn tree_plan(
     let plan = TreePlan {
         path: path.to_owned(),
         picture: Rc::new(RefCell::new(Tree::new(rows, query_text, skin))),
-        search_path: search.map(|_| format!("{path}/search")),
+        search_path: tree.search.then(|| format!("{path}/search")),
         toggle_path: tree.toggle.then(|| format!("{path}/toggle")),
         #[cfg(feature = "masonry")]
         state: TreeState::default(),
@@ -499,9 +494,9 @@ fn tree_plan(
     #[cfg(feature = "masonry")]
     plan.bind_source(TreeSource::new(
         _read.map(|binding| ctx.ui.resolve(binding.key).to_owned()),
-        search.map(|SearchField { query }| SearchField {
-            query: query.map(|binding| ctx.ui.resolve(binding.key).to_owned()),
-        }),
+        tree.search,
+        tree.query
+            .map(|binding| ctx.ui.resolve(binding.key).to_owned()),
     ));
     plan
 }
@@ -626,12 +621,7 @@ impl TablePlan {
         let row_count = picture.rows().len();
         descriptors.push(Descriptor::scroll(
             self.horizontal_path.clone(),
-            ScrollConfig::plain(
-                ScrollAxis::Horizontal,
-                minimum_table_width(columns)
-                    + picture.skin().table.padding_left
-                    + picture.skin().table.padding_right,
-            ),
+            ScrollConfig::plain(ScrollAxis::Horizontal, picture.metrics().width(columns)),
         ));
         descriptors.push(Descriptor::scroll(
             self.path.clone(),
@@ -654,7 +644,7 @@ impl TablePlan {
             descriptors.push(Descriptor::column_divider(
                 divider_path.to_owned(),
                 column.width,
-                column_resize_track(columns, index, self.viewport_width.get(), picture.skin()),
+                column_resize_track(columns, index, self.viewport_width.get(), picture.metrics()),
             ));
         }
     }
@@ -689,24 +679,19 @@ impl TablePlan {
         let state = table
             .columns_state
             .map(|binding| (ctx.ui.resolve(binding.id), ctx.scope(Some(binding))));
-        let columns = column_layouts((table.columns, table.resizable), &ctx, state, skin);
+        let columns = column_layouts(
+            (table.columns, ctx.endpoint(table.width)),
+            &ctx,
+            state,
+            skin,
+        );
         let rows = rows.iter().map(TableRowData::from).collect();
-        let status = table.status.and_then(|binding| ctx.read(binding));
-        let status = match status {
-            Some(ReadValue::Text(text)) => text,
-            _ => "",
-        };
-        let picture = TableFace::new(rows, columns, skin)
-            .with_layout(table.padding_left, table.padding_right, table.footer)
-            .with_status(status);
+        let picture = TableFace::new(rows, columns, skin, table.frame)
+            .with_status(table.status.and_then(|binding| ctx.read(binding)));
         let plan = Self::new(path, picture);
         #[cfg(feature = "masonry")]
-        plan.bind_source(TableSource::new(
-            table,
-            state.map(|(prefix, scope)| (prefix.to_owned(), scope.to_owned())),
-            _read.map(|binding| ctx.ui.resolve(binding.key).to_owned()),
-            ctx.endpoint(table.status).map(str::to_owned),
-        ));
+        plan.bind_source(TableSource::new(table, ctx, _read));
+
         plan
     }
 
@@ -717,15 +702,6 @@ impl TablePlan {
     #[cfg(feature = "masonry")]
     fn carried(&self, index: usize) -> Option<crate::render::Carried> {
         self.picture.borrow().carried(index)
-    }
-}
-
-pub(super) const fn empty_bounds(bounds: Rect) -> Rect {
-    Rect {
-        x: bounds.x,
-        y: bounds.y,
-        w: 0.0,
-        h: 0.0,
     }
 }
 
@@ -849,7 +825,7 @@ mod tests {
                 panic!("the page resolves a table")
             };
             let picture = plan.picture.borrow();
-            let body = table_body(bounds, picture.skin());
+            let body = table_body(bounds, picture.metrics());
             assert_eq!(picture.skin().table.primary_text, skin.table.primary_text);
             assert_eq!(skin.table.primary_text.size, 12.0);
             assert_eq!(body.y + body.h, bounds.h - skin.table.grid_gap);
@@ -935,7 +911,7 @@ mod tests {
                     picture.columns(),
                     20,
                     0.0,
-                    picture.skin(),
+                    picture.metrics(),
                 )
                 .expect("rows overflow");
                 assert!(time_right < rail.x);

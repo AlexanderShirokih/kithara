@@ -134,10 +134,8 @@ mod table_projection {
             ],
             columns_state: None,
             status: None,
-            footer: true,
-            padding_left: 0.0,
-            padding_right: 0.0,
-            resizable: true,
+            frame: crate::module::TableFrame::new(0.0, 0.0, true),
+            width: None,
         };
         let cx = Resolving {
             skin,

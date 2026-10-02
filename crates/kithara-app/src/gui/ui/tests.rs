@@ -1588,7 +1588,7 @@ fn the_pages_module_lists_exactly_the_registered_sources() {
             for layout in LAYOUTS {
                 let ui = compile_package(&package, layout).expect("the mounted pages compile");
                 let controls = controls(&ui);
-                for (source, registered) in [("startup", true), (Probe::PAGE.id, with_probe)] {
+                for (source, registered) in [("startup", true), (Probe::ID, with_probe)] {
                     let scoped = format!("@source={source}");
                     let hidden = format!("library.page.hidden{scoped}");
                     let guarded = guarded_by(&ui, &hidden);
@@ -2141,5 +2141,38 @@ mod answered {
             unanswered.is_empty(),
             "the app leaves these declared writes unanswered: {unanswered:?}"
         );
+    }
+}
+
+#[kithara::test]
+fn a_source_supplies_its_own_control_tree() {
+    use ::kithara::ui::{ids::NodeId, module::ControlNode};
+
+    use crate::gui::library::{Registration, SourcePage};
+
+    let source = Registration::new(
+        SourcePage {
+            id: Probe::ID,
+            page: ControlNode::Spacer {
+                id: NodeId("custom-page".to_owned()),
+                size: None,
+                read: None,
+                write: None,
+            },
+        },
+        |text| Probe::registered("menu.module.library").0.build(text),
+    );
+    let (package, _) =
+        test_fixture::mount(None, vec![source]).expect("a source mounts without a page template");
+    for layout in LAYOUTS {
+        let ui = compile_package(&package, layout).expect("the custom source page compiles");
+        let mut found = false;
+        each_node(&ui, &mut |node| {
+            if let ExpandedNode::Control { path, spec, .. } = node {
+                found |= ui.resolve(*path).ends_with("custom-page")
+                    && matches!(spec, ControlSpec::Spacer);
+            }
+        });
+        assert!(found, "the source's node must survive package compilation");
     }
 }

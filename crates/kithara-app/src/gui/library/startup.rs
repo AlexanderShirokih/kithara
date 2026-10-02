@@ -2,7 +2,6 @@ use kithara::ui::{error::UiDocError, module::IconName, render::TableRow, text::T
 
 use super::{
     BranchNode, LibrarySource, PageStatus, Registration, SourcePage,
-    consts::SOURCE_PAGE,
     track::{Track, display_name},
     worded,
 };
@@ -17,13 +16,12 @@ pub(in crate::gui) struct StartupSource {
 
 impl StartupSource {
     const COLLECTION: &str = "collection";
-    const PAGE: SourcePage = SourcePage {
-        id: "startup",
-        page: SOURCE_PAGE,
-    };
+    const ID: &'static str = "startup";
 
     pub(in crate::gui) fn registered(urls: Vec<String>) -> Registration {
-        Registration::new(Self::PAGE, move |text| Ok(Box::new(Self::new(urls, text)?)))
+        Registration::new(SourcePage::table(Self::ID), move |text| {
+            Ok(Box::new(Self::new(urls, text)?))
+        })
     }
 
     pub(in crate::gui) fn new(urls: Vec<String>, text: &TextDoc) -> Result<Self, UiDocError> {
@@ -33,10 +31,10 @@ impl StartupSource {
                 tracks.push(Track::new(display_name(&url), url));
             }
         }
-        let label = worded(text, "library.source.startup", Self::PAGE.id)?;
-        let mut startup = BranchNode::new(Self::PAGE.id, label, IconName::Playlist);
+        let label = worded(text, "library.source.startup", Self::ID)?;
+        let mut startup = BranchNode::new(Self::ID, label, IconName::Playlist);
         startup.count = u32::try_from(tracks.len()).ok();
-        let label = worded(text, "library.source.collection", Self::PAGE.id)?;
+        let label = worded(text, "library.source.collection", Self::ID)?;
         let mut branch = BranchNode::new(Self::COLLECTION, label, IconName::Disc);
         branch.children = vec![startup];
         Ok(Self {
@@ -48,6 +46,13 @@ impl StartupSource {
 }
 
 impl LibrarySource for StartupSource {
+    fn analysis_key(&self, row: usize) -> Option<&str> {
+        self.listing
+            .then(|| self.tracks.get(row))
+            .flatten()
+            .map(Track::analysis_key)
+    }
+
     fn branch(&self) -> &BranchNode {
         &self.branch
     }
@@ -55,7 +60,7 @@ impl LibrarySource for StartupSource {
     fn expand(&mut self, _node: &str) {}
 
     fn id(&self) -> &str {
-        Self::PAGE.id
+        Self::ID
     }
 
     fn rows(&self, selected: Option<&str>) -> Vec<TableRow<'_>> {
@@ -76,7 +81,7 @@ impl LibrarySource for StartupSource {
     }
 
     fn select(&mut self, node: &str) {
-        self.listing = node == Self::PAGE.id;
+        self.listing = node == Self::ID;
     }
 
     fn status(&self) -> PageStatus {

@@ -68,7 +68,7 @@ fn selected<'a>(tree: &[TreeRow<'a>]) -> Vec<&'a str> {
 fn shown(library: &Library) -> [Option<bool>; 2] {
     [
         library.page_hidden("startup").map(|hidden| !hidden),
-        library.page_hidden(Probe::PAGE.id).map(|hidden| !hidden),
+        library.page_hidden(Probe::ID).map(|hidden| !hidden),
     ]
 }
 
@@ -149,7 +149,7 @@ fn expanding_a_node_tells_its_source_and_collapsing_does_not() {
     library.toggle(3);
     library.toggle(2);
 
-    assert_eq!(calls.borrow().expanded, [Probe::PAGE.id, "crate"]);
+    assert_eq!(calls.borrow().expanded, [Probe::ID, "crate"]);
     assert!(
         calls.borrow().selected.is_empty(),
         "an expand selects nothing"
@@ -197,7 +197,8 @@ fn explorer_refuses_a_catalog_missing_any_of_its_labels() {
             .filter(|(key, _)| *key != missing)
             .collect();
         let catalog = catalog(&[worded.as_slice(), STATUSES.as_slice()].concat());
-        let (explorer, _) = super::Explorer::registered(None);
+        let (explorer, _) =
+            super::Explorer::registered(None, crate::gui::test_fixture::runtime().handle().clone());
 
         assert!(
             explorer.build(&catalog).is_err(),
@@ -283,7 +284,7 @@ mod startup {
                 .map(TableCell::value)
         };
         let title = match cell("title") {
-            Some(TableValue::Text(title)) => Some(title.to_owned()),
+            Some(TableValue::Text(title)) => Some(title.to_string()),
             _ => None,
         };
         Listed {
@@ -726,4 +727,20 @@ fn library_followup_source_roots_start_expanded() {
         .collect::<Vec<_>>();
     assert_eq!(roots, [Some(true), Some(true)]);
     assert_eq!(selected(&library.tree()), ["Startup"]);
+}
+
+#[cfg(unix)]
+#[kithara::test]
+fn folder_listing_skips_broken_media_links_and_follows_directory_links() {
+    let dir = kithara_test_utils::temp_dir();
+    let target = dir.path().join("target");
+    std::fs::create_dir(&target).unwrap();
+    let linked = dir.path().join("linked");
+    std::os::unix::fs::symlink(&target, &linked).unwrap();
+    std::os::unix::fs::symlink(dir.path().join("missing"), dir.path().join("ghost.mp3")).unwrap();
+    let super::listing::Listing::Listed(folder) = super::listing::list(dir.path()) else {
+        panic!("fixture is readable");
+    };
+    assert!(folder.folders.contains(&linked));
+    assert!(folder.tracks.is_empty());
 }

@@ -1,5 +1,11 @@
+use std::collections::BTreeMap;
+
 use kithara::ui::{
-    error::UiDocError, ids::SourceUri, module::IconName, render::TableRow, text::TextDoc,
+    error::UiDocError,
+    ids::{NodeId, SourceUri},
+    module::{ControlNode, IconName},
+    render::TableRow,
+    text::TextDoc,
 };
 
 use super::PagesModule;
@@ -10,11 +16,23 @@ pub(in crate::gui) mod consts {
 }
 
 /// A source's id and page module, known before the source is built.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(in crate::gui) struct SourcePage {
     pub(in crate::gui) id: &'static str,
-    /// Relative to the package root.
-    pub(in crate::gui) page: &'static str,
+    pub(in crate::gui) page: ControlNode,
+}
+
+impl SourcePage {
+    pub(in crate::gui) fn table(id: &'static str) -> Self {
+        Self {
+            id,
+            page: ControlNode::Include {
+                id: NodeId(format!("{id}-page")),
+                source: consts::SOURCE_PAGE.to_owned(),
+                with: BTreeMap::from([("source".to_owned(), id.to_owned())]),
+            },
+        }
+    }
 }
 
 /// Builds a registered source from the package's text catalog.
@@ -50,6 +68,8 @@ impl Registration {
 
 /// One branch of the library tree and the page its nodes show.
 pub(in crate::gui) trait LibrarySource {
+    fn analysis_key(&self, row: usize) -> Option<&str>;
+
     fn branch(&self) -> &BranchNode;
 
     fn expand(&mut self, node: &str);

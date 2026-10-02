@@ -822,9 +822,9 @@ where
                     };
                     moved |= self.root.edit_widget(*id, |mut widget| {
                         let mut node = widget.downcast::<Node>();
-                        let emptied = node.widget.text_is_empty();
+                        let before = node.widget.text_size();
                         let shown = node.widget.show_live(&value);
-                        if shown && node.widget.text_is_empty() != emptied {
+                        if shown && node.widget.text_size() != before {
                             node.ctx.request_layout();
                         } else if shown {
                             node.ctx.request_paint_only();

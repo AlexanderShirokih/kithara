@@ -7,7 +7,8 @@ use crate::{
     module::{
         BindingRef, ButtonStyle, ChipStyle, ChromeStyle, ControlNode, DeckSummaryStyle, FaderStyle,
         GlyphStyle, IconName, MeasureAxis, Motion, PopoverAlign, PopoverAt, Pose, ScalarFormat,
-        TableColumn, TextAlign, TextStyle, Tone, ViewSet, WaveStyle, WindowControlsStyle,
+        TableColumn, TableFrame, TextAlign, TextStyle, Tone, ViewSet, WaveStyle,
+        WindowControlsStyle,
     },
     shader::ShaderSpec,
     size::{BlockNode, SizeSpec},
@@ -239,10 +240,8 @@ pub enum ControlSpec {
         columns: Vec<TableColumn>,
         columns_state: Option<Binding>,
         status: Option<Binding>,
-        footer: bool,
-        padding_left: f32,
-        padding_right: f32,
-        resizable: bool,
+        frame: TableFrame,
+        width: Option<Binding>,
     },
     Tree {
         query: Option<Binding>,

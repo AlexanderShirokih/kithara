@@ -3,9 +3,10 @@ use std::cell::RefCell;
 use iced::{
     Element, Event, Rectangle, Renderer, Theme,
     advanced::widget::{Id, Operation},
-    mouse::{self, Cursor, Interaction},
+    mouse::{Cursor, Interaction},
     widget::canvas::{self, Action, Frame, Geometry},
 };
+use kithara_platform::time::Instant;
 use num_traits::ToPrimitive;
 
 use super::{RetainedCanvas, RetainedCanvasState, snapped};
@@ -13,8 +14,8 @@ use crate::{
     atoms::tree::face::Tree,
     backends::replay_ordered,
     draw::Rect,
-    engine::{ScrollConfig, ScrollState},
-    interact::{Outcome, ScrollAxis, iced as iced_interact},
+    engine::{Component, ItemComponent, ScrollConfig, ScrollState},
+    interact::{Hit, ScrollAxis, iced as iced_interact},
     render::{InputOwner, Published, index},
     shaping::TextContext,
 };
@@ -76,22 +77,6 @@ struct TreeProgram {
     picture: Tree,
 }
 
-impl TreeProgram {
-    fn chevron(&self, offset: f32, bounds: Rectangle, cursor: Cursor) -> Option<usize> {
-        let point = cursor.position_in(bounds)?.into();
-        let viewport = Rect {
-            h: bounds.height,
-            w: bounds.width,
-            x: 0.0,
-            y: 0.0,
-        };
-        self.picture
-            .toggle_regions(viewport, offset)
-            .into_iter()
-            .find_map(|(index, chevron)| chevron.contains(point).then_some(index))
-    }
-}
-
 impl canvas::Program<Published> for TreeProgram {
     type State = TreeState;
 
@@ -140,13 +125,39 @@ impl canvas::Program<Published> for TreeProgram {
             self.picture.skin().tree.row_height,
             self.picture.skin().tree.scrollbar_margin + self.picture.skin().tree.scrollbar_width,
         );
-        if let (Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)), Some(toggle)) =
-            (event, &self.toggle)
-            && let Some(row) = self.chevron(state.scroll.offset(), bounds, cursor)
-        {
-            return index(toggle, Outcome::set(row));
-        }
         let input = iced_interact::input(event)?;
+        if let Some(toggle) = &self.toggle {
+            let next =
+                ItemComponent::new(toggle.clone(), self.path.clone(), self.picture.row_count());
+            let item = match state.toggle.take() {
+                Some(item) => item.reconcile(next),
+                None => next,
+            };
+            state.toggle = Some(item);
+            let point = cursor.position_in(bounds).map(Into::into);
+            let viewport = Rect {
+                h: bounds.height,
+                w: bounds.width,
+                x: 0.0,
+                y: 0.0,
+            };
+            let under = self
+                .picture
+                .toggle_regions(viewport, state.scroll.offset())
+                .into_iter()
+                .find(|(_, rect)| Hit::new(point, *rect).over());
+            let (row, hit) = under.map_or_else(
+                || (None, crate::atoms::table::empty_bounds(viewport)),
+                |(row, hit)| (Some(row), hit),
+            );
+            if let Some(item) = &mut state.toggle {
+                let (outcome, child) =
+                    item.handle(input, &Hit::new(point, hit), row, Instant::now());
+                if let Some(action) = crate::render::engine(toggle, child, outcome) {
+                    return Some(action);
+                }
+            }
+        }
         let before = state.scroll.offset();
         let outcome = state
             .scroll
@@ -212,6 +223,7 @@ fn geometry(
 struct TreeState {
     text: RefCell<Option<TextContext>>,
     scroll: ScrollState,
+    toggle: Option<ItemComponent>,
     path: String,
 }
 
@@ -303,12 +315,13 @@ fn hovered_row(
 
 #[cfg(test)]
 mod tests {
+    use iced::mouse;
     use kithara_test_utils::kithara;
 
     use super::*;
     use crate::{
         builtin,
-        interact::{Input, PointerPhase, mouse as mouse_input},
+        interact::{Input, Outcome, PointerPhase, mouse as mouse_input},
         module::IconName,
         render::TreeRow,
     };

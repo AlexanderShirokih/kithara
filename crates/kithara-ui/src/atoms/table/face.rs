@@ -1,15 +1,17 @@
+use std::borrow::Cow;
+
 use num_traits::ToPrimitive;
 
 use crate::{
     atoms::table::{
-        BadgeLetter, ColumnLayout, Table, TableCell, TableRow, TableRowData, table_body,
-        table_content_height, table_content_width, table_dividers, table_overflows,
-        table_row_pitch, table_row_rect, table_vertical_scrollbar_rect,
+        BadgeLetter, ColumnLayout, Table, TableCell, TableMetrics, TableRow, TableRowData,
+        column_cells, table_body, table_content_height, table_content_width, table_dividers,
+        table_overflows, table_row_pitch, table_row_rect, table_vertical_scrollbar_rect,
     },
     draw::{DrawList, DrawListBuilder, Pt, Rect, Transform},
     interact::ScrollAxis,
-    module::TableColumnStyle,
-    render::{Carried, Skin},
+    module::{TableColumnStyle, TableFrame},
+    render::{Carried, ReadValue, Skin},
     shaping::TextContext,
     skin::{FrameSkin, TextRoleSkin},
 };
@@ -19,6 +21,7 @@ use crate::{
 pub(crate) struct TableFace {
     #[field(get, vis = "pub(crate)")]
     skin: Skin,
+    frame: TableFrame,
     table: Table<ColumnLayout>,
     status: String,
 }
@@ -45,7 +48,12 @@ impl TableFace {
         Some(Carried { data, label })
     }
 
-    pub(crate) fn new(rows: Vec<TableRowData>, columns: Vec<ColumnLayout>, skin: &Skin) -> Self {
+    pub(crate) fn new(
+        rows: Vec<TableRowData>,
+        columns: Vec<ColumnLayout>,
+        skin: &Skin,
+        frame: TableFrame,
+    ) -> Self {
         let rows = rows
             .into_iter()
             .map(|row| {
@@ -61,34 +69,30 @@ impl TableFace {
             .collect();
         Self {
             table: Table::new(columns, rows),
+            frame,
             skin: skin.clone(),
             status: String::new(),
         }
     }
 
-    pub(crate) fn with_layout(
-        mut self,
-        padding_left: f32,
-        padding_right: f32,
-        footer: bool,
-    ) -> Self {
-        self.skin.table.padding_left = padding_left.max(0.0);
-        self.skin.table.padding_right = padding_right.max(0.0);
-        if !footer {
-            self.skin.table.footer_height = 0.0;
+    pub(crate) fn with_status(mut self, status: Option<ReadValue<'_>>) -> Self {
+        if let Some(ReadValue::Text(status)) = status {
+            status.clone_into(&mut self.status);
         }
         self
     }
 
-    pub(crate) fn with_status(mut self, status: &str) -> Self {
-        self.status = status.to_owned();
-        self
+    pub(crate) fn metrics(&self) -> TableMetrics<'_> {
+        TableMetrics {
+            skin: &self.skin,
+            frame: self.frame,
+        }
     }
 
     pub(crate) fn commands(&self, text: &mut TextContext, bounds: Rect, drawn: &Drawn) -> DrawList {
-        let overflowing = table_overflows(&drawn.columns, bounds.w, &self.skin);
+        let overflowing = table_overflows(&drawn.columns, bounds.w, self.metrics());
         let horizontal = if overflowing { drawn.horizontal } else { 0.0 };
-        let content_width = table_content_width(&drawn.columns, bounds.w, &self.skin);
+        let content_width = table_content_width(&drawn.columns, bounds.w, self.metrics());
         let mut content = DrawListBuilder::default();
         content.fill_rect(
             Rect {
@@ -107,7 +111,7 @@ impl TableFace {
             (drawn.hovered, drawn.pressed),
             &drawn.columns,
         );
-        if self.skin.table.footer_height > 0.0 {
+        if self.metrics().footer_height() > 0.0 {
             paint_footer(self, &mut content, text, bounds, horizontal, &drawn.columns);
         }
         paint_vertical_scrollbar(
@@ -138,13 +142,13 @@ impl TableFace {
         columns: &[ColumnLayout],
     ) {
         let (horizontal, vertical) = offsets;
-        let body = table_body(bounds, &self.skin);
+        let body = table_body(bounds, self.metrics());
         let pitch = table_row_pitch(&self.skin);
         let visible = visible_rows(self.rows().len(), pitch, body.h, vertical);
         let mut rows = DrawListBuilder::default();
         for index in visible {
             let row_bounds =
-                table_row_rect(bounds, columns, index, horizontal, vertical, &self.skin);
+                table_row_rect(bounds, columns, index, horizontal, vertical, self.metrics());
             self.paint_row(&mut rows, text, index, row_bounds, interaction, columns);
         }
         let listed = table_content_height(self.rows().len(), &self.skin) + self.skin.table.grid_gap;
@@ -153,7 +157,7 @@ impl TableFace {
             rows.fill_rect(
                 Rect {
                     h: body.y + body.h - below,
-                    w: table_content_width(columns, bounds.w, &self.skin),
+                    w: table_content_width(columns, bounds.w, self.metrics()),
                     x: bounds.x - horizontal,
                     y: below,
                 },
@@ -167,9 +171,8 @@ impl TableFace {
                 &self.status,
                 Rect {
                     h: self.skin.table.row_height,
-                    x: body.x + self.skin.table.padding_left,
-                    w: (body.w - self.skin.table.padding_left - self.skin.table.padding_right)
-                        .max(0.0),
+                    x: body.x + self.frame.padding_left,
+                    w: (body.w - self.frame.padding_left - self.frame.padding_right).max(0.0),
                     ..body
                 },
                 (
@@ -192,11 +195,17 @@ impl TableFace {
     ) {
         let (column, column_index, bounds) = cell;
         let table = &self.skin.table;
-        let value = || optional_or_dash(row.cell(column_index).and_then(TableCell::text));
+        let value = || {
+            Cow::Borrowed(optional_or_dash(
+                row.cell(column_index).and_then(TableCell::text),
+            ))
+        };
         let blank = || {
-            row.cell(column_index)
-                .and_then(TableCell::text)
-                .unwrap_or("")
+            Cow::Borrowed(
+                row.cell(column_index)
+                    .and_then(TableCell::text)
+                    .unwrap_or(""),
+            )
         };
         let (content, role) = match column {
             TableColumnStyle::Badge => {
@@ -219,16 +228,18 @@ impl TableFace {
                 );
                 return;
             }
-            TableColumnStyle::Index => ((index + 1).to_string(), table.index_text),
-            TableColumnStyle::Primary => (value().to_owned(), table.primary_text),
-            TableColumnStyle::Secondary => (value().to_owned(), table.secondary_text),
-            TableColumnStyle::Metric => (value().to_owned(), table.metric_text),
-            TableColumnStyle::Mono => (blank().to_owned(), table.mono_text),
-            TableColumnStyle::Time => (blank().to_owned(), table.time_text),
+            TableColumnStyle::Index => (Cow::Owned((index + 1).to_string()), table.index_text),
+            TableColumnStyle::Primary => (value(), table.primary_text),
+            TableColumnStyle::Secondary => (value(), table.secondary_text),
+            TableColumnStyle::Metric => (value(), table.metric_text),
+            TableColumnStyle::Mono => (blank(), table.mono_text),
+            TableColumnStyle::Time => (blank(), table.time_text),
             TableColumnStyle::Transition => (
                 row.cell(column_index)
                     .and_then(TableCell::text)
-                    .map_or_else(|| "\u{2014}".to_owned(), str::to_uppercase),
+                    .map_or(Cow::Borrowed("\u{2014}"), |text| {
+                        Cow::Owned(text.to_uppercase())
+                    }),
                 table.transition_text,
             ),
         };
@@ -251,18 +262,12 @@ impl TableFace {
     ) {
         let header = Rect {
             h: self.skin.table.header_height,
-            w: table_content_width(columns, bounds.w, &self.skin),
+            w: table_content_width(columns, bounds.w, self.metrics()),
             x: -horizontal,
             y: bounds.y,
         };
         list.fill_rect(header, self.skin.rgba(self.skin.table.header_fill));
-        for (column, cell) in column_cells(
-            bounds,
-            columns,
-            horizontal,
-            self.skin.table.padding_left,
-            self.skin.table.padding_right,
-        ) {
+        for (column, cell) in column_cells(bounds, columns, horizontal, self.metrics()) {
             paint_text(
                 list,
                 text,
@@ -279,7 +284,7 @@ impl TableFace {
                 ),
             );
         }
-        for divider in table_dividers(bounds, columns, horizontal, &self.skin) {
+        for divider in table_dividers(bounds, columns, horizontal, self.metrics()) {
             list.fill_rect(divider.paint, self.skin.rgba(self.skin.table.divider_color));
         }
     }
@@ -308,18 +313,8 @@ impl TableFace {
         };
         list.fill_rounded_rect(bounds, frame.radius, fill);
         paint_frame(list, bounds, frame, &self.skin);
-        for (column_index, (column, cell)) in column_cells(
-            Rect {
-                w: bounds.w,
-                x: bounds.x,
-                ..bounds
-            },
-            columns,
-            0.0,
-            self.skin.table.padding_left,
-            self.skin.table.padding_right,
-        )
-        .enumerate()
+        for (column_index, (column, cell)) in
+            column_cells(bounds, columns, 0.0, self.metrics()).enumerate()
         {
             self.paint_cell(
                 list,
@@ -436,11 +431,12 @@ fn paint_footer(
     horizontal: f32,
     columns: &[ColumnLayout],
 ) {
+    let height = paint.metrics().footer_height();
     let footer = Rect {
-        h: paint.skin.table.footer_height,
-        w: table_content_width(columns, bounds.w, &paint.skin),
+        h: height,
+        w: table_content_width(columns, bounds.w, paint.metrics()),
         x: -horizontal,
-        y: bounds.y + bounds.h - paint.skin.table.footer_height,
+        y: bounds.y + bounds.h - height,
     };
     list.fill_rect(footer, paint.skin.rgba(paint.skin.table.footer_fill));
     let label = format!("{} {}", paint.rows().len(), paint.skin.table_footer_rows);
@@ -466,11 +462,15 @@ fn paint_vertical_scrollbar(
     offset: f32,
     columns: &[ColumnLayout],
 ) {
-    let body = table_body(bounds, &paint.skin);
+    let body = table_body(bounds, paint.metrics());
     let content = table_content_height(paint.rows().len(), &paint.skin);
-    let Some(rail) =
-        table_vertical_scrollbar_rect(bounds, columns, paint.rows().len(), horizontal, &paint.skin)
-    else {
+    let Some(rail) = table_vertical_scrollbar_rect(
+        bounds,
+        columns,
+        paint.rows().len(),
+        horizontal,
+        paint.metrics(),
+    ) else {
         return;
     };
     paint_scrollbar(
@@ -501,7 +501,7 @@ fn paint_horizontal_scrollbar(
                 - paint.skin.table.scrollbar_margin
                 - paint.skin.table.scrollbar_width,
         },
-        table_content_width(columns, bounds.w, &paint.skin),
+        table_content_width(columns, bounds.w, paint.metrics()),
         bounds.w,
         offset,
         ScrollAxis::Horizontal,
@@ -528,43 +528,6 @@ const fn aligned(style: TableColumnStyle) -> TextAlign {
         | TableColumnStyle::Meter
         | TableColumnStyle::Transition => TextAlign::Left,
     }
-}
-
-fn column_cells(
-    bounds: Rect,
-    columns: &[ColumnLayout],
-    horizontal: f32,
-    padding_left: f32,
-    padding_right: f32,
-) -> impl Iterator<Item = (ColumnLayout, Rect)> + '_ {
-    let minimum = columns.iter().map(|column| column.width).sum::<f32>();
-    let flexible = columns
-        .iter()
-        .filter(|column| column.column.flexible())
-        .count();
-    let extra = (bounds.w - minimum - padding_left - padding_right).max(0.0);
-    let flexible_extra = if flexible == 0 {
-        0.0
-    } else {
-        extra / flexible.to_f32().unwrap_or(f32::MAX)
-    };
-    let mut x = bounds.x + padding_left - horizontal;
-    columns.iter().cloned().map(move |column| {
-        let width = column.width
-            + if column.column.flexible() {
-                flexible_extra
-            } else {
-                0.0
-            };
-        let rect = Rect {
-            x,
-            h: bounds.h,
-            w: width,
-            y: bounds.y,
-        };
-        x += width;
-        (column, rect)
-    })
 }
 
 fn visible_rows(
@@ -732,10 +695,10 @@ mod tests {
     fn a_partial_bottom_row_stays_inside_the_body_clip() {
         let (picture, mut text, mut bounds, drawn) = fixture();
         bounds.h = picture.skin.table.header_height
-            + picture.skin.table.footer_height
+            + picture.metrics().footer_height()
             + picture.skin.table.grid_gap * 2.0
             + picture.skin.table.row_height / 2.0;
-        let body = table_body(bounds, &picture.skin);
+        let body = table_body(bounds, picture.metrics());
         let commands = picture.commands(&mut text, bounds, &drawn);
         let clipped = commands
             .commands()
@@ -779,7 +742,7 @@ mod tests {
                 ))
             })
             .collect();
-        let picture = TableFace::new(rows, columns.clone(), skin);
+        let picture = TableFace::new(rows, columns.clone(), skin, TableFrame::new(0.0, 0.0, true));
         (
             picture,
             TextContext::from(skin.text_resources()),

@@ -8,7 +8,7 @@ use crate::gui::library::Library;
 /// Answers the tree, the hidden pages and whether Add folder is hidden.
 pub(super) struct LibraryNode<'a> {
     library: &'a Library,
-    tree: Vec<TreeRow<'a>>,
+    tree: OnceCell<Vec<TreeRow<'a>>>,
     /// No folder picker answers Add folder.
     add_folder_hidden: bool,
 }
@@ -18,16 +18,17 @@ impl<'a> LibraryNode<'a> {
         Self {
             library,
             add_folder_hidden,
-            tree: library.tree(),
+            tree: OnceCell::new(),
         }
     }
 }
 
 impl<'a, 'b: 'a> Node<'a> for &'a LibraryNode<'b> {
     fn child(&self, segment: &str, _scope: Scope<'_>) -> Option<Box<dyn Node<'a> + 'a>> {
-        let tree: &'a [TreeRow<'a>] = &self.tree;
         let node: Box<dyn Node<'a> + 'a> = match segment {
-            "tree" => Box::new(Value(ReadValue::Tree(tree))),
+            "tree" => Box::new(Value(ReadValue::Tree(
+                self.tree.get_or_init(|| self.library.tree()),
+            ))),
             "page" => Box::new(PageNode(self.library)),
             "add_folder" => Box::new(AddFolderNode(self.add_folder_hidden)),
             _ => return None,
@@ -62,11 +63,11 @@ impl_child_node!(AddFolderNode, |this, segment, _scope| {
 pub(super) struct SourcesNode<'a> {
     library: &'a Library,
     rows: Vec<OnceCell<Vec<TableRow<'a>>>>,
-    bpms: &'a BTreeMap<String, String>,
+    bpms: &'a BTreeMap<String, f64>,
 }
 
 impl<'a> SourcesNode<'a> {
-    pub(super) fn new(library: &'a Library, bpms: &'a BTreeMap<String, String>) -> Self {
+    pub(super) fn new(library: &'a Library, bpms: &'a BTreeMap<String, f64>) -> Self {
         Self {
             library,
             bpms,
@@ -78,12 +79,9 @@ impl<'a> SourcesNode<'a> {
 impl<'a, 'b: 'a> Node<'a> for &'a SourcesNode<'b> {
     fn child(&self, segment: &str, scope: Scope<'_>) -> Option<Box<dyn Node<'a> + 'a>> {
         let id = scope.get("source")?;
-        let (at, source) = self
-            .library
-            .sources()
-            .enumerate()
-            .find(|(_, source)| source.id() == id)?;
-        if matches!(segment, "columns" | "column") {
+        let at = self.library.index_of(id)?;
+        let source = self.library.source(at)?;
+        if segment == "column" {
             return Some(Box::new(ColumnsNode {
                 library: self.library,
                 at,
@@ -92,18 +90,21 @@ impl<'a, 'b: 'a> Node<'a> for &'a SourcesNode<'b> {
         let value = match segment {
             "rows" => {
                 let rows: &'a [TableRow<'b>] = self.rows.get(at)?.get_or_init(|| {
-                    source
-                        .rows(self.library.selected_row(at))
-                        .into_iter()
-                        .map(|row| {
-                            let bpm = row.drag().and_then(|url| {
-                                self.bpms.get(&crate::catalog::canonical_source(url))
-                            });
-                            match bpm {
-                                Some(bpm) if !row.cells().iter().any(|cell| cell.id() == "bpm") => {
-                                    row.with_cell(TableCell::text("bpm", bpm))
+                    let rows = source.rows(self.library.selected_row(at));
+                    if self.bpms.is_empty() {
+                        return rows;
+                    }
+                    rows.into_iter()
+                        .enumerate()
+                        .map(|(index, row)| {
+                            match source
+                                .analysis_key(index)
+                                .and_then(|key| self.bpms.get(key))
+                            {
+                                Some(bpm) => {
+                                    row.with_cell(TableCell::text("bpm", format!("{bpm:.2}")))
                                 }
-                                _ => row,
+                                None => row,
                             }
                         })
                         .collect()
@@ -127,20 +128,7 @@ impl_child_node!(ColumnsNode<'a>, |this, segment, scope| {
     if segment != "width" {
         return None;
     }
-    if let Some(column) = scope.get("column") {
-        Some(Box::new(Value(ReadValue::Scalar(
-            this.library.column_width(this.at, column)?,
-        ))))
-    } else {
-        Some(Box::new(WidthsNode(*this)))
-    }
-});
-
-#[derive(Clone, Copy)]
-struct WidthsNode<'a>(ColumnsNode<'a>);
-
-impl_child_node!(WidthsNode<'a>, |this, segment, _scope| {
     Some(Box::new(Value(ReadValue::Scalar(
-        this.0.library.column_width(this.0.at, segment)?,
+        this.library.column_width(this.at, scope.get("column")?)?,
     ))))
 });

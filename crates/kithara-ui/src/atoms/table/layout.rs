@@ -1,20 +1,76 @@
 use num_traits::ToPrimitive;
 
 use super::{ColumnLayout, minimum_table_width};
-use crate::{draw::Rect, render::Skin};
+use crate::{draw::Rect, module::TableFrame, render::Skin};
 
-pub(crate) fn table_overflows(columns: &[ColumnLayout], available_width: f32, skin: &Skin) -> bool {
-    minimum_table_width(columns) + skin.table.padding_left + skin.table.padding_right
-        > available_width
+#[derive(Clone, Copy)]
+pub(crate) struct TableMetrics<'a> {
+    pub(crate) skin: &'a Skin,
+    pub(crate) frame: TableFrame,
+}
+
+impl TableMetrics<'_> {
+    pub(crate) fn width(self, columns: &[ColumnLayout]) -> f32 {
+        minimum_table_width(columns) + self.frame.padding_left + self.frame.padding_right
+    }
+
+    pub(crate) fn footer_height(self) -> f32 {
+        if self.frame.footer {
+            self.skin.table.footer_height
+        } else {
+            0.0
+        }
+    }
+}
+
+pub(crate) fn table_overflows(
+    columns: &[ColumnLayout],
+    available_width: f32,
+    table: TableMetrics<'_>,
+) -> bool {
+    table.width(columns) > available_width
 }
 
 pub(crate) fn table_content_width(
     columns: &[ColumnLayout],
     available_width: f32,
-    skin: &Skin,
+    table: TableMetrics<'_>,
 ) -> f32 {
-    (minimum_table_width(columns) + skin.table.padding_left + skin.table.padding_right)
-        .max(available_width)
+    table.width(columns).max(available_width)
+}
+
+pub(crate) fn column_cells<'a>(
+    bounds: Rect,
+    columns: &'a [ColumnLayout],
+    horizontal: f32,
+    table: TableMetrics<'_>,
+) -> impl Iterator<Item = (&'a ColumnLayout, Rect)> {
+    let flexible = columns
+        .iter()
+        .filter(|column| column.column.flexible())
+        .count();
+    let extra = (bounds.w - table.width(columns)).max(0.0);
+    let flexible_extra = if flexible == 0 {
+        0.0
+    } else {
+        extra / flexible.to_f32().unwrap_or(f32::MAX)
+    };
+    let mut x = bounds.x + table.frame.padding_left - horizontal;
+    columns.iter().map(move |column| {
+        let width = if column.column.flexible() {
+            column.width + flexible_extra
+        } else {
+            column.width
+        };
+        let rect = Rect {
+            x,
+            h: bounds.h,
+            w: width,
+            y: bounds.y,
+        };
+        x += width;
+        (column, rect)
+    })
 }
 
 pub(crate) fn table_content_height(row_count: usize, skin: &Skin) -> f32 {
@@ -29,13 +85,14 @@ pub(crate) fn table_row_pitch(skin: &Skin) -> f32 {
     skin.table.row_height + skin.table.grid_gap
 }
 
-pub(crate) fn table_body(bounds: Rect, skin: &Skin) -> Rect {
-    let gap = skin.table.grid_gap;
+pub(crate) fn table_body(bounds: Rect, table: TableMetrics<'_>) -> Rect {
+    let skin = &table.skin.table;
+    let gap = skin.grid_gap;
     Rect {
-        h: (bounds.h - skin.table.header_height - skin.table.footer_height - gap * 2.0).max(0.0),
+        h: (bounds.h - skin.header_height - table.footer_height() - gap * 2.0).max(0.0),
         w: bounds.w,
         x: bounds.x,
-        y: bounds.y + skin.table.header_height + gap,
+        y: bounds.y + skin.header_height + gap,
     }
 }
 
@@ -44,14 +101,15 @@ pub(crate) fn table_vertical_scrollbar_rect(
     columns: &[ColumnLayout],
     row_count: usize,
     horizontal_offset: f32,
-    skin: &Skin,
+    table: TableMetrics<'_>,
 ) -> Option<Rect> {
-    let body = table_body(bounds, skin);
+    let skin = table.skin;
+    let body = table_body(bounds, table);
     (table_content_height(row_count, skin) > body.h).then_some(())?;
     let rail = Rect {
         h: body.h,
         w: skin.table.scrollbar_width,
-        x: bounds.x - horizontal_offset + table_content_width(columns, bounds.w, skin)
+        x: bounds.x - horizontal_offset + table_content_width(columns, bounds.w, table)
             - skin.table.scrollbar_margin
             - skin.table.scrollbar_width,
         y: body.y,
@@ -114,16 +172,20 @@ mod tests {
                     column("title", 180.0, true),
                     column("artist", 200.0, false),
                 ],
-                true,
+                Some("width"),
             ),
             &ColumnReads(None),
             None,
             skin,
         );
         let minimum = minimum_table_width(&columns);
+        let table = TableMetrics {
+            skin,
+            frame: TableFrame::new(0.0, 0.0, true),
+        };
 
-        assert!(table_overflows(&columns, minimum - 1.0, skin));
-        assert!(!table_overflows(&columns, minimum, skin));
-        assert!(!table_overflows(&columns, minimum + 1.0, skin));
+        assert!(table_overflows(&columns, minimum - 1.0, table));
+        assert!(!table_overflows(&columns, minimum, table));
+        assert!(!table_overflows(&columns, minimum + 1.0, table));
     }
 }

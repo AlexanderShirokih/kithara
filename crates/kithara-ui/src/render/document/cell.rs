@@ -56,10 +56,6 @@ pub struct StageMount<T> {
     pub output: T,
 }
 
-pub(crate) fn stage_box<T>(own: Option<T>, first_shown: Option<T>, fill: T) -> T {
-    own.or(first_shown).unwrap_or(fill)
-}
-
 /// One child of a row or column, as its host mounts it.
 #[non_exhaustive]
 pub struct GroupMount<T> {

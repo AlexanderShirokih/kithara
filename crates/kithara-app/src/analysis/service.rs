@@ -7,6 +7,7 @@ use kithara::{
     events::TrackId,
     platform::{
         CancelToken,
+        sync::Arc,
         tokio::{
             self,
             sync::{mpsc, watch},
@@ -34,7 +35,7 @@ pub(crate) struct AnalysisService {
     pub(super) owner: Owner,
     cancel: CancelToken,
     rx: mpsc::Receiver<Request>,
-    bpms: watch::Sender<BTreeMap<String, f64>>,
+    bpms: watch::Sender<Arc<BTreeMap<String, f64>>>,
 }
 
 pub(super) struct Owner {
@@ -63,7 +64,7 @@ impl AnalysisService {
         /// entries.
         const LOAD_REPLIES: usize = 16;
 
-        let (bpms, published) = watch::channel(BTreeMap::new());
+        let (bpms, published) = watch::channel(Arc::new(BTreeMap::new()));
         let (handle, rx) = AnalysisHandle::channel(published);
         let runner = TrackAnalysisRunner::new(
             &cancel,
@@ -110,19 +111,26 @@ impl AnalysisService {
             bpms,
         } = self;
         loop {
-            tokio::select! {
+            let changed = tokio::select! {
                 biased;
                 () = cancel.cancelled() => break,
                 request = rx.recv() => match request {
-                    Some(request) => owner.handle(request),
+                    Some(request) => { owner.handle(request); true },
                     None => break,
                 },
-                () = owner.drive() => {}
+                changed = owner.drive() => changed
+            };
+            if !changed {
+                continue;
             }
             let next = owner.bpms();
-            if *bpms.borrow() != next {
-                bpms.send_replace(next);
-            }
+            bpms.send_if_modified(|published| {
+                if **published == next {
+                    return false;
+                }
+                *published = Arc::new(next);
+                true
+            });
         }
     }
 }
@@ -132,11 +140,12 @@ impl Owner {
         self.entries
             .iter()
             .filter_map(|entry| {
-                let artifacts = TrackArtifacts::new(
-                    self.cache.analysis(entry.target()).cloned(),
-                    entry.prepared().clone(),
-                );
-                let bpm = artifacts.grid()?.as_raw().bpm;
+                let bpm = TrackArtifacts::grid_from(
+                    self.cache.analysis(entry.target()),
+                    entry.prepared(),
+                )?
+                .as_raw()
+                .bpm;
                 (bpm.is_finite() && bpm > 0.0).then(|| (entry.config().source().to_string(), bpm))
             })
             .collect()

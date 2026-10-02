@@ -11,15 +11,3 @@ pub(crate) struct Tree<'a> {
     /// Whether a pressed chevron writes apart from its row.
     pub(crate) toggle: bool,
 }
-
-impl<'a> Tree<'a> {
-    pub(crate) fn search_field(&self) -> Option<SearchField<&'a Binding>> {
-        self.search.then_some(SearchField { query: self.query })
-    }
-}
-
-/// A tree's search field and the endpoint its query is read from.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct SearchField<Q> {
-    pub(crate) query: Option<Q>,
-}

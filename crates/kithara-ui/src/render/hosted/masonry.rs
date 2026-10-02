@@ -5,15 +5,15 @@ use std::{
 
 use kithara_test_macros as kithara;
 
-use super::plan::{HostedControlPlan, Resolving, TablePlan, TreePlan, empty_bounds};
+use super::plan::{HostedControlPlan, Resolving, TablePlan, TreePlan};
 use crate::{
     atoms::{
         bar::context::Context,
         design::fader::rail_bounds as fader_bounds,
         table::{
-            TableRowData, column_layouts, column_resizable,
+            TableRowData, column_layouts, column_resizable, empty_bounds,
             face::{Drawn, TableFace},
-            table_body, table_dividers, table_overflows, table_row_at, table_visible_divider_hit,
+            table_body, table_divider_hit, table_dividers, table_overflows, table_row_at,
             table_visible_row_rect,
         },
         tree::{face::Tree, retained::Drawn as TreeDrawn},
@@ -23,8 +23,8 @@ use crate::{
     expand::{Binding, ControlSpec},
     ids::InternId,
     interact::Hit,
-    module::TableColumn,
-    mount::{self, SearchField},
+    module::{TableColumn, TableFrame},
+    mount,
     render::{ReadValue, Skin, document::Ctx, picker_hits},
 };
 
@@ -66,11 +66,9 @@ pub(super) struct TableSource {
     columns_state: Option<(String, String)>,
     rows: Option<String>,
     status: Option<String>,
-    footer: bool,
-    padding_left: f32,
-    padding_right: f32,
+    frame: TableFrame,
     columns: Vec<TableColumn>,
-    resizable: bool,
+    width: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -81,8 +79,8 @@ pub(super) struct TreeState {
 }
 
 pub(super) struct TreeSource {
-    /// The search field the tree draws, reading the endpoint it names.
-    search: Option<SearchField<String>>,
+    search: bool,
+    query: Option<String>,
     rows: Option<String>,
 }
 
@@ -291,13 +289,13 @@ impl TablePlan {
             return;
         };
         let picture = self.picture();
-        let overflows = table_overflows(&view.columns, bounds.w, picture.skin());
+        let overflows = table_overflows(&view.columns, bounds.w, picture.metrics());
         if overflows {
             targets.push(Target::new(&self.horizontal_path, Hit::new(point, bounds)));
         }
         targets.push(Target::new(
             &self.path,
-            Hit::new(point, table_body(bounds, picture.skin())),
+            Hit::new(point, table_body(bounds, picture.metrics())),
         ));
         let row = view.hovered.and_then(|index| {
             table_visible_row_rect(
@@ -307,7 +305,7 @@ impl TablePlan {
                 index,
                 view.horizontal,
                 view.vertical,
-                picture.skin(),
+                picture.metrics(),
             )
         });
         match (view.hovered, row) {
@@ -319,17 +317,18 @@ impl TablePlan {
                 Hit::new(point, empty_bounds(bounds)),
             )),
         }
-        let dividers = table_dividers(bounds, &view.columns, view.horizontal, picture.skin());
+        let dividers = table_dividers(bounds, &view.columns, view.horizontal, picture.metrics());
         for (index, column) in view.columns.iter().enumerate() {
             if !column_resizable(&view.columns, index) {
                 continue;
             }
             let divider_path = self.divider_path(&column.column);
-            let hit = dividers
-                .iter()
-                .find(|divider| divider.column == column.column)
-                .and_then(|divider| table_visible_divider_hit(bounds, divider.hit))
-                .or_else(|| engine.captures(divider_path).then(|| empty_bounds(bounds)));
+            let hit = table_divider_hit(
+                bounds,
+                &dividers,
+                column.column.id(),
+                engine.captures(divider_path),
+            );
             if let Some(hit) = hit {
                 targets.push(Target::new(divider_path, Hit::new(point, hit)));
             }
@@ -364,7 +363,7 @@ impl TablePlan {
                 .ok_or(MissingEntry { entry: path })?;
             columns[index].width = width;
         }
-        let overflows = table_overflows(&columns, bounds.w, picture.skin());
+        let overflows = table_overflows(&columns, bounds.w, picture.metrics());
         let horizontal = if overflows {
             engine
                 .scroll_offset(&self.horizontal_path)
@@ -387,7 +386,7 @@ impl TablePlan {
             picture.rows().len(),
             horizontal,
             vertical,
-            picture.skin(),
+            picture.metrics(),
         );
         Ok(Drawn {
             hovered,
@@ -464,21 +463,19 @@ impl TablePlan {
 }
 
 impl TableSource {
-    pub(super) fn new(
-        table: &mount::Table<'_>,
-        columns_state: Option<(String, String)>,
-        rows: Option<String>,
-        status: Option<String>,
-    ) -> Self {
+    pub(super) fn new(table: &mount::Table<'_>, ctx: Ctx<'_, '_>, read: Option<&Binding>) -> Self {
         Self {
             columns: table.columns.to_vec(),
-            resizable: table.resizable,
-            footer: table.footer,
-            padding_left: table.padding_left,
-            padding_right: table.padding_right,
-            columns_state,
-            rows,
-            status,
+            width: ctx.endpoint(table.width).map(str::to_owned),
+            frame: table.frame,
+            columns_state: table.columns_state.map(|binding| {
+                (
+                    ctx.ui.resolve(binding.id).to_owned(),
+                    ctx.scope(Some(binding)).to_owned(),
+                )
+            }),
+            rows: ctx.endpoint(read).map(str::to_owned),
+            status: ctx.endpoint(table.status).map(str::to_owned),
         }
     }
 
@@ -498,24 +495,22 @@ impl TableSource {
             .columns_state
             .as_ref()
             .map(|(prefix, scope)| (prefix.as_str(), scope.as_str()));
-        let columns = column_layouts((&self.columns, self.resizable), &ctx, state, skin);
-        let status = self
-            .status
-            .as_deref()
-            .and_then(|endpoint| ctx.get(endpoint));
-        let status = match status {
-            Some(ReadValue::Text(text)) => text,
-            _ => "",
-        };
-        TableFace::new(rows, columns, skin)
-            .with_layout(self.padding_left, self.padding_right, self.footer)
-            .with_status(status)
+        let columns = column_layouts((&self.columns, self.width.as_deref()), &ctx, state, skin);
+        TableFace::new(rows, columns, skin, self.frame).with_status(
+            self.status
+                .as_deref()
+                .and_then(|endpoint| ctx.get(endpoint)),
+        )
     }
 }
 
 impl TreeSource {
-    pub(super) fn new(rows: Option<String>, search: Option<SearchField<String>>) -> Self {
-        Self { search, rows }
+    pub(super) fn new(rows: Option<String>, search: bool, query: Option<String>) -> Self {
+        Self {
+            search,
+            query,
+            rows,
+        }
     }
 
     fn picture(&self, ctx: Ctx<'_, '_>, skin: &Skin) -> Tree {
@@ -528,9 +523,8 @@ impl TreeSource {
                 _ => None,
             })
             .unwrap_or_default();
-        let query = self.search.as_ref().map(|field| {
-            field
-                .query
+        let query = self.search.then(|| {
+            self.query
                 .as_deref()
                 .and_then(|endpoint| ctx.get(endpoint))
                 .and_then(|value| match value {
@@ -556,7 +550,7 @@ mod tests {
         atoms::table::{ColumnLayout, TableRowData},
         builtin,
         interact::{Input, PointerPhase, Scroll, mouse as mouse_input},
-        module::TableColumn,
+        module::{TableColumn, TableFrame},
     };
 
     #[kithara::test]
@@ -676,7 +670,13 @@ mod tests {
             w: 140.0,
             h: 180.0,
         };
-        let body = table_body(bounds, skin);
+        let body = table_body(
+            bounds,
+            crate::atoms::table::TableMetrics {
+                skin,
+                frame: TableFrame::new(0.0, 0.0, true),
+            },
+        );
         let point = Pt {
             x: 20.0,
             y: body.y + skin.table.row_height / 2.0,
@@ -792,21 +792,18 @@ mod tests {
     ) -> TablePlan {
         let declared: Vec<TableColumn> =
             columns.iter().map(|column| column.column.clone()).collect();
-        let plan = TablePlan::new(path, TableFace::new(rows, columns, skin));
-        plan.bind_source(TableSource::new(
-            &mount::Table {
-                columns: &declared,
-                columns_state: None,
-                status: None,
-                footer: true,
-                padding_left: 0.0,
-                padding_right: 0.0,
-                resizable: true,
-            },
-            None,
-            None,
-            None,
-        ));
+        let plan = TablePlan::new(
+            path,
+            TableFace::new(rows, columns, skin, TableFrame::new(0.0, 0.0, true)),
+        );
+        plan.bind_source(TableSource {
+            columns: declared,
+            columns_state: None,
+            status: None,
+            rows: None,
+            frame: TableFrame::new(0.0, 0.0, true),
+            width: Some("width".to_owned()),
+        });
         plan
     }
 

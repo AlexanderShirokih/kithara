@@ -31,7 +31,8 @@ use crate::{
     builtin,
     draw::{DrawCmd, DrawList, Geom, Rect, Rgba},
     ids::SourceUri,
-    module::{TableColumn, TableColumnStyle},
+    interact::recognizers::Track,
+    module::{TableColumn, TableColumnStyle, TableFrame},
     render::{
         Carry, CarryStep, ControlAction,
         fonts::{FONT_BYTES, SANS},
@@ -80,7 +81,12 @@ fn columns() -> Vec<ColumnLayout> {
 fn paint() -> TablePaint {
     TablePaint::new(
         "library/tracks",
-        TableFace::new(rows(), columns(), builtin::skin()),
+        TableFace::new(
+            rows(),
+            columns(),
+            builtin::skin(),
+            TableFrame::new(0.0, 0.0, true),
+        ),
     )
 }
 
@@ -225,7 +231,10 @@ fn a_reskinned_table_draws_again() {
     assert_eq!(
         marked(
             &state,
-            &TablePaint::new("library/tracks", TableFace::new(rows(), columns(), &skin)),
+            &TablePaint::new(
+                "library/tracks",
+                TableFace::new(rows(), columns(), &skin, TableFrame::new(0.0, 0.0, true))
+            ),
             &drawn
         ),
         Marked::Changed,
@@ -252,7 +261,10 @@ fn word_color(list: &DrawList, wanted: &str) -> Option<Rgba> {
 }
 
 fn drawn_word(skin: &Skin, wanted: &str) -> Rgba {
-    let paint = TablePaint::new("library/tracks", TableFace::new(rows(), columns(), skin));
+    let paint = TablePaint::new(
+        "library/tracks",
+        TableFace::new(rows(), columns(), skin, TableFrame::new(0.0, 0.0, true)),
+    );
     let mut text = TextContext::from(skin.text_resources());
     let bounds = Rect {
         h: 240.0,
@@ -317,7 +329,7 @@ fn body_rows_are_scoped_under_a_vertical_clip() {
     };
     assert_eq!(*region, bounds);
     assert!(list.commands().iter().any(|command| {
-        matches!(command, DrawCmd::Clip { region, .. } if *region == table_body(bounds, paint.face.skin()))
+        matches!(command, DrawCmd::Clip { region, .. } if *region == table_body(bounds, paint.face.metrics()))
     }));
 }
 
@@ -357,7 +369,7 @@ fn divider_drag_at_nonzero_origin_uses_the_full_hit_width_and_exact_travel() {
         local_rect(bounds),
         program.paint.face.columns(),
         0.0,
-        program.paint.face.skin(),
+        program.paint.face.metrics(),
     );
     let divider = &dividers[0];
     let Track::HorizontalPixels {
@@ -410,7 +422,7 @@ fn leaf_divider_state_follows_its_column_across_reorder_and_removal() {
         bounds.into(),
         program.paint.face.columns(),
         0.0,
-        program.paint.face.skin(),
+        program.paint.face.metrics(),
     );
     let divider = &dividers[0];
     assert_eq!(divider.column.id(), "index");
@@ -440,7 +452,12 @@ fn leaf_divider_state_follows_its_column_across_reorder_and_removal() {
     reordered.swap(0, 2);
     let paint = TablePaint::new(
         "library/tracks",
-        TableFace::new(rows(), reordered, builtin::skin()),
+        TableFace::new(
+            rows(),
+            reordered,
+            builtin::skin(),
+            TableFrame::new(0.0, 0.0, true),
+        ),
     );
     let config = paint.config();
     let reordered = TableProgram { config, paint };
@@ -467,6 +484,7 @@ fn leaf_divider_state_follows_its_column_across_reorder_and_removal() {
                 .filter(|column| column.column.id() != "index")
                 .collect(),
             builtin::skin(),
+            TableFrame::new(0.0, 0.0, true),
         ),
     );
     state.reconcile("library/tracks", &paint.config());
@@ -488,7 +506,7 @@ fn leaf_row_drag_keeps_the_start_index_binder() {
         3,
         0.0,
         0.0,
-        program.paint.face.skin(),
+        program.paint.face.metrics(),
     );
     let at = |x: f32| Cursor::Available(Point::new(x, row.y + row.h / 2.0));
     let moved = |x: f32| {
@@ -532,7 +550,7 @@ fn leaf_plain_release_selects_the_armed_row_index() {
         2,
         0.0,
         0.0,
-        program.paint.face.skin(),
+        program.paint.face.metrics(),
     );
     let cursor = Cursor::Available(Point::new(20.0, row.y + row.h / 2.0));
     let mut state = TableState::default();
@@ -583,7 +601,7 @@ fn leaf_row_release_outside_only_clears_and_repaints_the_press() {
         2,
         0.0,
         0.0,
-        program.paint.face.skin(),
+        program.paint.face.metrics(),
     );
     let cursor = Cursor::Available(Point::new(20.0, row.y + row.h / 2.0));
     let mut state = TableState::default();
@@ -654,7 +672,7 @@ fn the_body_below_the_last_row_takes_the_idle_row_fill() {
             vertical: 0.0,
         },
     );
-    let body = table_body(bounds, skin);
+    let body = table_body(bounds, paint.face.metrics());
     let below = body.y + 5.0 * (skin.table.row_height + skin.table.grid_gap);
     let idle = skin.tint(skin.table.row_fill.idle).into();
     let rows = list
@@ -714,7 +732,12 @@ fn hosted_canvas_forwards_projection_and_rebinds_before_paint() {
 
     let next_paint = TablePaint::new(
         "library/history",
-        TableFace::new(rows(), columns(), builtin::skin()),
+        TableFace::new(
+            rows(),
+            columns(),
+            builtin::skin(),
+            TableFrame::new(0.0, 0.0, true),
+        ),
     );
     let next_config = next_paint.config();
     let next = RetainedCanvas::new(next_paint, "library/history", next_config);
@@ -761,6 +784,7 @@ fn leaf_layout_clamps_offsets_after_rows_shrink_and_viewport_widens() {
             rows().into_iter().take(1).collect(),
             columns(),
             builtin::skin(),
+            TableFrame::new(0.0, 0.0, true),
         ),
     );
     let next_config = next_paint.config();

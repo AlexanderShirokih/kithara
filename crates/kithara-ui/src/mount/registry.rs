@@ -148,18 +148,14 @@ macro_rules! controls {
                 columns,
                 columns_state,
                 status,
-                footer,
-                padding_left,
-                padding_right,
-                resizable,
+                frame,
+                width,
             } => with.apply(
                 &$crate::mount::Table::builder()
                     .columns(columns)
                     .maybe_columns_state(columns_state.as_ref())
-                    .resizable(*resizable)
-                    .footer(*footer)
-                    .padding_left(*padding_left)
-                    .padding_right(*padding_right)
+                    .maybe_width(width.as_ref())
+                    .frame(*frame)
                     .maybe_status(status.as_ref())
                     .build(),
             ),

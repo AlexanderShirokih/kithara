@@ -18,6 +18,6 @@ pub(in crate::gui) use self::{explorer::Explorer, folders::FolderPicker};
 pub(in crate::gui) use self::{
     pages::PagesModule,
     shell::Library,
-    source::{BranchNode, LibrarySource, PageStatus, Registration, SourcePage, consts, worded},
+    source::{BranchNode, LibrarySource, PageStatus, Registration, SourcePage, worded},
     startup::StartupSource,
 };

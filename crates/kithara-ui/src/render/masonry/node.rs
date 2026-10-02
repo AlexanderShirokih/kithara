@@ -517,8 +517,8 @@ impl Node {
         self.layout.leaf().is_some_and(|leaf| leaf.set_read(value))
     }
 
-    pub(crate) fn text_is_empty(&mut self) -> Option<bool> {
-        self.layout.leaf().and_then(|leaf| leaf.text_is_empty())
+    pub(crate) fn text_size(&mut self) -> Option<Size> {
+        self.layout.leaf().and_then(|leaf| leaf.text_size())
     }
 
     /// Offers the input to the stepping surface this flow declares, answering

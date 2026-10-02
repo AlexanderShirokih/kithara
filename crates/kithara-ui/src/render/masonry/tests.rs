@@ -5219,3 +5219,56 @@ fn painted_runs(root: &mut MasonryRoot<TestAction>, glyphs: &[u32]) -> usize {
         .filter(|window| *window == glyphs)
         .count()
 }
+
+struct LiveTextReads(Cell<bool>);
+
+impl Reads for LiveTextReads {
+    fn get(&self, endpoint: &str) -> Option<ReadValue<'_>> {
+        (endpoint == "library.query").then_some(ReadValue::Text(if self.0.get() {
+            "a substantially longer title"
+        } else {
+            "a"
+        }))
+    }
+}
+
+#[kithara::test]
+fn shrink_live_text_grows_and_shrinks_between_nonempty_values() {
+    let reads = LiveTextReads(Cell::new(false));
+    let ui = fixture_ui(
+        "live-text",
+        r#"Row(size: (w: Fill, h: Fill), gap: 0.0, pad: 0.0, children: [
+        Text(id: "title", style: Body, read: Model(id: "library.query"), size: (w: Shrink, h: Shrink)),
+    ])"#,
+        &fixture_registry(),
+    );
+    let state = MasonryState::default();
+    let output = document::render(
+        &ui.root,
+        ctx(&ui, &reads),
+        MasonryHost::new(ctx(&ui, &reads), builtin::skin()).with_state(state.clone()),
+    );
+    let mut root = masonry_root(output, 400, 120);
+    root.redraw().unwrap();
+    let id = state.widget_id("demo/title").unwrap();
+    let initial = root.root().get_widget(id).unwrap().ctx().size().width;
+    assert!(initial > 0.0);
+    reads.0.set(true);
+    root.refresh(ctx(&ui, &reads));
+    root.redraw().unwrap();
+    let grown = root.root().get_widget(id).unwrap().ctx().size().width;
+    assert!(
+        grown > initial,
+        "live text width stayed at {initial}, now {grown}"
+    );
+    reads.0.set(false);
+    root.refresh(ctx(&ui, &reads));
+    root.redraw().unwrap();
+    assert_eq!(
+        root.root().get_widget(id).unwrap().ctx().size().width,
+        initial
+    );
+    let _ = root.complete_frame();
+    root.refresh(ctx(&ui, &reads));
+    assert!(!root.complete_frame());
+}

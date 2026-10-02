@@ -1,34 +1,50 @@
-use super::{Registration, SourcePage};
+use kithara::ui::{
+    ids::{DocId, EndpointId, NodeId},
+    module::{BindingRef, ControlNode, ModuleDoc},
+    source::MemResolver,
+};
 
-/// Mounts each source's page in one box, shown while it owns the selection.
-#[derive(fieldwork::Fieldwork)]
-#[fieldwork(opt_in, get)]
+use super::Registration;
+
 pub(in crate::gui) struct PagesModule {
-    #[field(get, vis = "pub(in crate::gui)")]
-    text: String,
+    document: ModuleDoc,
 }
 
 impl PagesModule {
-    /// Where the library layout includes it from, relative to the package root.
     pub(in crate::gui) const PATH: &str = "library-pages.kmodule.ron";
 
     pub(in crate::gui) fn new(sources: &[Registration]) -> Self {
-        let entries: String = sources
+        let children = sources
             .iter()
             .map(|source| {
-                let &SourcePage { id, page } = source.page();
-                format!(
-                    "            Optional(id: {id:?}, hidden: Model(id: \"library.page.hidden\", \
-                     with: {{ \"source\": {id:?} }}), child: Include(id: \"{id}-page\", \
-                     source: {page:?}, with: {{ \"source\": {id:?} }})),\n",
-                )
+                let page = source.page();
+                ControlNode::Optional {
+                    id: NodeId(page.id.to_owned()),
+                    hidden: BindingRef::Model {
+                        id: EndpointId("library.page.hidden".to_owned()),
+                        with: [("source".to_owned(), page.id.to_owned())].into(),
+                    },
+                    child: Box::new(page.page.clone()),
+                }
             })
             .collect();
         Self {
-            text: format!(
-                "(\n    schema: \"kithara.module\",\n    version: 1,\n    id: \"library-pages\",\n    \
-                 chrome: Plain,\n    root: Stage(\n        id: \"pages\",\n        children: [\n{entries}        ],\n    ),\n)\n"
+            document: ModuleDoc::new(
+                DocId("library-pages".to_owned()),
+                ControlNode::Stage {
+                    id: NodeId("pages".to_owned()),
+                    size: None,
+                    children,
+                },
             ),
         }
+    }
+}
+
+impl From<PagesModule> for MemResolver {
+    fn from(pages: PagesModule) -> Self {
+        let mut modules = Self::default();
+        modules.insert_module(PagesModule::PATH, pages.document);
+        modules
     }
 }

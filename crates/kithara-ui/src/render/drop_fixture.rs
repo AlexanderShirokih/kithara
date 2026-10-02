@@ -6,12 +6,12 @@ use std::{cell::Cell, sync::LazyLock};
 use num_traits::AsPrimitive;
 
 use crate::{
-    atoms::table::{table_body, table_row_pitch},
+    atoms::table::{TableMetrics, table_body, table_row_pitch},
     builtin,
     compile::{CompiledUi, compile},
     draw::Rect,
     mock::TestRegistry,
-    module::IconName,
+    module::{IconName, TableFrame},
     registry::{EndpointCategory, EndpointDesc, ValueKind},
     render::{
         Badge, Published, ReadValue, Reads, Scope, TableCell, TableRow, TreeRow, UiEvent,
@@ -259,7 +259,10 @@ pub(crate) fn lead_cell(photo: &[u8], row: u8) -> Vec<u8> {
             w: LIBRARY_WIDTH,
             h: HEIGHT,
         },
-        skin,
+        TableMetrics {
+            skin,
+            frame: TableFrame::new(0.0, 0.0, true),
+        },
     );
     let top = f32::from(row).mul_add(table_row_pitch(skin), body.y);
     let stride: usize = WIDTH.as_();
@@ -673,8 +676,24 @@ pub(crate) fn a_tree_without_query_draws_no_search_row<H: DropHost>(engine: bool
     );
 }
 
+pub(crate) fn a_chevron_released_outside_its_row_does_not_toggle<H: DropHost>(engine: bool) {
+    let ui = compiled_tree(TreeDoc {
+        engine,
+        query: true,
+        toggle: true,
+    });
+    let reads = DropReads::new(Rows::Listed);
+    let mut host = H::open(&ui, &reads);
+    host.pick_up(&ui, &reads, chevron(FOLDER, true));
+    assert!(writes(&ui, &host.let_go(&ui, &reads, (390.0, 190.0)), &reads).is_empty());
+}
+
 macro_rules! tree_suite {
     ($host:ty, $engine:expr) => {
+        #[kithara::test]
+        fn a_chevron_released_outside_its_row_does_not_toggle() {
+            $crate::render::drop_fixture::a_chevron_released_outside_its_row_does_not_toggle::<$host>($engine);
+        }
         #[kithara::test]
         fn pressing_each_chevron_delivers_the_toggle_write_with_its_own_row() {
             $crate::render::drop_fixture::pressing_each_chevron_delivers_the_toggle_write_with_its_own_row::<

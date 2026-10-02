@@ -5,7 +5,7 @@ pub(crate) use portal_map::PortalMap;
 pub(crate) use shader::Shader;
 pub(crate) use sprite::Sprite;
 pub(crate) use table::Table;
-pub(crate) use tree::{SearchField, Tree};
+pub(crate) use tree::Tree;
 
 mod context_bar;
 mod custom;

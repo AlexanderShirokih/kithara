@@ -157,7 +157,7 @@ kithara-app = { path = ".", default-features = false, features = ["usdt"] }
 kithara-encode = { workspace = true, default-features = false }
 kithara-test-fixtures = { workspace = true, default-features = false }
 kithara-test-macros = { workspace = true }
-kithara-test-utils = { workspace = true, features = ["usdt", "mock", "hang"] }
+kithara-test-utils = { workspace = true, features = ["usdt", "mock", "hang", "temp-dir"] }
 
 futures = { workspace = true }
 serde_json = { workspace = true }

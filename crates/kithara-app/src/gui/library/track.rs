@@ -5,6 +5,8 @@ use kithara::ui::render::{TableCell, TableRow};
 #[fieldwork(opt_in)]
 pub(super) struct Track {
     title: String,
+    #[field(get, vis = "pub(super)")]
+    analysis_key: String,
     /// The source as given; what a deck is handed when the row is dropped.
     #[field(get, vis = "pub(super)")]
     url: String,
@@ -12,7 +14,11 @@ pub(super) struct Track {
 
 impl Track {
     pub(super) fn new(title: String, url: String) -> Self {
-        Self { title, url }
+        Self {
+            title,
+            analysis_key: crate::catalog::canonical_source(&url),
+            url,
+        }
     }
 
     pub(super) fn row(&self, selected: bool) -> TableRow<'_> {

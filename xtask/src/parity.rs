@@ -15,7 +15,7 @@ use crate::consts;
 pub(crate) struct ParityArgs {
     /// Where the sets, their masks and their pictures land.
     #[arg(long, default_value = "target/parity")]
-    dir: PathBuf,
+    pub(crate) dir: PathBuf,
 }
 
 /// Photographs the same documents through both hosts and compares the sets.

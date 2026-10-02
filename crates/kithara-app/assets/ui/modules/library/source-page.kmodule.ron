@@ -9,7 +9,6 @@
         footer: false,
         padding_left: 34.0,
         padding_right: 34.0,
-        columns_state: Model(id: "source.columns", with: { "source": "$source" }),
         write_width: Parameter(id: "source.column.width", with: { "source": "$source" }),
         status: Model(id: "source.status", with: { "source": "$source" }),
         read: Model(id: "source.rows", with: { "source": "$source" }),

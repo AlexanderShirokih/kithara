@@ -12,6 +12,8 @@ validation scope.
   lane excludes these tests because CI runs them separately. UI uses wall-clock
   scheduling because it exercises the real window and graphics contracts;
   virtual-clock coverage remains in the general runtime lanes.
+- UI and perf lane profiles bound their suites. For a focused UI regression, use
+  `just test run --lane=ui -E 'test(<name>)'`; the caller filter narrows that set.
 - Raw `cargo test` or `cargo nextest` is a scoped probe, not a final claim.
 - If a probe is reported, name the package, filter, lane, and why it is enough
   for that local question.

@@ -17,7 +17,6 @@ use crate::{
     layout::{FrameCorners, FrameSides},
     render::{
         HostedControlPlan, Published, Skin,
-        document::stage_box,
         masonry::{
             custom::HostAction,
             menu::PickerLayer,
@@ -104,7 +103,10 @@ impl StageSize {
             .iter()
             .zip(self.shown())
             .find_map(|((_, natural), shown)| shown.then(|| natural.now()));
-        stage_box(self.size.map(declared), first, declared(SizeSpec::FILL))
+        self.size
+            .map(declared)
+            .or(first)
+            .unwrap_or(declared(SizeSpec::FILL))
     }
 }
 
