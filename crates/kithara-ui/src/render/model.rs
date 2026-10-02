@@ -73,6 +73,13 @@ pub struct TreeRow<'a> {
     pub depth: u8,
 }
 
+/// One letter of a badge cell, marked while what it names is active.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Badge<'a> {
+    pub label: &'a str,
+    pub active: bool,
+}
+
 /// Borrowed value in one renderer-facing table cell.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -80,6 +87,7 @@ pub enum TableValue<'a> {
     Empty,
     Number(u8),
     Text(&'a str),
+    Badges(&'a [Badge<'a>]),
 }
 
 /// A table cell addressed by the document column id.
@@ -112,6 +120,14 @@ impl<'a> TableCell<'a> {
     }
 
     #[must_use]
+    pub const fn badges(id: &'a str, value: &'a [Badge<'a>]) -> Self {
+        Self {
+            id,
+            value: TableValue::Badges(value),
+        }
+    }
+
+    #[must_use]
     pub const fn text(id: &'a str, value: &'a str) -> Self {
         Self {
             id,
@@ -135,6 +151,12 @@ pub struct TableRow<'a> {
 }
 
 impl<'a> TableRow<'a> {
+    #[must_use]
+    pub fn with_cell(mut self, cell: TableCell<'a>) -> Self {
+        self.cells.push(cell);
+        self
+    }
+
     #[must_use]
     pub fn new(cells: Vec<TableCell<'a>>, selected: bool) -> Self {
         Self {

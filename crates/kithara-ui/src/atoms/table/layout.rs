@@ -3,12 +3,18 @@ use num_traits::ToPrimitive;
 use super::{ColumnLayout, minimum_table_width};
 use crate::{draw::Rect, render::Skin};
 
-pub(crate) fn table_overflows(columns: &[ColumnLayout], available_width: f32) -> bool {
-    minimum_table_width(columns) > available_width
+pub(crate) fn table_overflows(columns: &[ColumnLayout], available_width: f32, skin: &Skin) -> bool {
+    minimum_table_width(columns) + skin.table.padding_left + skin.table.padding_right
+        > available_width
 }
 
-pub(crate) fn table_content_width(columns: &[ColumnLayout], available_width: f32) -> f32 {
-    minimum_table_width(columns).max(available_width)
+pub(crate) fn table_content_width(
+    columns: &[ColumnLayout],
+    available_width: f32,
+    skin: &Skin,
+) -> f32 {
+    (minimum_table_width(columns) + skin.table.padding_left + skin.table.padding_right)
+        .max(available_width)
 }
 
 pub(crate) fn table_content_height(row_count: usize, skin: &Skin) -> f32 {
@@ -45,7 +51,7 @@ pub(crate) fn table_vertical_scrollbar_rect(
     let rail = Rect {
         h: body.h,
         w: skin.table.scrollbar_width,
-        x: bounds.x - horizontal_offset + table_content_width(columns, bounds.w)
+        x: bounds.x - horizontal_offset + table_content_width(columns, bounds.w, skin)
             - skin.table.scrollbar_margin
             - skin.table.scrollbar_width,
         y: body.y,
@@ -116,8 +122,8 @@ mod tests {
         );
         let minimum = minimum_table_width(&columns);
 
-        assert!(table_overflows(&columns, minimum - 1.0));
-        assert!(!table_overflows(&columns, minimum));
-        assert!(!table_overflows(&columns, minimum + 1.0));
+        assert!(table_overflows(&columns, minimum - 1.0, skin));
+        assert!(!table_overflows(&columns, minimum, skin));
+        assert!(!table_overflows(&columns, minimum + 1.0, skin));
     }
 }

@@ -5,7 +5,7 @@ use std::{
 
 use kithara_test_macros as kithara;
 
-use super::plan::{HostedControlPlan, Resolving, TablePlan, TreePlan};
+use super::plan::{HostedControlPlan, Resolving, TablePlan, TreePlan, empty_bounds};
 use crate::{
     atoms::{
         bar::context::Context,
@@ -19,11 +19,12 @@ use crate::{
         tree::{face::Tree, retained::Drawn as TreeDrawn},
     },
     draw::{Pt, Rect},
-    engine::{Descriptor, Engine, Target},
+    engine::{Engine, Target, TextInputSnapshot},
     expand::{Binding, ControlSpec},
     ids::InternId,
-    interact::{Hit, ScrollAxis},
+    interact::Hit,
     module::TableColumn,
+    mount::{self, SearchField},
     render::{ReadValue, Skin, document::Ctx, picker_hits},
 };
 
@@ -64,6 +65,10 @@ pub(super) struct TableState {
 pub(super) struct TableSource {
     columns_state: Option<(String, String)>,
     rows: Option<String>,
+    status: Option<String>,
+    footer: bool,
+    padding_left: f32,
+    padding_right: f32,
     columns: Vec<TableColumn>,
     resizable: bool,
 }
@@ -76,23 +81,12 @@ pub(super) struct TreeState {
 }
 
 pub(super) struct TreeSource {
-    query: Option<String>,
+    /// The search field the tree draws, reading the endpoint it names.
+    search: Option<SearchField<String>>,
     rows: Option<String>,
 }
 
 impl HostedControlPlan {
-    pub(crate) fn active_descriptors(&self, targets: &[Target<'_>]) -> Vec<Descriptor> {
-        self.descriptors()
-            .into_iter()
-            .filter(|descriptor| match descriptor {
-                Descriptor::Scroll { path, config } if config.axis() == ScrollAxis::Horizontal => {
-                    targets.iter().any(|target| target.path == path)
-                }
-                _ => true,
-            })
-            .collect()
-    }
-
     pub(crate) fn append_targets<'a>(
         &'a self,
         bounds: Rect,
@@ -170,18 +164,19 @@ impl TreePlan {
         engine: &Engine,
         targets: &mut Vec<Target<'a>>,
     ) {
-        if self.view(engine, point, bounds).is_none() {
+        let Some(view) = self.view(engine, point, bounds) else {
             return;
-        }
+        };
         let picture = self.picture();
-        targets.push(Target::new(
-            &self.search_path,
-            Hit::new(point, picture.search_input_bounds(bounds)),
-        ));
-        targets.push(Target::new(
-            &self.path,
-            Hit::new(point, picture.rows_bounds(bounds)),
-        ));
+        if let Some(search) = &self.search_path {
+            targets.push(Target::new(
+                search,
+                Hit::new(point, picture.search_input_bounds(bounds)),
+            ));
+        }
+        let rows = picture.rows_bounds(bounds);
+        targets.push(Target::new(&self.path, Hit::new(point, rows)));
+        self.append_toggle_targets(rows, point, view.offset, targets);
     }
 
     pub(crate) fn bind_projection(&self, projection: Weak<dyn TreeProjection>) {
@@ -201,11 +196,12 @@ impl TreePlan {
         let offset = engine
             .scroll_offset(&self.path)
             .ok_or(MissingEntry { entry: &self.path })?;
-        let search = engine
-            .text_input_snapshot(&self.search_path)
-            .ok_or(MissingEntry {
-                entry: &self.search_path,
-            })?;
+        let search = match &self.search_path {
+            Some(path) => engine
+                .text_input_snapshot(path)
+                .ok_or(MissingEntry { entry: path })?,
+            None => TextInputSnapshot::default(),
+        };
         let picture = self.picture.borrow();
         Ok(TreeDrawn {
             hovered: picture.hovered_row(point, bounds, offset),
@@ -244,7 +240,7 @@ impl TreePlan {
         kithara::probe_event!(
             masonry_tree_refreshed,
             rows = next.row_count(),
-            query_chars = next.query().chars().count()
+            query_chars = next.query().map_or(0, |query| query.chars().count())
         );
         *self.picture.borrow_mut() = next;
         if let Some(projection) = self.projection() {
@@ -290,11 +286,12 @@ impl TablePlan {
         engine: &Engine,
         targets: &mut Vec<Target<'a>>,
     ) {
+        self.viewport_width.set(bounds.w);
         let Some(view) = self.view(engine, point, bounds) else {
             return;
         };
         let picture = self.picture();
-        let overflows = table_overflows(&view.columns, bounds.w);
+        let overflows = table_overflows(&view.columns, bounds.w, picture.skin());
         if overflows {
             targets.push(Target::new(&self.horizontal_path, Hit::new(point, bounds)));
         }
@@ -322,9 +319,16 @@ impl TablePlan {
                 Hit::new(point, empty_bounds(bounds)),
             )),
         }
-        for divider in table_dividers(bounds, &view.columns, view.horizontal, picture.skin()) {
-            let divider_path = self.divider_path(&divider.column);
-            let hit = table_visible_divider_hit(bounds, divider.hit)
+        let dividers = table_dividers(bounds, &view.columns, view.horizontal, picture.skin());
+        for (index, column) in view.columns.iter().enumerate() {
+            if !column_resizable(&view.columns, index) {
+                continue;
+            }
+            let divider_path = self.divider_path(&column.column);
+            let hit = dividers
+                .iter()
+                .find(|divider| divider.column == column.column)
+                .and_then(|divider| table_visible_divider_hit(bounds, divider.hit))
                 .or_else(|| engine.captures(divider_path).then(|| empty_bounds(bounds)));
             if let Some(hit) = hit {
                 targets.push(Target::new(divider_path, Hit::new(point, hit)));
@@ -360,7 +364,7 @@ impl TablePlan {
                 .ok_or(MissingEntry { entry: path })?;
             columns[index].width = width;
         }
-        let overflows = table_overflows(&columns, bounds.w);
+        let overflows = table_overflows(&columns, bounds.w, picture.skin());
         let horizontal = if overflows {
             engine
                 .scroll_offset(&self.horizontal_path)
@@ -461,15 +465,20 @@ impl TablePlan {
 
 impl TableSource {
     pub(super) fn new(
-        (columns, resizable): (Vec<TableColumn>, bool),
+        table: &mount::Table<'_>,
         columns_state: Option<(String, String)>,
         rows: Option<String>,
+        status: Option<String>,
     ) -> Self {
         Self {
+            columns: table.columns.to_vec(),
+            resizable: table.resizable,
+            footer: table.footer,
+            padding_left: table.padding_left,
+            padding_right: table.padding_right,
             columns_state,
             rows,
-            columns,
-            resizable,
+            status,
         }
     }
 
@@ -490,13 +499,23 @@ impl TableSource {
             .as_ref()
             .map(|(prefix, scope)| (prefix.as_str(), scope.as_str()));
         let columns = column_layouts((&self.columns, self.resizable), &ctx, state, skin);
+        let status = self
+            .status
+            .as_deref()
+            .and_then(|endpoint| ctx.get(endpoint));
+        let status = match status {
+            Some(ReadValue::Text(text)) => text,
+            _ => "",
+        };
         TableFace::new(rows, columns, skin)
+            .with_layout(self.padding_left, self.padding_right, self.footer)
+            .with_status(status)
     }
 }
 
 impl TreeSource {
-    pub(super) fn new(rows: Option<String>, query: Option<String>) -> Self {
-        Self { query, rows }
+    pub(super) fn new(rows: Option<String>, search: Option<SearchField<String>>) -> Self {
+        Self { search, rows }
     }
 
     fn picture(&self, ctx: Ctx<'_, '_>, skin: &Skin) -> Tree {
@@ -509,30 +528,23 @@ impl TreeSource {
                 _ => None,
             })
             .unwrap_or_default();
-        let query = self
-            .query
-            .as_deref()
-            .and_then(|endpoint| ctx.get(endpoint))
-            .and_then(|value| match value {
-                ReadValue::Text(query) => Some(query),
-                _ => None,
-            })
-            .unwrap_or_default();
+        let query = self.search.as_ref().map(|field| {
+            field
+                .query
+                .as_deref()
+                .and_then(|endpoint| ctx.get(endpoint))
+                .and_then(|value| match value {
+                    ReadValue::Text(query) => Some(query),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        });
         Tree::new(rows, query, skin)
     }
 }
 
 struct MissingEntry<'a> {
     entry: &'a str,
-}
-
-const fn empty_bounds(bounds: Rect) -> Rect {
-    Rect {
-        x: bounds.x,
-        y: bounds.y,
-        w: 0.0,
-        h: 0.0,
-    }
 }
 
 #[cfg(test)]
@@ -552,8 +564,9 @@ mod tests {
         let skin = builtin::skin();
         let plan = HostedControlPlan::Tree(Box::new(TreePlan {
             path: "tree".to_owned(),
-            picture: Rc::new(RefCell::new(Tree::new(&[], "", skin))),
-            search_path: "tree/search".to_owned(),
+            picture: Rc::new(RefCell::new(Tree::new(&[], Some(""), skin))),
+            search_path: Some("tree/search".to_owned()),
+            toggle_path: None,
             state: TreeState::default(),
         }));
         let bounds = Rect {
@@ -686,7 +699,7 @@ mod tests {
     }
 
     #[kithara::test]
-    fn table_drops_horizontal_state_when_overflow_ends() {
+    fn library_followup_table_survives_narrow_wide_narrow() {
         let skin = builtin::skin();
         let columns = vec![
             ColumnLayout {
@@ -759,8 +772,15 @@ mod tests {
                 .all(|target| target.path != "tracks/scroll-x")
         );
 
-        engine.reconcile(plan.active_descriptors(&retained_targets));
-        assert_eq!(engine.scroll_offset("tracks/scroll-x"), None);
+        engine.reconcile(plan.descriptors());
+        assert!(engine.scroll_offset("tracks/scroll-x").is_some());
+        let mut narrowed_targets = Vec::new();
+        plan.append_targets(narrow, point, Some(&engine), &mut narrowed_targets);
+        assert!(
+            narrowed_targets
+                .iter()
+                .any(|target| target.path == "tracks/rows")
+        );
     }
 
     /// A table plan over fixed columns, bound to a source that declares them.
@@ -770,9 +790,23 @@ mod tests {
         columns: Vec<ColumnLayout>,
         skin: &Skin,
     ) -> TablePlan {
-        let declared = columns.iter().map(|column| column.column.clone()).collect();
-        let plan = TablePlan::new(path, rows, columns, skin);
-        plan.bind_source(TableSource::new((declared, true), None, None));
+        let declared: Vec<TableColumn> =
+            columns.iter().map(|column| column.column.clone()).collect();
+        let plan = TablePlan::new(path, TableFace::new(rows, columns, skin));
+        plan.bind_source(TableSource::new(
+            &mount::Table {
+                columns: &declared,
+                columns_state: None,
+                status: None,
+                footer: true,
+                padding_left: 0.0,
+                padding_right: 0.0,
+                resizable: true,
+            },
+            None,
+            None,
+            None,
+        ));
         plan
     }
 

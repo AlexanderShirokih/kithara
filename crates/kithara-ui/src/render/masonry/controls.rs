@@ -133,6 +133,10 @@ mod table_projection {
                 TableColumn::new("name", "NAME", TableColumnStyle::Primary, 192.0, true),
             ],
             columns_state: None,
+            status: None,
+            footer: true,
+            padding_left: 0.0,
+            padding_right: 0.0,
             resizable: true,
         };
         let cx = Resolving {

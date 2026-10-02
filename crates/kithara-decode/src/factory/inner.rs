@@ -17,8 +17,8 @@ use kithara_stream::{
 use serde::Deserialize;
 
 use super::probe::{
-    ProbeHint, codec_from_mp4_fourcc, container_from_extension, probe_codec,
-    resolve_codec_container, sniff_container_from_source,
+    ProbeHint, codec_from_mp4_fourcc, probe_codec, resolve_codec_container,
+    sniff_container_from_source,
 };
 #[cfg(apple_backend)]
 use crate::GaplessInfo;
@@ -203,7 +203,7 @@ impl DecoderFactory {
     {
         let mut source = source;
         let mut probe_hint = ProbeHint {
-            container: hint.and_then(container_from_extension),
+            container: hint.and_then(ContainerFormat::parse_extension),
             extension: hint.map(String::from),
             ..Default::default()
         };

@@ -11,7 +11,6 @@ use crate::{
     error::UiDocError,
     ids::{InternId, Interner},
     module::{BindingRef, ControlNode, TableColumn, Tone, WaveStyle},
-    param::Param,
     shader::{self, ShaderUniform},
     validate,
 };
@@ -205,11 +204,13 @@ pub(super) fn control_spec(
             extra.zoom.as_ref(),
             path,
         )?,
-        ControlNode::Table { columns, .. } => {
-            table_control_spec(context, machine, columns.as_ref(), extra, path)?
+        table @ ControlNode::Table { .. } => {
+            table_control_spec(context, machine, table, extra, path)?
         }
         ControlNode::Tree { .. } => ControlSpec::Tree {
             query: optional_binding(context, machine, extra.query.as_ref())?,
+            search: extra.query.is_some() || extra.writes.query.is_some(),
+            toggle: extra.writes.toggle.is_some(),
         },
         ControlNode::ContextBar { scope_items, .. } => context_bar_spec(
             context,
@@ -411,6 +412,7 @@ fn table_spec(
     context: &Context<'_>,
     machine: &mut Expander<'_, '_>,
     columns: &[TableColumn],
+    (padding_left, padding_right, footer): (f32, f32, bool),
     extra: &ExtraBindings,
     path: &str,
 ) -> Result<ControlSpec, UiDocError> {
@@ -432,6 +434,10 @@ fn table_spec(
     }
     Ok(ControlSpec::Table {
         columns: resolved,
+        status: intern_optional_binding(machine.interner, extra.status.as_ref(), &context.origin)?,
+        footer,
+        padding_left,
+        padding_right,
         columns_state: intern_optional_binding(
             machine.interner,
             extra.columns_state.as_ref(),
@@ -444,10 +450,29 @@ fn table_spec(
 fn table_control_spec(
     context: &Context<'_>,
     machine: &mut Expander<'_, '_>,
-    columns: Option<&Param<Vec<TableColumn>>>,
+    table: &ControlNode,
     extra: &ExtraBindings,
     path: &str,
 ) -> Result<ControlSpec, UiDocError> {
-    let columns = context.optional_param(columns, path)?.unwrap_or_default();
-    table_spec(context, machine, &columns, extra, path)
+    let ControlNode::Table {
+        columns,
+        footer,
+        padding_left,
+        padding_right,
+        ..
+    } = table
+    else {
+        unreachable!("table_control_spec is called only for a table")
+    };
+    let columns = context
+        .optional_param(columns.as_ref(), path)?
+        .unwrap_or_default();
+    table_spec(
+        context,
+        machine,
+        &columns,
+        (*padding_left, *padding_right, *footer),
+        extra,
+        path,
+    )
 }

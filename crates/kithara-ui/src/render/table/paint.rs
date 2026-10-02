@@ -7,10 +7,10 @@ use iced::{
 };
 use kithara_test_macros as kithara;
 
-use super::super::{Carried, Marked, Marks, Probe, Published, Skin, controls::RetainedCanvasState};
+use super::super::{Carried, Marked, Marks, Probe, Published, controls::RetainedCanvasState};
 use crate::{
     atoms::table::{
-        ColumnLayout, TableRowData, column_resizable,
+        column_resizable,
         face::{Drawn, TableFace},
         minimum_table_width, table_content_height, table_row_at,
     },
@@ -35,14 +35,9 @@ pub(super) struct TablePaint {
 }
 
 impl TablePaint {
-    pub(super) fn new(
-        path: &str,
-        rows: Vec<TableRowData>,
-        columns: Vec<ColumnLayout>,
-        skin: &Skin,
-    ) -> Self {
+    pub(super) fn new(path: &str, face: TableFace) -> Self {
         Self {
-            face: Rc::new(TableFace::new(rows, columns, skin)),
+            face: Rc::new(face),
             path: path.to_owned(),
         }
     }
@@ -61,7 +56,9 @@ impl TablePaint {
                 + skin.table.footer_height
                 + skin.table.grid_gap * 2.0,
             content_height: table_content_height(self.face.rows().len(), skin),
-            content_width: minimum_table_width(self.face.columns()),
+            content_width: minimum_table_width(self.face.columns())
+                + skin.table.padding_left
+                + skin.table.padding_right,
             divider_columns: self
                 .face
                 .columns()

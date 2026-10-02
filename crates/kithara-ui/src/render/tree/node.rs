@@ -22,6 +22,7 @@ use crate::{
         document::{
             Ctx, Group, GroupMount, Host as DocumentHost, Measured as MeasuredPlan,
             Module as DocumentModule, PlacedMount, Popover as DocumentPopover, SplitMount,
+            StageMount, stage_box,
         },
         drop_outline, placed, window_layers,
     },
@@ -307,8 +308,15 @@ impl<'a> DocumentHost for IcedHost<'a, '_> {
         .into()
     }
 
-    fn stage(&mut self, children: Vec<Self::Output>, size: Option<SizeSpec>) -> Self::Output {
-        stage(children, size)
+    fn stage(
+        &mut self,
+        children: Vec<StageMount<Self::Output>>,
+        size: Option<SizeSpec>,
+    ) -> Self::Output {
+        stage(
+            children.into_iter().map(|child| child.output).collect(),
+            size,
+        )
     }
 
     fn window(&mut self, content: Self::Output, resize_edges: bool) -> Self::Output {
@@ -341,7 +349,8 @@ fn stage<'a>(
     children: Vec<Element<'a, Published>>,
     size: Option<SizeSpec>,
 ) -> Element<'a, Published> {
-    let Some(size) = size else {
+    let first_shown = children.first().map(|_| None);
+    let Some(size) = stage_box(size.map(Some), first_shown, Some(SizeSpec::FILL)) else {
         return Stack::with_children(children).into();
     };
     let mut layers: Vec<Element<'a, Published>> = Vec::with_capacity(children.len() + 1);

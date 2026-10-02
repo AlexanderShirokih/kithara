@@ -1,6 +1,7 @@
 use num_traits::ToPrimitive;
 
 use crate::{
+    interact::recognizers::Track,
     module::TableColumn,
     render::{ReadValue, Reads, Skin},
 };
@@ -14,8 +15,37 @@ pub(crate) struct ColumnLayout {
 
 pub(crate) fn column_resizable(columns: &[ColumnLayout], index: usize) -> bool {
     columns.get(index).is_some_and(|column| {
-        column.resizable && !column.column.flexible() && index + 1 < columns.len()
+        column.resizable
+            && (index + 1 < columns.len()
+                || columns[..index]
+                    .iter()
+                    .any(|column| column.column.flexible()))
     })
+}
+
+pub(crate) fn column_resize_track(
+    columns: &[ColumnLayout],
+    index: usize,
+    available_width: f32,
+    skin: &Skin,
+) -> Track {
+    let column = &columns[index];
+    let minimum_width =
+        minimum_table_width(columns) + skin.table.padding_left + skin.table.padding_right;
+    let reverse = available_width >= minimum_width
+        && columns[..index]
+            .iter()
+            .any(|column| column.column.flexible());
+    Track::HorizontalPixels {
+        minimum: if column.column.flexible() {
+            column.column.width()
+        } else {
+            skin.table.min_column_width
+        },
+        maximum: reverse.then_some(column.width + available_width - minimum_width),
+        direction: if reverse { -1.0 } else { 1.0 },
+        value: column.width,
+    }
 }
 
 fn column_visible(reads: &dyn Reads, state: Option<(&str, &str)>, column: &TableColumn) -> bool {

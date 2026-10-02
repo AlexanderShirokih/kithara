@@ -200,6 +200,9 @@ impl Leaf {
                 text,
                 ..
             } => {
+                if content.is_empty() {
+                    return Size::ZERO;
+                }
                 let run = text.shape(content, *role, None);
                 Size::new(run.width() + *padding_x * 2.0, run.height())
             }
@@ -305,6 +308,14 @@ impl Leaf {
             },
             Self::Custom { .. } | Self::Empty | Self::Shader(_) | Self::Vis(_) => false,
         }
+    }
+
+    /// Whether this text leaf is empty, which measures zero.
+    pub(crate) fn text_is_empty(&self) -> Option<bool> {
+        let Self::Text { content, .. } = self else {
+            return None;
+        };
+        Some(content.is_empty())
     }
 
     pub(crate) fn shader_declaration(&self) -> Option<ShaderDeclaration> {

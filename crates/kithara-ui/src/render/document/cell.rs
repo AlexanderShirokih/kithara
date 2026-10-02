@@ -48,6 +48,19 @@ pub struct SplitMount<T> {
     pub weight: f32,
 }
 
+/// One child of a stage, as its host mounts it.
+#[non_exhaustive]
+pub struct StageMount<T> {
+    /// What the document reads to know this child is hidden.
+    pub block: Option<Binding>,
+    pub output: T,
+}
+
+/// A stage's box: its own, else its first shown child's, else `fill`.
+pub(crate) fn stage_box<T>(own: Option<T>, first_shown: Option<T>, fill: T) -> T {
+    own.or(first_shown).unwrap_or(fill)
+}
+
 /// One child of a row or column, as its host mounts it.
 #[non_exhaustive]
 pub struct GroupMount<T> {

@@ -516,15 +516,21 @@ impl HostedLayout {
         targets
     }
 }
-pub(super) fn tree_input_layout(layout: Layout<'_>) -> Option<Layout<'_>> {
-    let panel = layout.children().nth(1)?;
-    first_child(panel)
-}
-
-pub(super) fn tree_search_input_layout(layout: Layout<'_>) -> Option<Layout<'_>> {
-    let search = layout.children().next()?;
-    let row = first_child(search)?;
-    row.children().nth(1)
+/// The search field, if drawn, and the rows of an immediate-host tree.
+pub(super) fn tree_input_layouts(
+    layout: Layout<'_>,
+    searched: bool,
+) -> (Option<Layout<'_>>, Option<Layout<'_>>) {
+    let mut children = layout.children();
+    let search = if searched {
+        children
+            .next()
+            .and_then(first_child)
+            .and_then(|row| row.children().nth(1))
+    } else {
+        None
+    };
+    (search, children.next().and_then(first_child))
 }
 
 pub(super) fn group_children(

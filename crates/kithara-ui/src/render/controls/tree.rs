@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use iced::{
     Element, Event, Rectangle, Renderer, Theme,
     advanced::widget::{Id, Operation},
-    mouse::{Cursor, Interaction},
+    mouse::{self, Cursor, Interaction},
     widget::canvas::{self, Action, Frame, Geometry},
 };
 use num_traits::ToPrimitive;
@@ -14,13 +14,15 @@ use crate::{
     backends::replay_ordered,
     draw::Rect,
     engine::{ScrollConfig, ScrollState},
-    interact::{ScrollAxis, iced as iced_interact},
+    interact::{Outcome, ScrollAxis, iced as iced_interact},
     render::{InputOwner, Published, index},
     shaping::TextContext,
 };
 
+/// The rows of a tree; `toggle` is where a pressed chevron writes, if any.
 pub(crate) fn tree_rows<'a>(
     path: &str,
+    toggle: Option<String>,
     picture: Tree,
     owner: InputOwner,
 ) -> Element<'a, Published> {
@@ -38,6 +40,7 @@ pub(crate) fn tree_rows<'a>(
             TreeProgram {
                 picture,
                 path: path.to_owned(),
+                toggle,
             },
             path,
             config,
@@ -70,7 +73,24 @@ pub(crate) fn sync_tree_scroll(path: &str, offset: f32) -> impl Operation + '_ {
 
 struct TreeProgram {
     path: String,
+    toggle: Option<String>,
     picture: Tree,
+}
+
+impl TreeProgram {
+    fn chevron(&self, offset: f32, bounds: Rectangle, cursor: Cursor) -> Option<usize> {
+        let point = cursor.position_in(bounds)?.into();
+        let viewport = Rect {
+            h: bounds.height,
+            w: bounds.width,
+            x: 0.0,
+            y: 0.0,
+        };
+        self.picture
+            .toggle_regions(viewport, offset)
+            .into_iter()
+            .find_map(|(index, chevron)| chevron.contains(point).then_some(index))
+    }
 }
 
 impl canvas::Program<Published> for TreeProgram {
@@ -121,6 +141,12 @@ impl canvas::Program<Published> for TreeProgram {
             self.picture.skin().tree.row_height,
             self.picture.skin().tree.scrollbar_margin + self.picture.skin().tree.scrollbar_width,
         );
+        if let (Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)), Some(toggle)) =
+            (event, &self.toggle)
+            && let Some(row) = self.chevron(state.scroll.offset(), bounds, cursor)
+        {
+            return index(toggle, Outcome::set(row));
+        }
         let input = iced_interact::input(event)?;
         let before = state.scroll.offset();
         let outcome = state
@@ -324,7 +350,7 @@ mod tests {
     fn paint_only_program_has_no_input_update() {
         let skin = builtin::skin();
         let paint = TreePaint {
-            picture: Tree::new(&rows(), "", skin),
+            picture: Tree::new(&rows(), None, skin),
         };
         let mut state = TreeState::default();
         state.reconcile_scroll(
@@ -333,7 +359,7 @@ mod tests {
             skin.tree.row_height,
             skin.tree.scrollbar_margin + skin.tree.scrollbar_width,
         );
-        let event = Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left));
+        let event = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
 
         assert!(
             canvas::Program::update(
@@ -356,8 +382,9 @@ mod tests {
     fn leaf_wheel_moves_offset_without_notifying_the_document() {
         let skin = builtin::skin();
         let program = TreeProgram {
-            picture: Tree::new(&rows(), "", skin),
+            picture: Tree::new(&rows(), None, skin),
             path: "tree/browser".to_owned(),
+            toggle: None,
         };
         let mut state = TreeState::default();
         let bounds = Rectangle {
@@ -366,8 +393,8 @@ mod tests {
             x: 0.0,
             y: 0.0,
         };
-        let event = Event::Mouse(iced::mouse::Event::WheelScrolled {
-            delta: iced::mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 },
+        let event = Event::Mouse(mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 },
         });
 
         let action = canvas::Program::update(
@@ -411,7 +438,7 @@ mod tests {
             state
                 .scroll
                 .handle(Input::Pointer(mouse_input(PointerPhase::Up, None)), &hit,),
-            crate::interact::Outcome::IGNORED
+            Outcome::IGNORED
         );
         assert_eq!(state.scroll.offset(), 0.0);
     }

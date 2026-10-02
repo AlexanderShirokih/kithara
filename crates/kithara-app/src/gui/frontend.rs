@@ -14,11 +14,11 @@ use kithara::{
 
 use super::{
     app::Kithara,
+    library::{Library, PagesModule, StartupSource},
     ui::{AppUi, package::Package, window::consts::WINDOW_SIZE},
     update, view,
 };
 use crate::{
-    catalog::Catalog,
     engine::{EngineSnapshot, Envelope},
     theme::Palette,
 };
@@ -75,7 +75,9 @@ pub(crate) fn window_settings(min: Size) -> Settings {
 pub(crate) struct Boot {
     pub(super) ui: AppUi,
     pub(super) snapshots: Arc<ArcSwap<EngineSnapshot>>,
-    pub(super) catalog: Catalog,
+    pub(super) library: Library,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) picker: super::library::FolderPicker,
     pub(super) palette: Palette,
     #[cfg(feature = "masonry")]
     pub(super) settings: UiConfig,
@@ -94,14 +96,25 @@ impl Boot {
         commands: UnboundedSender<Envelope>,
         #[builder(default)] chrome_hidden: bool,
     ) -> Result<Self, FrontendError> {
-        let mut ui = AppUi::new(Package::load(package)?, settings)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let (explorer, picker) = super::library::Explorer::registered(std::env::home_dir());
+        let registered = vec![
+            StartupSource::registered(tracks),
+            #[cfg(not(target_arch = "wasm32"))]
+            explorer,
+        ];
+        let package = Package::load(package, &PagesModule::new(&registered))?;
+        let library = Library::new(registered, package.text())?;
+        let mut ui = AppUi::new(package, settings)?;
         ui.cache.window.set_chrome_hidden(chrome_hidden);
         Ok(Self {
+            ui,
             snapshots,
+            library,
+            #[cfg(not(target_arch = "wasm32"))]
+            picker,
             palette,
             commands,
-            ui,
-            catalog: Catalog::new(tracks),
             #[cfg(feature = "masonry")]
             settings: settings.clone(),
         })
@@ -118,7 +131,7 @@ mod tests {
     use kithara_test_utils::kithara;
 
     use super::*;
-    use crate::gui::reads::ReadRoot;
+    use crate::gui::{reads::ReadRoot, test_fixture};
 
     fn booted(chrome_hidden: bool) -> Kithara {
         let snapshots = Arc::new(ArcSwap::from_pointee(EngineSnapshot::unpublished()));
@@ -133,6 +146,34 @@ mod tests {
             .build()
             .unwrap();
         Kithara::mounted(boot, Id::unique())
+    }
+
+    /// The row follows the folder picker, whichever sources are mounted.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[kithara::test]
+    fn the_add_folder_row_shows_wherever_a_folder_picker_exists() {
+        let (package, library) =
+            test_fixture::mount(None, vec![StartupSource::registered(Vec::new())])
+                .expect("the startup source mounts");
+        let picker = crate::gui::library::Explorer::registered(None).1;
+        let (commands, _) = mpsc::unbounded_channel();
+        let boot = Boot {
+            ui: AppUi::new(package, &UiConfig::default()).expect("the shipped UI compiles"),
+            snapshots: Arc::new(ArcSwap::from_pointee(EngineSnapshot::unpublished())),
+            library,
+            picker,
+            palette: Palette::default(),
+            #[cfg(feature = "masonry")]
+            settings: UiConfig::default(),
+            commands,
+        };
+        let state = Kithara::mounted(boot, Id::unique());
+        let root = ReadRoot::new(&state);
+
+        assert_eq!(
+            Walk::new(&root).get("library.add_folder.hidden"),
+            Some(ReadValue::Bool(false)),
+        );
     }
 
     #[kithara::test]

@@ -7,7 +7,10 @@ use kithara::{
         sync::Arc,
         thread,
         time::{Duration, Instant, WallInstant},
-        tokio::sync::mpsc::{self, UnboundedReceiver},
+        tokio::sync::{
+            mpsc::{self, UnboundedReceiver},
+            watch,
+        },
     },
     ui::render::{ControlAction, Published, ReadValue, Reads, Walk},
 };
@@ -60,6 +63,7 @@ impl Rig {
         config: &AppConfig,
         mut host: AppHost,
         broadcast: Broadcaster,
+        analysis: AnalysisHandle,
         model: impl FnMut(&Deck) -> StateController,
     ) -> Self {
         let decks: Vec<Deck> = (0..2)
@@ -80,6 +84,7 @@ impl Rig {
             config.clone(),
             broadcast,
             Arc::clone(&snapshots),
+            analysis,
             model,
         );
         let ui = Kithara::mounted(boot, Id::unique());
@@ -135,6 +140,7 @@ impl Rig {
             &config,
             host,
             Broadcaster::new(AppBroadcastConfig::default()),
+            AnalysisHandle::channel(watch::channel(Default::default()).1).0,
             |deck| {
                 let queue = deck.queue.control().clone();
                 let state = Arc::new(kithara::platform::sync::Mutex::new(
@@ -187,8 +193,8 @@ impl Rig {
 
     fn realtime_with(config: &AppConfig, broadcast: Broadcaster) -> Self {
         let host = AppHost::new(HostConfig::builder().build()).expect("test host");
-        let (analysis, _) = AnalysisHandle::channel();
-        Self::build(config, host, broadcast, |deck| {
+        let (analysis, _) = AnalysisHandle::channel(watch::channel(Default::default()).1);
+        Self::build(config, host, broadcast, analysis.clone(), |deck| {
             StateController::new(
                 deck.queue.control().clone(),
                 Arc::clone(&deck.timestretch),

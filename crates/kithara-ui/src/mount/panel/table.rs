@@ -9,4 +9,8 @@ pub(crate) struct Table<'a> {
     pub(crate) columns: &'a [TableColumn],
     pub(crate) columns_state: Option<&'a Binding>,
     pub(crate) resizable: bool,
+    pub(crate) footer: bool,
+    pub(crate) padding_left: f32,
+    pub(crate) padding_right: f32,
+    pub(crate) status: Option<&'a Binding>,
 }

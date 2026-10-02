@@ -5,7 +5,7 @@ use super::{
     table_vertical_scrollbar_rect,
 };
 use crate::{
-    atoms::table::TableCell,
+    atoms::table::{BadgeLetter, TableCell},
     draw::{Pt, Rect},
     render::{Skin, TableRow as ReadRow, TableValue},
 };
@@ -26,6 +26,15 @@ impl From<&ReadRow<'_>> for TableRowData {
                 .map(|cell| {
                     let value = match cell.value() {
                         TableValue::Empty => TableCell::Empty,
+                        TableValue::Badges(badges) => TableCell::Badges(
+                            badges
+                                .iter()
+                                .map(|badge| BadgeLetter {
+                                    label: badge.label.to_owned(),
+                                    active: badge.active,
+                                })
+                                .collect(),
+                        ),
                         TableValue::Number(value) => TableCell::Number(value),
                         TableValue::Text(value) => TableCell::Text(value.to_owned()),
                     };
@@ -62,7 +71,7 @@ pub(crate) fn table_row_rect(
     Rect {
         y,
         h: skin.table.row_height,
-        w: table_content_width(columns, bounds.w),
+        w: table_content_width(columns, bounds.w, skin),
         x: bounds.x - horizontal_offset,
     }
 }

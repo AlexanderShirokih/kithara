@@ -11,7 +11,8 @@ mod poses;
 #[cfg(test)]
 mod probe;
 
-pub use cell::{Band, GroupMount, Measured, SplitMount};
+pub(crate) use cell::stage_box;
+pub use cell::{Band, GroupMount, Measured, SplitMount, StageMount};
 pub use ctx::{Clock, Ctx};
 pub use facade::render;
 pub use group::{Group, Lit};

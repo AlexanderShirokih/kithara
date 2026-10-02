@@ -147,17 +147,31 @@ macro_rules! controls {
             $crate::expand::ControlSpec::Table {
                 columns,
                 columns_state,
+                status,
+                footer,
+                padding_left,
+                padding_right,
                 resizable,
             } => with.apply(
                 &$crate::mount::Table::builder()
                     .columns(columns)
                     .maybe_columns_state(columns_state.as_ref())
                     .resizable(*resizable)
+                    .footer(*footer)
+                    .padding_left(*padding_left)
+                    .padding_right(*padding_right)
+                    .maybe_status(status.as_ref())
                     .build(),
             ),
-            $crate::expand::ControlSpec::Tree { query } => with.apply(
+            $crate::expand::ControlSpec::Tree {
+                query,
+                search,
+                toggle,
+            } => with.apply(
                 &$crate::mount::Tree::builder()
                     .maybe_query(query.as_ref())
+                    .search(*search)
+                    .toggle(*toggle)
                     .build(),
             ),
             $crate::expand::ControlSpec::ContextBar { scope_items, scope } => with.apply(

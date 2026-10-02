@@ -12,18 +12,19 @@ use crate::{
     atoms::{
         bar::context::Context,
         table::{
-            ColumnLayout, TableRowData, column_layouts, column_resizable, face::TableFace,
-            minimum_table_width, table_content_height,
+            ColumnLayout, TableRowData, column_layouts, column_resizable, column_resize_track,
+            face::TableFace, minimum_table_width, table_content_height,
         },
         tree::face::Tree,
         wave::zoom_math::{Zoom, window_bounds, zoom_for_wheel},
     },
-    draw::Rect,
-    engine::{Descriptor, ScrollConfig},
+    draw::{Pt, Rect},
+    engine::{Descriptor, ScrollConfig, Target},
     expand::{Binding, ControlSpec, drop_path},
     ids::InternId,
-    interact::{CursorShape, Hover, ScrollAxis, recognizers::WheelStep},
+    interact::{CursorShape, Hit, Hover, ScrollAxis, recognizers::WheelStep},
     module::{FaderStyle, TableColumn, WaveStyle},
+    mount::{self, SearchField},
     render::{
         ReadValue, Skin, TableRow, TreeRow, document::Ctx, model::derived, picker_selected_index,
         text_input_layout,
@@ -151,7 +152,8 @@ impl HeroWindow {
 pub(crate) struct TreePlan {
     pub(crate) path: String,
     pub(super) picture: Rc<RefCell<Tree>>,
-    pub(crate) search_path: String,
+    pub(crate) search_path: Option<String>,
+    pub(crate) toggle_path: Option<String>,
     #[cfg(feature = "masonry")]
     pub(super) state: TreeState,
 }
@@ -162,8 +164,8 @@ pub(crate) struct TablePlan {
     pub(crate) horizontal_path: String,
     pub(crate) path: String,
     pub(crate) row_target: String,
-    min_column_width: f32,
-    pub(super) picture: Rc<RefCell<TableFace>>,
+    pub(in crate::render) viewport_width: Rc<Cell<f32>>,
+    pub(in crate::render) picture: Rc<RefCell<TableFace>>,
     #[cfg(feature = "masonry")]
     pub(super) state: TableState,
 }
@@ -284,8 +286,8 @@ impl HostedControlPlan {
     }
 
     fn descriptor_count(&self) -> usize {
-        if matches!(self, Self::Tree(_)) {
-            return TreePlan::DESCRIPTORS;
+        if let Self::Tree(plan) = self {
+            return plan.descriptor_count();
         }
         if let Self::Table(plan) = self {
             return plan.descriptor_count();
@@ -373,46 +375,54 @@ impl HostedControlPlan {
                     skin,
                 ))
             }
-            (ControlSpec::Tree { query }, Some(ReadValue::Tree(rows))) => Some(Self::Tree(
-                Box::new(tree_plan(path, query.as_ref(), read, rows, cx)),
-            )),
-            (ControlSpec::Tree { query }, _) => Some(Self::Tree(Box::new(tree_plan(
-                path,
-                query.as_ref(),
-                read,
-                &[],
-                cx,
-            )))),
+            (
+                ControlSpec::Tree {
+                    query,
+                    search,
+                    toggle,
+                },
+                value,
+            ) => {
+                let rows = match value {
+                    Some(ReadValue::Tree(rows)) => rows,
+                    _ => &[],
+                };
+                let tree = mount::Tree {
+                    query: query.as_ref(),
+                    search: *search,
+                    toggle: *toggle,
+                };
+                Some(Self::Tree(Box::new(tree_plan(path, &tree, read, rows, cx))))
+            }
             (
                 ControlSpec::Table {
                     columns,
                     columns_state,
+                    status,
+                    footer,
+                    padding_left,
+                    padding_right,
                     resizable,
                 },
-                Some(ReadValue::Table(rows)),
-            ) => Some(Self::Table(Box::new(TablePlan::resolved(
-                path,
-                (columns, *resizable),
-                columns_state.as_ref(),
-                read,
-                rows,
-                cx,
-            )))),
-            (
-                ControlSpec::Table {
+                value,
+            ) => {
+                let table = mount::Table {
                     columns,
-                    columns_state,
-                    resizable,
-                },
-                _,
-            ) => Some(Self::Table(Box::new(TablePlan::resolved(
-                path,
-                (columns, *resizable),
-                columns_state.as_ref(),
-                read,
-                &[],
-                cx,
-            )))),
+                    columns_state: columns_state.as_ref(),
+                    status: status.as_ref(),
+                    footer: *footer,
+                    padding_left: *padding_left,
+                    padding_right: *padding_right,
+                    resizable: *resizable,
+                };
+                let rows = match value {
+                    Some(ReadValue::Table(rows)) => rows,
+                    _ => &[],
+                };
+                Some(Self::Table(Box::new(TablePlan::resolved(
+                    path, &table, read, rows, cx,
+                ))))
+            }
             (ControlSpec::Fader { style, label }, Some(ReadValue::Scalar(value))) => {
                 let (drag_step, wheel) = match style {
                     FaderStyle::Default => (Some(skin.fader.step), None),
@@ -462,30 +472,36 @@ impl HostedControlPlan {
 
 fn tree_plan(
     path: &str,
-    query: Option<&Binding>,
+    tree: &mount::Tree<'_>,
     _read: Option<&Binding>,
     rows: &[TreeRow<'_>],
     cx: Resolving<'_>,
 ) -> TreePlan {
     let Resolving { ctx, skin } = cx;
-    let query_text = query
-        .and_then(|binding| ctx.read(binding))
-        .and_then(|value| match value {
-            ReadValue::Text(query) => Some(query),
-            _ => None,
-        })
-        .unwrap_or_default();
+    let search = tree.search_field();
+    let query_text = search.map(|SearchField { query }| {
+        query
+            .and_then(|binding| ctx.read(binding))
+            .and_then(|value| match value {
+                ReadValue::Text(query) => Some(query),
+                _ => None,
+            })
+            .unwrap_or_default()
+    });
     let plan = TreePlan {
         path: path.to_owned(),
         picture: Rc::new(RefCell::new(Tree::new(rows, query_text, skin))),
-        search_path: format!("{path}/search"),
+        search_path: search.map(|_| format!("{path}/search")),
+        toggle_path: tree.toggle.then(|| format!("{path}/toggle")),
         #[cfg(feature = "masonry")]
         state: TreeState::default(),
     };
     #[cfg(feature = "masonry")]
     plan.bind_source(TreeSource::new(
         _read.map(|binding| ctx.ui.resolve(binding.key).to_owned()),
-        query.map(|binding| ctx.ui.resolve(binding.key).to_owned()),
+        search.map(|SearchField { query }| SearchField {
+            query: query.map(|binding| ctx.ui.resolve(binding.key).to_owned()),
+        }),
     ));
     plan
 }
@@ -537,17 +553,47 @@ fn wave_plan(
 }
 
 impl TreePlan {
-    /// A tree registers exactly two: its search field and its scroll.
-    const DESCRIPTORS: usize = 2;
+    /// The scroll, plus the search field and chevrons when present.
+    fn descriptor_count(&self) -> usize {
+        1 + usize::from(self.search_path.is_some()) + usize::from(self.toggle_path.is_some())
+    }
+
+    /// The chevron target over `rows`: the chevron under `point`, else an empty box.
+    pub(crate) fn append_toggle_targets<'a>(
+        &'a self,
+        rows: Rect,
+        point: Option<Pt>,
+        offset: f32,
+        targets: &mut Vec<Target<'a>>,
+    ) {
+        let Some(path) = &self.toggle_path else {
+            return;
+        };
+        let under = self
+            .picture
+            .borrow()
+            .toggle_regions(rows, offset)
+            .into_iter()
+            .find(|(_, chevron)| Hit::new(point, *chevron).over());
+        targets.push(match under {
+            Some((index, chevron)) => Target::item(path, Hit::new(point, chevron), index),
+            None => Target::new(path, Hit::new(point, empty_bounds(rows))),
+        });
+    }
 
     fn append_descriptors(&self, descriptors: &mut Vec<Descriptor>) {
         let picture = self.picture.borrow();
-        descriptors.push(Descriptor::text_input(
-            self.search_path.clone(),
-            picture.query().to_owned(),
-            text_input_layout(picture.query(), picture.skin()),
-        ));
+        if let (Some(path), Some(query)) = (&self.search_path, picture.query()) {
+            descriptors.push(Descriptor::text_input(
+                path.clone(),
+                query.to_owned(),
+                text_input_layout(query, picture.skin()),
+            ));
+        }
         let row_count = picture.row_count();
+        if let Some(path) = &self.toggle_path {
+            descriptors.push(Descriptor::item(path.clone(), path.clone(), row_count));
+        }
         descriptors.push(Descriptor::scroll(
             self.path.clone(),
             ScrollConfig::items(
@@ -563,19 +609,14 @@ impl TreePlan {
 }
 
 impl TablePlan {
-    pub(super) fn new(
-        path: &str,
-        rows: Vec<TableRowData>,
-        columns: Vec<ColumnLayout>,
-        skin: &Skin,
-    ) -> Self {
+    pub(super) fn new(path: &str, picture: TableFace) -> Self {
         Self {
-            divider_paths: DividerPaths::new(path, &columns),
+            divider_paths: DividerPaths::new(path, picture.columns()),
             horizontal_path: format!("{path}/scroll-x"),
             path: path.to_owned(),
             row_target: format!("{path}/rows"),
-            min_column_width: skin.table.min_column_width,
-            picture: Rc::new(RefCell::new(TableFace::new(rows, columns, skin))),
+            viewport_width: Rc::new(Cell::new(0.0)),
+            picture: Rc::new(RefCell::new(picture)),
             #[cfg(feature = "masonry")]
             state: TableState::default(),
         }
@@ -587,7 +628,12 @@ impl TablePlan {
         let row_count = picture.rows().len();
         descriptors.push(Descriptor::scroll(
             self.horizontal_path.clone(),
-            ScrollConfig::plain(ScrollAxis::Horizontal, minimum_table_width(columns)),
+            ScrollConfig::plain(
+                ScrollAxis::Horizontal,
+                minimum_table_width(columns)
+                    + picture.skin().table.padding_left
+                    + picture.skin().table.padding_right,
+            ),
         ));
         descriptors.push(Descriptor::scroll(
             self.path.clone(),
@@ -605,12 +651,12 @@ impl TablePlan {
             .iter()
             .enumerate()
             .filter(|(index, _)| column_resizable(columns, *index));
-        for (_, column) in resizable {
+        for (index, column) in resizable {
             let divider_path = self.divider_path(&column.column);
             descriptors.push(Descriptor::column_divider(
                 divider_path.to_owned(),
                 column.width,
-                self.min_column_width,
+                column_resize_track(columns, index, self.viewport_width.get(), picture.skin()),
             ));
         }
     }
@@ -636,28 +682,32 @@ impl TablePlan {
 
     fn resolved(
         path: &str,
-        (declared_columns, resizable): (&[TableColumn], bool),
-        columns_state: Option<&Binding>,
+        table: &mount::Table<'_>,
         _read: Option<&Binding>,
         rows: &[TableRow<'_>],
         cx: Resolving<'_>,
     ) -> Self {
         let Resolving { ctx, skin } = cx;
-        let state =
-            columns_state.map(|binding| (ctx.ui.resolve(binding.id), ctx.scope(Some(binding))));
-        let columns = column_layouts((declared_columns, resizable), &ctx, state, skin);
+        let state = table
+            .columns_state
+            .map(|binding| (ctx.ui.resolve(binding.id), ctx.scope(Some(binding))));
+        let columns = column_layouts((table.columns, table.resizable), &ctx, state, skin);
         let rows = rows.iter().map(TableRowData::from).collect();
-        let plan = Self::new(path, rows, columns, skin);
+        let status = table.status.and_then(|binding| ctx.read(binding));
+        let status = match status {
+            Some(ReadValue::Text(text)) => text,
+            _ => "",
+        };
+        let picture = TableFace::new(rows, columns, skin)
+            .with_layout(table.padding_left, table.padding_right, table.footer)
+            .with_status(status);
+        let plan = Self::new(path, picture);
         #[cfg(feature = "masonry")]
         plan.bind_source(TableSource::new(
-            (declared_columns.to_vec(), resizable),
-            columns_state.map(|binding| {
-                (
-                    ctx.ui.resolve(binding.id).to_owned(),
-                    ctx.scope(Some(binding)).to_owned(),
-                )
-            }),
+            table,
+            state.map(|(prefix, scope)| (prefix.to_owned(), scope.to_owned())),
             _read.map(|binding| ctx.ui.resolve(binding.key).to_owned()),
+            ctx.endpoint(table.status).map(str::to_owned),
         ));
         plan
     }
@@ -669,5 +719,230 @@ impl TablePlan {
     #[cfg(feature = "masonry")]
     fn carried(&self, index: usize) -> Option<crate::render::Carried> {
         self.picture.borrow().carried(index)
+    }
+}
+
+/// A box of no size at the corner of `bounds`: a target that is never hit.
+pub(super) const fn empty_bounds(bounds: Rect) -> Rect {
+    Rect {
+        x: bounds.x,
+        y: bounds.y,
+        w: 0.0,
+        h: 0.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use kithara_test_utils::kithara;
+
+    use super::*;
+    use crate::{
+        atoms::table::{table_body, table_vertical_scrollbar_rect},
+        builtin,
+        compile::{CompiledNode, compile},
+        draw::DrawCmd,
+        expand::ExpandedNode,
+        mock::TestRegistry,
+        registry::{EndpointCategory, EndpointDesc, ValueKind},
+        render::{Clock, Reads, TableCell},
+        source::{MemResolver, UiConfig},
+        view,
+    };
+
+    struct PageReads {
+        rows: Vec<TableRow<'static>>,
+        status: &'static str,
+    }
+
+    impl Reads for PageReads {
+        fn get(&self, endpoint: &str) -> Option<ReadValue<'_>> {
+            match endpoint {
+                "page.rows" => Some(ReadValue::Table(&self.rows)),
+                "page.status" => Some(ReadValue::Text(self.status)),
+                _ => None,
+            }
+        }
+    }
+
+    fn page() -> crate::compile::CompiledUi {
+        let mut registry = TestRegistry::default();
+        registry.insert(
+            EndpointCategory::Model,
+            "page.rows",
+            EndpointDesc::new(ValueKind::Table),
+        );
+        registry.insert(
+            EndpointCategory::Model,
+            "page.status",
+            EndpointDesc::new(ValueKind::Text),
+        );
+        let mut resolver = MemResolver::default();
+        resolver.insert(
+            "page.klayout.ron",
+            r#"(schema: "kithara.layout", version: 1, id: "page",
+            root: Module(instance: "page", source: "page.kmodule.ron"))"#,
+        );
+        resolver.insert(
+            "page.kmodule.ron",
+            r#"(schema: "kithara.module", version: 1, id: "page", chrome: Plain,
+            root: Table(id: "rows", read: Model(id: "page.rows"), status: Model(id: "page.status"),
+                footer: false, padding_left: 34.0, padding_right: 34.0, columns: [
+                    (id: "title", label: "TITLE", style: Primary, width: 180.0, flexible: true),
+                    (id: "time", label: "TIME", style: Time, width: 70.0),
+                ]))"#,
+        );
+        compile(
+            "page.klayout.ron",
+            &resolver,
+            &registry,
+            builtin::skin_doc(),
+            builtin::text_doc(),
+            &UiConfig::default(),
+            &view::ViewState::default(),
+        )
+        .expect("the page presentation compiles")
+    }
+
+    #[kithara::test]
+    fn library_followup_table_keeps_canonical_insets_and_typography() {
+        let ui = page();
+        let skin = builtin::skin();
+        let state = view::ViewState::default();
+        let CompiledNode::Module { root, .. } = &ui.root else {
+            panic!("one page")
+        };
+        let ExpandedNode::Control { spec, read, .. } = root.as_ref() else {
+            panic!("one table")
+        };
+        let bounds = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 400.0,
+            h: 150.0,
+        };
+        for empty in [false, true] {
+            let reads = PageReads {
+                status: if empty { "No playable files" } else { "" },
+                rows: if empty {
+                    vec![]
+                } else {
+                    (0..20)
+                        .map(|_| {
+                            TableRow::new(
+                                vec![
+                                    TableCell::text("title", "Track"),
+                                    TableCell::text("time", "04:12"),
+                                ],
+                                false,
+                            )
+                        })
+                        .collect()
+                },
+            };
+            let ctx = Ctx::new(&ui, &reads, &state, builtin::skin_doc(), Clock::default());
+            let Some(HostedControlPlan::Table(plan)) = HostedControlPlan::resolved(
+                "page/rows",
+                spec,
+                read.as_ref().and_then(|binding| ctx.read(binding)),
+                read.as_ref(),
+                "",
+                Resolving { ctx, skin },
+            ) else {
+                panic!("the page resolves a table")
+            };
+            let picture = plan.picture.borrow();
+            let body = table_body(bounds, picture.skin());
+            assert_eq!(picture.skin().table.primary_text, skin.table.primary_text);
+            assert_eq!(skin.table.primary_text.size, 12.0);
+            assert_eq!(body.y + body.h, bounds.h - skin.table.grid_gap);
+            let drawn = crate::atoms::table::face::Drawn {
+                columns: picture.columns().to_vec(),
+                hovered: None,
+                pressed: None,
+                horizontal: 0.0,
+                vertical: 0.0,
+            };
+            let mut text = TextContext::from(skin.text_resources());
+            let commands = picture.commands(&mut text, bounds, &drawn);
+            assert!(commands.commands().iter().all(|cmd| !matches!(cmd,
+                DrawCmd::Text { content, .. } if content.ends_with("ROWS"))));
+            let title_left = commands
+                .commands()
+                .iter()
+                .find_map(|cmd| match cmd {
+                    DrawCmd::Text {
+                        content, transform, ..
+                    } if content == "TITLE" => Some(transform.dx),
+                    _ => None,
+                })
+                .expect("the header names Title");
+            assert_eq!(title_left, 38.0);
+            let header_right = commands
+                .commands()
+                .iter()
+                .find_map(|cmd| match cmd {
+                    DrawCmd::Text {
+                        content,
+                        transform,
+                        run,
+                        ..
+                    } if content == "TIME" => Some(transform.dx + run.width()),
+                    _ => None,
+                })
+                .expect("the header names Time");
+            assert!((header_right - (bounds.w - 38.0)).abs() < 0.01);
+            let list = commands
+                .commands()
+                .iter()
+                .find_map(|cmd| match cmd {
+                    DrawCmd::Clip { region, list } if *region == body => Some(list),
+                    _ => None,
+                })
+                .expect("rows are clipped below the header");
+            if empty {
+                assert!(list.commands().iter().any(|cmd| matches!(cmd,
+                    DrawCmd::Text { content, transform, .. } if content == reads.status && transform.dy >= body.y)));
+            } else {
+                let title = list
+                    .commands()
+                    .iter()
+                    .find_map(|cmd| match cmd {
+                        DrawCmd::Text { content, run, .. } if content == "Track" => Some(run),
+                        _ => None,
+                    })
+                    .expect("the row draws Title");
+                assert_eq!(title.size(), 12.0);
+                assert!(title.segments().iter().all(|segment| matches!(
+                    segment.face(),
+                    crate::shaping::GlyphFace::Embedded(
+                        crate::shaping::FontId::SpaceGroteskRegular
+                    )
+                )));
+                let time_right = list
+                    .commands()
+                    .iter()
+                    .find_map(|cmd| match cmd {
+                        DrawCmd::Text {
+                            content,
+                            transform,
+                            run,
+                            ..
+                        } if content == "04:12" => Some(transform.dx + run.width()),
+                        _ => None,
+                    })
+                    .expect("a row words Time");
+                assert!((time_right - header_right).abs() < 0.01);
+                let rail = table_vertical_scrollbar_rect(
+                    bounds,
+                    picture.columns(),
+                    20,
+                    0.0,
+                    picture.skin(),
+                )
+                .expect("rows overflow");
+                assert!(time_right < rail.x);
+            }
+        }
     }
 }

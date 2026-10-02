@@ -24,7 +24,9 @@ use super::{
 };
 use crate::{
     atoms::table::{
-        ColumnLayout, TableRowData, face::Drawn, table_body, table_dividers, table_row_rect,
+        ColumnLayout, TableRowData,
+        face::{Drawn, TableFace},
+        table_body, table_dividers, table_row_rect,
     },
     builtin,
     draw::{DrawCmd, DrawList, Geom, Rect, Rgba},
@@ -76,7 +78,10 @@ fn columns() -> Vec<ColumnLayout> {
 }
 
 fn paint() -> TablePaint {
-    TablePaint::new("library/tracks", rows(), columns(), builtin::skin())
+    TablePaint::new(
+        "library/tracks",
+        TableFace::new(rows(), columns(), builtin::skin()),
+    )
 }
 
 fn program() -> TableProgram {
@@ -220,7 +225,7 @@ fn a_reskinned_table_draws_again() {
     assert_eq!(
         marked(
             &state,
-            &TablePaint::new("library/tracks", rows(), columns(), &skin),
+            &TablePaint::new("library/tracks", TableFace::new(rows(), columns(), &skin)),
             &drawn
         ),
         Marked::Changed,
@@ -247,7 +252,7 @@ fn word_color(list: &DrawList, wanted: &str) -> Option<Rgba> {
 }
 
 fn drawn_word(skin: &Skin, wanted: &str) -> Rgba {
-    let paint = TablePaint::new("library/tracks", rows(), columns(), skin);
+    let paint = TablePaint::new("library/tracks", TableFace::new(rows(), columns(), skin));
     let mut text = TextContext::from(skin.text_resources());
     let bounds = Rect {
         h: 240.0,
@@ -355,6 +360,13 @@ fn divider_drag_at_nonzero_origin_uses_the_full_hit_width_and_exact_travel() {
         program.paint.face.skin(),
     );
     let divider = &dividers[0];
+    let Track::HorizontalPixels {
+        value: initial_width,
+        ..
+    } = divider.track
+    else {
+        panic!("a divider measures pixels")
+    };
     assert!(divider.hit.w > divider.paint.w);
     let point = Point::new(
         bounds.x + divider.hit.x + 0.5,
@@ -386,7 +398,7 @@ fn divider_drag_at_nonzero_origin_uses_the_full_hit_width_and_exact_travel() {
         Some(Published::Gesture {
             action: ControlAction::SetScalar(value),
             ..
-        }) if value == f64::from(divider.value + 20.0)
+        }) if value == f64::from(initial_width + 20.0)
     ));
 }
 
@@ -426,7 +438,10 @@ fn leaf_divider_state_follows_its_column_across_reorder_and_removal() {
         width: 130.0,
     });
     reordered.swap(0, 2);
-    let paint = TablePaint::new("library/tracks", rows(), reordered, builtin::skin());
+    let paint = TablePaint::new(
+        "library/tracks",
+        TableFace::new(rows(), reordered, builtin::skin()),
+    );
     let config = paint.config();
     let reordered = TableProgram { config, paint };
     let moved = Point::new(point.x + 20.0, point.y);
@@ -445,12 +460,14 @@ fn leaf_divider_state_follows_its_column_across_reorder_and_removal() {
 
     let paint = TablePaint::new(
         "library/tracks",
-        rows(),
-        columns()
-            .into_iter()
-            .filter(|column| column.column.id() != "index")
-            .collect(),
-        builtin::skin(),
+        TableFace::new(
+            rows(),
+            columns()
+                .into_iter()
+                .filter(|column| column.column.id() != "index")
+                .collect(),
+            builtin::skin(),
+        ),
     );
     state.reconcile("library/tracks", &paint.config());
     assert!(
@@ -616,17 +633,19 @@ fn horizontal_wheel_passes_the_movable_vertical_state() {
 }
 
 #[kithara::test]
-fn divider_lines_are_retained_as_solid_rectangles() {
+fn the_body_below_the_last_row_takes_the_idle_row_fill() {
     let paint = paint();
-    let mut text = TextContext::from(paint.face.skin().text_resources());
+    let skin = paint.face.skin();
+    let mut text = TextContext::from(skin.text_resources());
+    let bounds = Rect {
+        h: 400.0,
+        w: 900.0,
+        x: 0.0,
+        y: 0.0,
+    };
     let list = paint.face.commands(
         &mut text,
-        Rect {
-            h: 120.0,
-            w: 900.0,
-            x: 0.0,
-            y: 0.0,
-        },
+        bounds,
         &Drawn {
             columns: paint.face.columns().to_vec(),
             horizontal: 0.0,
@@ -635,15 +654,25 @@ fn divider_lines_are_retained_as_solid_rectangles() {
             vertical: 0.0,
         },
     );
-    assert!(list.commands().iter().any(|command| {
-        matches!(
-            command,
-            DrawCmd::Fill {
-                geom: Geom::Rect(Rect { w, .. }),
-                ..
-            } if *w == paint.face.skin().table.divider_width
-        )
-    }));
+    let body = table_body(bounds, skin);
+    let below = body.y + 5.0 * (skin.table.row_height + skin.table.grid_gap);
+    let idle = skin.tint(skin.table.row_fill.idle).into();
+    let rows = list
+        .commands()
+        .iter()
+        .find_map(|command| match command {
+            DrawCmd::Clip { region, list } if *region == body => Some(list),
+            _ => None,
+        })
+        .expect("the rows are drawn inside the body clip");
+
+    assert!(rows.commands().iter().any(|command| matches!(
+        command,
+        DrawCmd::Fill {
+            geom: Geom::Rect(rect),
+            paint,
+        } if rect.y == below && rect.y + rect.h == body.y + body.h && *paint == idle
+    )));
 }
 
 #[kithara::test]
@@ -683,7 +712,10 @@ fn hosted_canvas_forwards_projection_and_rebinds_before_paint() {
     );
     assert_eq!(state.pressed_index, Some(2));
 
-    let next_paint = TablePaint::new("library/history", rows(), columns(), builtin::skin());
+    let next_paint = TablePaint::new(
+        "library/history",
+        TableFace::new(rows(), columns(), builtin::skin()),
+    );
     let next_config = next_paint.config();
     let next = RetainedCanvas::new(next_paint, "library/history", next_config);
     IcedWidget::diff(&next, &mut tree);
@@ -725,9 +757,11 @@ fn leaf_layout_clamps_offsets_after_rows_shrink_and_viewport_widens() {
 
     let next_paint = TablePaint::new(
         "library/tracks",
-        rows().into_iter().take(1).collect(),
-        columns(),
-        builtin::skin(),
+        TableFace::new(
+            rows().into_iter().take(1).collect(),
+            columns(),
+            builtin::skin(),
+        ),
     );
     let next_config = next_paint.config();
     let next = RetainedCanvas::new(

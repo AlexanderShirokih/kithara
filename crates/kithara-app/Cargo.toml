@@ -32,7 +32,7 @@ tls-native = ["kithara/tls-native"]
 # Put the session mix on air over live HLS. Off by default; with it off the
 # bar's phase machine compiles against a packager that has no stream values.
 broadcast = ["kithara/broadcast"]
-gui = ["dep:iced", "kithara/ui-iced"]
+gui = ["dep:iced", "dep:rfd", "kithara/ui-iced"]
 # Draw the studio through the retained host (masonry + Vello) instead of the
 # immediate one. Both hosts read the same documents and the same state; only
 # the window and the paint pass differ.
@@ -119,6 +119,7 @@ kithara-workspace-hack = { version = "0.0.1-alpha5", path = "../kithara-workspac
 clap = { workspace = true }
 crabtime = { workspace = true }
 iced = { workspace = true, optional = true, features = ["tiny-skia"] }
+rfd = { workspace = true, optional = true }
 sha2 = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 

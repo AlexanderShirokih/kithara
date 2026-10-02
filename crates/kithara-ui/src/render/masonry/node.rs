@@ -222,7 +222,7 @@ impl Node {
             | NodeLayout::Measured(_)
             | NodeLayout::Scroll(_)
             | NodeLayout::Stack
-            | NodeLayout::Stage => None,
+            | NodeLayout::Stage(_) => None,
         }
     }
 
@@ -507,7 +507,7 @@ impl Node {
             | NodeLayout::Measured(_)
             | NodeLayout::Scroll(_)
             | NodeLayout::Stack
-            | NodeLayout::Stage => None,
+            | NodeLayout::Stage(_) => None,
         }
     }
 
@@ -515,6 +515,11 @@ impl Node {
     /// waiting for the rebuild that follows the gesture.
     pub(crate) fn show_live(&mut self, value: &ReadValue<'_>) -> bool {
         self.layout.leaf().is_some_and(|leaf| leaf.set_read(value))
+    }
+
+    /// Whether the text this node shows is empty; `None` for other nodes.
+    pub(crate) fn text_is_empty(&mut self) -> Option<bool> {
+        self.layout.leaf().and_then(|leaf| leaf.text_is_empty())
     }
 
     /// Offers the input to the stepping surface this flow declares, answering
@@ -539,7 +544,7 @@ impl Node {
             | NodeLayout::Measured(_)
             | NodeLayout::Scroll(_)
             | NodeLayout::Stack
-            | NodeLayout::Stage => None,
+            | NodeLayout::Stage(_) => None,
         }
     }
 }
@@ -698,7 +703,7 @@ impl Widget for Node {
             | NodeLayout::Measured(_)
             | NodeLayout::Scroll(_)
             | NodeLayout::Stack
-            | NodeLayout::Stage => CursorShape::None,
+            | NodeLayout::Stage(_) => CursorShape::None,
         };
         cursor_icon(leaf)
     }

@@ -1,3 +1,5 @@
+use std::{cell::Cell, rc::Rc};
+
 use iced::advanced::{layout::Layout, mouse};
 
 use crate::{
@@ -16,8 +18,9 @@ pub(super) struct TableHost {
     path: String,
     row_target: String,
     columns: Vec<ColumnLayout>,
-    divider_paths: Vec<String>,
+    divider_paths: Vec<(String, String)>,
     row_count: usize,
+    viewport_width: Rc<Cell<f32>>,
 }
 
 impl TableHost {
@@ -26,12 +29,18 @@ impl TableHost {
         columns: Vec<ColumnLayout>,
         row_count: usize,
         skin: &Skin,
+        viewport_width: Rc<Cell<f32>>,
     ) -> Self {
         let divider_paths = columns
             .iter()
             .enumerate()
             .filter(|(index, _)| column_resizable(&columns, *index))
-            .map(|(_, column)| format!("{path}/width/{}", column.column.id()))
+            .map(|(_, column)| {
+                (
+                    column.column.id().to_owned(),
+                    format!("{path}/width/{}", column.column.id()),
+                )
+            })
             .collect();
         Self {
             columns,
@@ -41,6 +50,7 @@ impl TableHost {
             path: path.to_owned(),
             row_target: format!("{path}/rows"),
             skin: skin.clone(),
+            viewport_width,
         }
     }
 
@@ -52,6 +62,7 @@ impl TableHost {
         targets: &mut Vec<Target<'a>>,
     ) {
         let bounds: Rect = layout.bounds().into();
+        self.viewport_width.set(bounds.w);
         let point = cursor.position().map(Into::into);
         let horizontal = engine
             .and_then(|engine| engine.scroll_offset(&self.horizontal_path))
@@ -59,7 +70,7 @@ impl TableHost {
         let vertical = engine
             .and_then(|engine| engine.scroll_offset(&self.path))
             .unwrap_or(0.0);
-        if table_overflows(&self.columns, bounds.w) {
+        if table_overflows(&self.columns, bounds.w, &self.skin) {
             targets.push(Target::new(&self.horizontal_path, Hit::new(point, bounds)));
         }
         targets.push(Target::new(
@@ -103,22 +114,22 @@ impl TableHost {
                 ),
             )),
         }
-        for (divider_path, divider) in self.divider_paths.iter().zip(table_dividers(
-            bounds,
-            &self.columns,
-            horizontal,
-            &self.skin,
-        )) {
-            let hit = table_visible_divider_hit(bounds, divider.hit).or_else(|| {
-                engine
-                    .filter(|engine| engine.captures(divider_path))
-                    .map(|_| Rect {
-                        h: 0.0,
-                        w: 0.0,
-                        x: bounds.x,
-                        y: bounds.y,
-                    })
-            });
+        let dividers = table_dividers(bounds, &self.columns, horizontal, &self.skin);
+        for (id, divider_path) in &self.divider_paths {
+            let hit = dividers
+                .iter()
+                .find(|divider| divider.column.id() == id)
+                .and_then(|divider| table_visible_divider_hit(bounds, divider.hit))
+                .or_else(|| {
+                    engine
+                        .filter(|engine| engine.captures(divider_path))
+                        .map(|_| Rect {
+                            h: 0.0,
+                            w: 0.0,
+                            x: bounds.x,
+                            y: bounds.y,
+                        })
+                });
             if let Some(hit) = hit {
                 targets.push(Target::new(divider_path, Hit::new(point, hit)));
             }
@@ -155,11 +166,11 @@ mod tests {
             .iter()
             .enumerate()
             .filter(|(index, _)| column_resizable(columns, *index))
-            .map(|(_, column)| {
+            .map(|(index, column)| {
                 Descriptor::column_divider(
                     format!("library/tracks/width/{}", column.column.id()),
                     column.width,
-                    builtin::skin().table.min_column_width,
+                    crate::atoms::table::column_resize_track(columns, index, 0.0, builtin::skin()),
                 )
             })
             .collect()
@@ -204,7 +215,13 @@ mod tests {
 
     #[kithara::test]
     fn hosted_dividers_clip_partial_hits_and_omit_offscreen_hits() {
-        let host = TableHost::new("library/tracks", divider_columns(98.0), 8, builtin::skin());
+        let host = TableHost::new(
+            "library/tracks",
+            divider_columns(98.0),
+            8,
+            builtin::skin(),
+            Rc::new(Cell::new(0.0)),
+        );
         let node = Node::new(Size::new(100.0, 120.0));
         let mut targets = Vec::new();
         host.append_targets(Layout::new(&node), Cursor::Unavailable, None, &mut targets);
@@ -226,7 +243,13 @@ mod tests {
     fn captured_divider_keeps_a_release_watcher_after_resize_moves_it_offscreen() {
         let path = "library/tracks/width/index";
         let node = Node::new(Size::new(100.0, 120.0));
-        let host = TableHost::new("library/tracks", divider_columns(98.0), 8, builtin::skin());
+        let host = TableHost::new(
+            "library/tracks",
+            divider_columns(98.0),
+            8,
+            builtin::skin(),
+            Rc::new(Cell::new(0.0)),
+        );
         let mut engine = Engine::default();
         engine.reconcile(divider_descriptors(&divider_columns(98.0)));
         let mut targets = Vec::new();
@@ -246,7 +269,13 @@ mod tests {
         );
         assert!(moved.is_some(), "the resize must publish its wider value");
 
-        let resized = TableHost::new("library/tracks", divider_columns(300.0), 8, builtin::skin());
+        let resized = TableHost::new(
+            "library/tracks",
+            divider_columns(300.0),
+            8,
+            builtin::skin(),
+            Rc::new(Cell::new(0.0)),
+        );
         engine.reconcile(divider_descriptors(&divider_columns(300.0)));
         let mut release_targets = Vec::new();
         resized.append_targets(
