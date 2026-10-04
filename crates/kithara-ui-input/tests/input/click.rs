@@ -1,7 +1,8 @@
 use kithara_test_utils::kithara;
 use kithara_ui_draw::{Pt, Rect};
 use kithara_ui_input::{
-    Hit, Input, Outcome, PointerPhase, Scroll, mouse as mouse_input, recognizers::click::on_input,
+    Hit, Input, Outcome, PointerButton, PointerId, PointerInput, PointerPhase, Scroll,
+    mouse as mouse_input, recognizers::click::on_input,
 };
 
 fn at(x: f32) -> Hit {
@@ -39,7 +40,7 @@ fn a_press_beside_the_control_is_left_to_whoever_is_behind() {
 }
 
 #[kithara::test]
-fn nothing_but_a_press_acts() {
+fn nothing_but_a_primary_press_acts() {
     let over = at(13.0);
 
     for input in [
@@ -48,6 +49,13 @@ fn nothing_but_a_press_acts() {
             Some(Pt { x: 13.0, y: 13.0 }),
         )),
         Input::Pointer(mouse_input(PointerPhase::Up, None)),
+        Input::Pointer(PointerInput::new(
+            PointerId(1),
+            Some(PointerButton::Secondary),
+            PointerPhase::Down,
+            None,
+            1,
+        )),
         Input::Wheel(Scroll::lines(1.0)),
     ] {
         assert_eq!(

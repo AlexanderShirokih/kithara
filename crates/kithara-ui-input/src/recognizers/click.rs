@@ -1,4 +1,4 @@
-use super::super::{Hit, Input, Outcome, PointerPhase};
+use super::super::{Hit, Input, Outcome, PointerButton, PointerPhase};
 
 /// A press that lands on the control and asks it to act. There is no state and
 /// nothing to configure: where the press landed is the whole gesture, so a
@@ -8,7 +8,11 @@ use super::super::{Hit, Input, Outcome, PointerPhase};
 #[must_use]
 pub fn on_input(input: Input<'_>, hit: &Hit) -> Outcome<()> {
     match input {
-        Input::Pointer(pointer) if pointer.phase == PointerPhase::Down && hit.over() => {
+        Input::Pointer(pointer)
+            if pointer.phase == PointerPhase::Down
+                && matches!(pointer.button, None | Some(PointerButton::Primary))
+                && hit.over() =>
+        {
             Outcome::set(())
         }
         Input::InputMethod(_)
