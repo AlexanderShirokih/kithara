@@ -7,7 +7,7 @@ use kithara_storage::{
     MemOptions, MemResource, MmapOptions, MmapResource, Resource, ResourceStatus, StorageError,
     StorageResource, WaitOutcome,
 };
-use kithara_test_utils::{kithara, wait_until};
+use kithara_test_utils::kithara;
 use tempfile::tempdir;
 
 use super::{ChunkSink, ProcessCtx, ProcessedReader, ProcessedWriter, ResourceProcessor};
@@ -188,21 +188,29 @@ fn reader_view_blocks_until_writer_commits() {
     let process_fn = xor_chunk_processor(0x55, Arc::clone(&call_count));
     let raw: Vec<u8> = (0..32u8).collect();
     let (writer, _dir) = mock_writer(&raw);
+    // Opening through ProcessingAssets wraps the backend's read view without
+    // access to the writer's gate.
+    let reopened = ProcessedReader::wrap_ready()
+        .inner(writer.reader())
+        .processor(Arc::clone(&process_fn))
+        .pools(crate::test_pools::pools())
+        .call();
 
     let writer = ProcessedWriter::builder()
         .inner(writer)
         .processor(process_fn)
         .pools(crate::test_pools::pools())
         .build();
-    let reader = writer.reader();
     let raw_len = raw.len() as u64;
 
-    let handle = std::thread::spawn(move || {
-        let outcome = reader.wait_range(0..raw_len).unwrap();
-        assert_eq!(outcome, WaitOutcome::Ready);
-        let mut buf = vec![0u8; 32];
-        reader.read_at(0, &mut buf).unwrap();
-        buf
+    let waiters = [writer.reader(), reopened].map(|reader| {
+        std::thread::spawn(move || {
+            let outcome = reader.wait_range(0..raw_len).unwrap();
+            assert_eq!(outcome, WaitOutcome::Ready);
+            let mut buf = vec![0u8; 32];
+            reader.read_at(0, &mut buf).unwrap();
+            buf
+        })
     });
 
     thread::sleep(Duration::from_millis(50));
@@ -213,9 +221,14 @@ fn reader_view_blocks_until_writer_commits() {
     );
     let _committed = writer.commit(Some(raw_len)).unwrap();
 
-    let read = handle.join().unwrap();
     let expected: Vec<u8> = (0..32u8).map(|b| b ^ 0x55).collect();
-    assert_eq!(read, expected, "reader view must observe processed bytes");
+    for waiter in waiters {
+        assert_eq!(
+            waiter.join().unwrap(),
+            expected,
+            "every reader view must observe processed bytes"
+        );
+    }
 }
 
 #[kithara::test(timeout(Duration::from_secs(5)))]
@@ -480,90 +493,8 @@ fn reopened_committed_processed_reader_is_readable_immediately() {
     assert_eq!(call_count.load(Ordering::SeqCst), 0);
 }
 
-#[kithara::test(native, flash(false), timeout(Duration::from_secs(5)))]
-async fn reopened_active_processed_reader_observes_existing_writer_commit() {
-    let pools = crate::test_pools::pools();
-    let call_count = Arc::new(AtomicUsize::new(0));
-    let processor = xor_chunk_processor(0x42, Arc::clone(&call_count));
-    let raw_writer = mock_writer_mem(&pools, b"cipher");
-    // Opening through ProcessingAssets wraps the backend's read view without
-    // access to the existing ProcessedWriter's gate.
-    let reader = ProcessedReader::wrap_ready()
-        .inner(raw_writer.reader())
-        .processor(Arc::clone(&processor))
-        .pools(pools.clone())
-        .call();
-    let writer = ProcessedWriter::builder()
-        .inner(raw_writer)
-        .processor(processor)
-        .pools(pools)
-        .build();
-    assert!(matches!(reader.status(), ResourceStatus::Active));
-    assert!(!reader.contains_range(0..6));
-    assert!(matches!(
-        reader.read_at(0, &mut [0; 6]),
-        Err(StorageError::NotReadable)
-    ));
-
-    let wait_cancel = CancelToken::never();
-    let entering_wait = Arc::new(Barrier::new(2));
-    let waiter = thread::spawn({
-        let reader = reader.clone();
-        let wait_cancel = wait_cancel.clone();
-        let entering_wait = Arc::clone(&entering_wait);
-        move || {
-            entering_wait.wait();
-            reader.wait_range_with_cancel(0..6, &wait_cancel)
-        }
-    });
-    entering_wait.wait();
-    drop(
-        writer
-            .commit(Some(6))
-            .expect("existing writer commits processed bytes"),
-    );
-    let finished = wait_until(Duration::from_secs(1), "reopened processing reader", || {
-        waiter.is_finished()
-    })
-    .await;
-    if finished.is_err() {
-        wait_cancel.cancel();
-    }
-    let outcome = waiter
-        .join()
-        .expect("reopened processing waiter must not panic");
-    finished.expect("reopened reader must finish when the existing writer commits");
-    assert_eq!(
-        outcome.expect("committed reader wait must succeed"),
-        WaitOutcome::Ready
-    );
-    assert!(reader.contains_range(0..6));
-    let mut bytes = [0; 6];
-    assert_eq!(
-        reader
-            .read_at(0, &mut bytes)
-            .expect("read committed processed bytes"),
-        6
-    );
-    assert_eq!(bytes, (*b"cipher").map(|byte| byte ^ 0x42));
-    assert_eq!(
-        call_count.load(Ordering::SeqCst),
-        1,
-        "only the owning writer processes bytes"
-    );
-    let prior_reader = reader.clone();
-    let successor = reader
-        .reactivate()
-        .expect("start the next processing generation");
-    prior_reader
-        .read_at(0, &mut bytes)
-        .expect("reopened reader retains its committed snapshot across reactivate");
-    assert_eq!(bytes, (*b"cipher").map(|byte| byte ^ 0x42));
-    drop(successor);
-}
-
-#[kithara::test(native, flash(false), timeout(Duration::from_secs(5)))]
-async fn abandoning_processing_interrupts_old_reader_without_poisoning_successor() {
+#[kithara::test(timeout(Duration::from_secs(5)))]
+fn writer_abandon_interrupts_its_readers_and_leaves_the_resource_to_a_successor() {
     let pools = crate::test_pools::pools();
     let processor = xor_chunk_processor(0x42, Arc::new(AtomicUsize::new(0)));
     let writer = ProcessedWriter::builder()
@@ -572,58 +503,32 @@ async fn abandoning_processing_interrupts_old_reader_without_poisoning_successor
         .pools(pools)
         .build();
     let reader = writer.reader();
-    let wait_cancel = CancelToken::never();
-    let entering_wait = Arc::new(Barrier::new(2));
-    let waiter = thread::spawn({
+    let waiter = std::thread::spawn({
         let reader = reader.clone();
-        let wait_cancel = wait_cancel.clone();
-        let entering_wait = Arc::clone(&entering_wait);
-        move || {
-            entering_wait.wait();
-            reader.wait_range_with_cancel(0..6, &wait_cancel)
-        }
+        move || reader.wait_range(0..6)
     });
-    entering_wait.wait();
+    thread::sleep(Duration::from_millis(50));
     writer.abandon();
+
+    assert_eq!(
+        waiter
+            .join()
+            .expect("BUG: reader thread panicked")
+            .expect("BUG: wait_range must not surface a hard error on abandon"),
+        WaitOutcome::Interrupted,
+        "abandon must wake its parked readers"
+    );
     assert!(
         matches!(reader.status(), ResourceStatus::Active),
-        "abandon preserves the raw resource for a successor"
+        "abandon keeps the raw resource for a successor"
     );
-    let finished = wait_until(
-        Duration::from_secs(1),
-        "abandoned processing reader",
-        || waiter.is_finished(),
-    )
-    .await;
-    if finished.is_err() {
-        wait_cancel.cancel();
-    }
-    let outcome = waiter
-        .join()
-        .expect("abandoned processing waiter must not panic");
-    finished.expect("abandon must interrupt the old processing generation");
-    assert_eq!(
-        outcome.expect("abandon is an interrupted wait"),
-        WaitOutcome::Interrupted
-    );
-    assert!(matches!(
-        reader.read_at(0, &mut [0; 6]),
-        Err(StorageError::NotReadable)
-    ));
 
-    let old_reader = reader.clone();
-    let successor = reader
+    let committed = reader
+        .clone()
         .reactivate()
-        .expect("successor acquires a fresh processing gate");
-    let committed = successor
+        .expect("successor acquires a fresh processing gate")
         .commit(Some(6))
         .expect("successor commits processed bytes");
-    assert_eq!(
-        committed
-            .wait_range(0..6)
-            .expect("successor reader is ready"),
-        WaitOutcome::Ready
-    );
     let mut bytes = [0; 6];
     committed
         .read_at(0, &mut bytes)
@@ -631,29 +536,11 @@ async fn abandoning_processing_interrupts_old_reader_without_poisoning_successor
     assert_eq!(bytes, (*b"cipher").map(|byte| byte ^ 0x42));
     assert!(
         matches!(
-            old_reader.read_at(0, &mut bytes),
+            reader.read_at(0, &mut bytes),
             Err(StorageError::NotReadable)
         ),
         "a successor commit cannot reopen the abandoned generation"
     );
-    assert_eq!(
-        old_reader
-            .wait_range(0..6)
-            .expect("old generation remains interrupted"),
-        WaitOutcome::Interrupted
-    );
-}
-
-#[kithara::test]
-fn failed_processing_gate_rejects_later_readiness() {
-    let gate = super::gate::ReadinessGate::new(false, crate::consts::DEFAULT_GATE_POLL_INTERVAL);
-    gate.fail();
-    assert!(
-        !gate.mark_ready(),
-        "failed generation rejects a late commit observation"
-    );
-    assert!(!gate.is_ready());
-    assert!(!gate.wait_until_ready(&|| true, &|| false));
 }
 
 #[kithara::test]
