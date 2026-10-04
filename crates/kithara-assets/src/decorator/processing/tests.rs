@@ -188,8 +188,6 @@ fn reader_view_blocks_until_writer_commits() {
     let process_fn = xor_chunk_processor(0x55, Arc::clone(&call_count));
     let raw: Vec<u8> = (0..32u8).collect();
     let (writer, _dir) = mock_writer(&raw);
-    // Opening through ProcessingAssets wraps the backend's read view without
-    // access to the writer's gate.
     let reopened = ProcessedReader::wrap_ready()
         .inner(writer.reader())
         .processor(Arc::clone(&process_fn))
@@ -425,7 +423,9 @@ fn reactivate_then_commit_reruns_processor_mem() {
 }
 
 #[kithara::test(timeout(Duration::from_secs(5)))]
-fn writer_drop_without_commit_fails_gate() {
+#[case::drop(false)]
+#[case::abandon(true)]
+fn ending_a_writer_without_commit_interrupts_its_readers(#[case] abandon: bool) {
     let call_count = Arc::new(AtomicUsize::new(0));
     let process_fn = xor_chunk_processor(0x00, Arc::clone(&call_count));
     let (writer, _dir) = mock_writer(&[7u8; 16]);
@@ -441,7 +441,11 @@ fn writer_drop_without_commit_fails_gate() {
 
     let handle = std::thread::spawn(move || reader.wait_range(0..16));
     thread::sleep(Duration::from_millis(50));
-    drop(writer);
+    if abandon {
+        writer.abandon();
+    } else {
+        drop(writer);
+    }
 
     let outcome = handle
         .join()
@@ -450,7 +454,7 @@ fn writer_drop_without_commit_fails_gate() {
     assert_eq!(
         outcome,
         WaitOutcome::Interrupted,
-        "dropping a writer without commit must wake a parked reader, not deadlock"
+        "ending a writer without commit must wake a parked reader, not deadlock"
     );
 
     let mut buf = [0u8; 16];
@@ -493,8 +497,8 @@ fn reopened_committed_processed_reader_is_readable_immediately() {
     assert_eq!(call_count.load(Ordering::SeqCst), 0);
 }
 
-#[kithara::test(timeout(Duration::from_secs(5)))]
-fn writer_abandon_interrupts_its_readers_and_leaves_the_resource_to_a_successor() {
+#[kithara::test]
+fn an_abandoned_generation_stays_unreadable_after_its_successor_commits() {
     let pools = crate::test_pools::pools();
     let processor = xor_chunk_processor(0x42, Arc::new(AtomicUsize::new(0)));
     let writer = ProcessedWriter::builder()
@@ -503,21 +507,7 @@ fn writer_abandon_interrupts_its_readers_and_leaves_the_resource_to_a_successor(
         .pools(pools)
         .build();
     let reader = writer.reader();
-    let waiter = std::thread::spawn({
-        let reader = reader.clone();
-        move || reader.wait_range(0..6)
-    });
-    thread::sleep(Duration::from_millis(50));
     writer.abandon();
-
-    assert_eq!(
-        waiter
-            .join()
-            .expect("BUG: reader thread panicked")
-            .expect("BUG: wait_range must not surface a hard error on abandon"),
-        WaitOutcome::Interrupted,
-        "abandon must wake its parked readers"
-    );
     assert!(
         matches!(reader.status(), ResourceStatus::Active),
         "abandon keeps the raw resource for a successor"
