@@ -112,10 +112,8 @@ async fn delayed_drm_track() -> (TestServerHelper, Url) {
 async fn run_seek_scenario(url: &Url, backend: DecoderBackend, abr: AbrMode, temp: TestTempDir) {
     let pools = app_pools(&PoolsSection::default()).expect("build app pool region");
     let net = NetOptions::builder().is_insecure(true).build();
-    let downloader = Downloader::new(
-        DownloaderConfig::for_client(HttpClient::new(net, pools.clone(), CancelToken::never()))
-            .build(),
-    );
+    let client = HttpClient::new(net, pools.clone(), CancelToken::never());
+    let downloader = Downloader::new(DownloaderConfig::for_client(client.clone()).build());
     let flush_hub = FlushHub::new(CancelToken::never(), FlushPolicy::default());
     let shutdown = CancelToken::never();
     let store = AssetStore::builder(pools.clone())
@@ -132,6 +130,7 @@ async fn run_seek_scenario(url: &Url, backend: DecoderBackend, abr: AbrMode, tem
     let config = AppConfig::builder()
         // The fixture serves its own AES-128 keys; no provider claims 127.0.0.1.
         .drm(AppDrm::new(DomainKeyPolicy::new(Vec::new())))
+        .net(client)
         .downloader(downloader)
         .shutdown(shutdown)
         .worker(worker.clone())
