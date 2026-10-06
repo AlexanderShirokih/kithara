@@ -9,8 +9,13 @@
 use std::borrow::Cow;
 
 use iced::{
-    Event, Point, Size,
-    advanced::{clipboard, graphics::text::font_system, mouse::Cursor},
+    Background, Color, Event, Point, Rectangle, Size, Theme,
+    advanced::{
+        clipboard,
+        graphics::text::font_system,
+        mouse::Cursor,
+        renderer::{Quad, Style},
+    },
     event,
     keyboard::{
         self, Location, Modifiers,
@@ -20,6 +25,7 @@ use iced::{
     time::Instant,
     window::{self, RedrawRequest},
 };
+use iced_renderer::fallback::Renderer as FallbackRenderer;
 use iced_runtime::{
     UserInterface,
     user_interface::{Cache, State},
@@ -148,6 +154,53 @@ impl<'a, A: App> Immediate<'a, A> {
         (published, captured)
     }
 
+    /// The quads the tree and its overlay hand the software renderer for one
+    /// frame, each with the bounds of the layer it was drawn into.
+    pub(crate) fn quads(&mut self) -> Vec<(Rectangle, Quad, Background)> {
+        let Self {
+            app,
+            cache,
+            renderer,
+            size,
+            skin,
+            ui,
+            view,
+            ..
+        } = self;
+        let element = app
+            .reads(|reads| tree::render(&ui.root, ui, reads, view, skin, Clock::default(), None));
+        let mut interface = UserInterface::build(element, *size, std::mem::take(cache), renderer);
+        drop(interface.update(
+            &[],
+            Cursor::Unavailable,
+            renderer,
+            &mut clipboard::Null,
+            &mut Vec::<Published>::new(),
+        ));
+        interface.draw(
+            renderer,
+            &Theme::Dark,
+            &Style {
+                text_color: Color::WHITE,
+            },
+            Cursor::Unavailable,
+        );
+        *cache = interface.into_cache();
+        let FallbackRenderer::Secondary(software) = renderer else {
+            panic!("the parity harness draws through the software renderer");
+        };
+        software
+            .layers()
+            .iter()
+            .flat_map(|layer| {
+                layer
+                    .quads
+                    .iter()
+                    .map(move |(quad, background)| (layer.bounds, *quad, *background))
+            })
+            .collect()
+    }
+
     /// The pointer arrives at one point and stops there, pressing nothing.
     pub(crate) fn hover_at(&mut self, at: Pt) -> bool {
         let cursor = Point::new(at.x, at.y);
@@ -230,6 +283,13 @@ impl<'a, A: App> Immediate<'a, A> {
         ]
         .into_iter()
         .fold(false, |took, event| self.play(cursor, &event) || took)
+    }
+
+    /// The pointer lets go where it stands, ending whatever a press began.
+    pub(crate) fn release_at(&mut self, at: Pt) -> bool {
+        let cursor = Point::new(at.x, at.y);
+        let released = Event::Mouse(mouse::Event::ButtonReleased(Button::Left));
+        self.play(cursor, &released)
     }
 
     /// Settles what the tree published the way the retained host does.

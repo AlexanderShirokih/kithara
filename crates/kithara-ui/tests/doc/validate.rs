@@ -819,3 +819,46 @@ fn model_binding_on_write_side_is_direction_error() {
         "{error:?}"
     );
 }
+
+/// A modal over a quiet surface, opening and shutting on state the view
+/// keeps; `close` is what Escape and a press on the scrim write.
+fn modal(id: &str, close: &str, content: &str) -> String {
+    format!(
+        r#"Modal(id: "{id}", open: View(id: "settings"), close: {close},
+            content: {content})"#
+    )
+}
+
+const SHUT: &str = r#"View(id: "settings", set: Off)"#;
+
+const QUIET: &str = r#"Spacer(id: "quiet", size: Some((w: Fixed(100.0), h: Fixed(60.0))))"#;
+
+#[kithara::test]
+fn a_modal_that_shuts_its_own_flag_compiles() {
+    accepted(module_root(&modal("settings", SHUT, QUIET)));
+}
+
+#[kithara::test]
+fn a_modal_must_close_through_a_binding_it_can_write() {
+    let error = refused(module_root(&modal(
+        "settings",
+        r#"Model(id: "library.breadcrumb")"#,
+        QUIET,
+    )));
+
+    assert!(
+        matches!(&error, UiDocError::BindingDirection { path, .. } if path == "demo/settings"),
+        "{error:?}"
+    );
+}
+
+#[kithara::test]
+fn a_modal_inside_another_modal_is_refused() {
+    let inner = modal("inner", SHUT, QUIET);
+    let error = refused(module_root(&modal("outer", SHUT, &inner)));
+
+    assert!(
+        matches!(&error, UiDocError::InvalidId { id, .. } if id == "demo/inner"),
+        "{error:?}"
+    );
+}
