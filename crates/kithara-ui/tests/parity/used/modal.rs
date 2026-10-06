@@ -26,13 +26,16 @@ use crate::immediate::Immediate;
 /// The window both hosts open the page in.
 const WINDOW: (u32, u32) = (480, 320);
 
-/// The page: a knob in a strip along the top and a pressable filling the rest.
-/// `{modal}` stands first, so a modal that took room would push both down.
+/// The page: a knob and a search field in a strip along the top and a
+/// pressable filling the rest. `{modal}` stands first, so a modal that took
+/// room would push them all down.
 const PAGE: &str = r#"Column(size: (w: Fill, h: Fill), gap: 0.0, pad: 0.0, children: [
     {modal}
     Row(size: (w: Fill, h: Fixed(60.0)), gap: 0.0, pad: 0.0, children: [
         Knob(id: "dial", size: (w: Fixed(38.0), h: Fixed(49.0)),
             read: Model(id: "fixture.dial"), write: Parameter(id: "fixture.dial")),
+        Search(id: "query", size: (w: Fixed(160.0), h: Fixed(26.0)),
+            read: Model(id: "fixture.query"), write: Command(id: "fixture.query")),
     ]),
     Pressable(id: "page", press: Command(id: "fixture.page"),
         child: Spacer(id: "page-face", size: Some((w: Fill, h: Fill)))),
@@ -152,13 +155,14 @@ fn faded(role_: ColorRole, alpha: f32) -> Rgba {
 struct Page {
     open: bool,
     published: Vec<UiEvent>,
+    query: String,
 }
 
 impl Page {
     fn open() -> Self {
         Self {
             open: true,
-            published: Vec::new(),
+            ..Self::default()
         }
     }
 }
@@ -168,6 +172,7 @@ impl Reads for Page {
         match Scope::split(endpoint).0 {
             "fixture.open" => Some(ReadValue::Bool(self.open)),
             "fixture.dial" => Some(ReadValue::Scalar(0.5)),
+            "fixture.query" => Some(ReadValue::Text(&self.query)),
             _ => None,
         }
     }
@@ -186,7 +191,18 @@ impl App for Page {
         builtin::skin()
     }
 
+    /// The first query typed opens the modal, so the field it was typed into
+    /// still holds the keyboard when the modal stands.
     fn update(&mut self, event: UiEvent) {
+        if let UiEvent::Write {
+            key,
+            value: WriteValue::Text(query),
+        } = &event
+            && key == "fixture.query"
+        {
+            self.query.clone_from(query);
+            self.open = true;
+        }
         self.published.push(event);
     }
 }
@@ -194,6 +210,7 @@ impl App for Page {
 struct Endpoints {
     flag: EndpointDesc,
     scalar: EndpointDesc,
+    text: EndpointDesc,
     trigger: EndpointDesc,
 }
 
@@ -202,6 +219,7 @@ impl Default for Endpoints {
         Self {
             flag: EndpointDesc::new(ValueKind::Bool),
             scalar: EndpointDesc::new(ValueKind::Scalar),
+            text: EndpointDesc::new(ValueKind::Text),
             trigger: EndpointDesc::new(ValueKind::Trigger),
         }
     }
@@ -213,6 +231,9 @@ impl EndpointRegistry for Endpoints {
             (EndpointCategory::Model, "fixture.open") => Some(&self.flag),
             (EndpointCategory::Model, "fixture.dial")
             | (EndpointCategory::Parameter, "fixture.dial") => Some(&self.scalar),
+            (EndpointCategory::Model | EndpointCategory::Command, "fixture.query") => {
+                Some(&self.text)
+            }
             (EndpointCategory::Command, "fixture.close" | "fixture.page" | "fixture.pick") => {
                 Some(&self.trigger)
             }
@@ -242,6 +263,8 @@ enum Step {
     /// Presses at the first point, travels to the second and lets go there.
     Drag(Pt, Pt),
     Escape,
+    /// Types one character, the key that types it named for the immediate host.
+    Type(&'static str, iced::keyboard::key::Code),
 }
 
 /// Mounts the page on the retained host and hands it to the check.
@@ -297,6 +320,17 @@ fn play_retained(ui: &mut Ui<'_, Page>, steps: &[Step]) {
                     modifiers: Modifiers::default(),
                 });
             }
+            Step::Type(text, _) => {
+                ui.input(Input::KeyPressed {
+                    key: Key::character(text, None),
+                    modifiers: Modifiers::default(),
+                    text: Some(text),
+                });
+                ui.input(Input::KeyReleased {
+                    key: Key::character(text, None),
+                    modifiers: Modifiers::default(),
+                });
+            }
         }
     }
 }
@@ -334,6 +368,13 @@ fn play_immediate(holds: Holds, app: Page, steps: &[Step]) -> Vec<UiEvent> {
                     iced::keyboard::key::Code::Escape,
                 );
             }
+            Step::Type(text, code) => {
+                host.key_at(
+                    Pt { x: 1.0, y: 1.0 },
+                    iced::keyboard::Key::Character(text.into()),
+                    code,
+                );
+            }
         }
     }
     host.app().published.clone()
@@ -343,7 +384,7 @@ fn play_immediate(holds: Holds, app: Page, steps: &[Step]) -> Vec<UiEvent> {
 fn both(holds: Holds, open: bool, steps: &[Step]) -> [Vec<UiEvent>; 2] {
     let app = || Page {
         open,
-        published: Vec::new(),
+        ..Page::default()
     };
     let retained = with_retained(holds, app(), |ui| {
         play_retained(ui, steps);
@@ -377,7 +418,7 @@ fn immediate_quads(holds: Holds, open: bool) -> Vec<(Rectangle, Quad, Background
     let mut host = Immediate::mount(
         Page {
             open,
-            published: Vec::new(),
+            ..Page::default()
         },
         &ui,
         builtin::skin(),
@@ -701,4 +742,39 @@ fn a_hidden_modal_leaves_the_page_as_if_it_were_not_there() {
     let [retained, immediate] = both(Holds::SMALL, false, &[Step::Click(face)]);
     assert_eq!(retained, [trigger("fixture.page")], "the retained host");
     assert_eq!(immediate, [trigger("fixture.page")], "the immediate host");
+}
+
+/// A key belongs to the modal even while a field under it holds the keyboard:
+/// the field typed into before the modal opened hears nothing more, and Escape
+/// closes the modal.
+#[kithara::test]
+fn a_standing_modal_keeps_the_keyboard_from_the_field_under_it() {
+    use iced::keyboard::key::Code;
+
+    let field = with_retained(Holds::SMALL, Page::default(), |ui| {
+        ui.rect_of("demo/query")
+            .unwrap_or_else(|| panic!("the search field must be laid out"))
+    });
+    let steps = [
+        Step::Click(centre(field)),
+        Step::Type("a", Code::KeyA),
+        Step::Type("b", Code::KeyB),
+        Step::Escape,
+    ];
+
+    let typed = UiEvent::Write {
+        key: "fixture.query".to_owned(),
+        value: WriteValue::Text("a".to_owned()),
+    };
+    let [retained, immediate] = both(Holds::SMALL, false, &steps);
+    assert_eq!(
+        retained,
+        [typed.clone(), trigger("fixture.close")],
+        "the retained host"
+    );
+    assert_eq!(
+        immediate,
+        [typed, trigger("fixture.close")],
+        "the immediate host"
+    );
 }
