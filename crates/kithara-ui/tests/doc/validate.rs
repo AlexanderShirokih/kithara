@@ -861,3 +861,34 @@ fn a_modal_inside_another_modal_is_refused() {
         "{error:?}"
     );
 }
+
+/// A popover opening on the same view flag the modal reads.
+fn popover(id: &str, content: &str) -> String {
+    format!(
+        r#"Popover(id: "{id}", open: View(id: "settings"),
+            anchor: Row(id: "{id}-anchor", children: []),
+            content: {content})"#
+    )
+}
+
+#[kithara::test]
+fn a_popover_inside_a_modal_is_refused() {
+    let inner = popover("menu", QUIET);
+    let error = refused(module_root(&modal("settings", SHUT, &inner)));
+
+    assert!(
+        matches!(&error, UiDocError::InvalidId { id, .. } if id == "demo/menu"),
+        "{error:?}"
+    );
+}
+
+#[kithara::test]
+fn a_modal_inside_a_popover_is_refused() {
+    let inner = modal("settings", SHUT, QUIET);
+    let error = refused(module_root(&popover("menu", &inner)));
+
+    assert!(
+        matches!(&error, UiDocError::InvalidId { id, .. } if id == "demo/settings"),
+        "{error:?}"
+    );
+}

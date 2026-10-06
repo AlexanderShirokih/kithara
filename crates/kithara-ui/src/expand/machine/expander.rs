@@ -438,6 +438,13 @@ fn expand_popover(
             reason: "a popover must not open inside another popover".to_owned(),
         });
     }
+    if machine.modal {
+        return Err(UiDocError::InvalidId {
+            origin: context.origin.clone(),
+            id: path,
+            reason: "a popover must not open inside a modal".to_owned(),
+        });
+    }
     let open = context.substitute(open, &path)?;
     if dismiss == PopoverDismiss::OnAnyAction && !matches!(open, BindingRef::View { .. }) {
         return Err(UiDocError::InvalidId {
@@ -484,6 +491,13 @@ fn expand_modal(
             origin: context.origin.clone(),
             id: path,
             reason: "a modal must not open inside another modal".to_owned(),
+        });
+    }
+    if machine.popover.is_some() {
+        return Err(UiDocError::InvalidId {
+            origin: context.origin.clone(),
+            id: path,
+            reason: "a modal must not open inside a popover".to_owned(),
         });
     }
     let open = context.substitute(open, &path)?;
