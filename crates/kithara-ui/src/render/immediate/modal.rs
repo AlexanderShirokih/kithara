@@ -133,9 +133,12 @@ fn closes(event: &Event, surface: Rectangle, cursor: Cursor) -> bool {
 
 impl<Message> Surface<'_, '_, Message> {
     fn surface(&self, layout: Layout<'_>) -> Rectangle {
-        layout.children().next().map_or(Rectangle::default(), |content| {
-            content.bounds().expand(self.chrome.border_width)
-        })
+        layout
+            .children()
+            .next()
+            .map_or_else(Rectangle::default, |content| {
+                content.bounds().expand(self.chrome.border_width)
+            })
     }
 }
 

@@ -12,8 +12,8 @@ use kithara_ui::{
     render::{
         Clock, InputOwner, ReadValue, Reads,
         document::{
-            Band, Ctx, Group, GroupMount, Host, Measured, Modal, Module, PlacedMount, Popover, SplitMount,
-            StageMount, render,
+            Band, Ctx, Group, GroupMount, Host, Measured, Modal, Module, PlacedMount, Popover,
+            SplitMount, StageMount, render,
         },
     },
     size::SizeSpec,

@@ -830,7 +830,6 @@ fn modal(id: &str, close: &str, content: &str) -> String {
 }
 
 const SHUT: &str = r#"View(id: "settings", set: Off)"#;
-
 const QUIET: &str = r#"Spacer(id: "quiet", size: Some((w: Fixed(100.0), h: Fixed(60.0))))"#;
 
 #[kithara::test]

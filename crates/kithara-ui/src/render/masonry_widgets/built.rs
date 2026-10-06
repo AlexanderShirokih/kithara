@@ -343,6 +343,28 @@ impl<Action> MasonryNode<Action> {
         state: Rc<PopoverState>,
         dismiss: Rc<dyn Fn() -> HostAction>,
         held: Vec<WidgetId>,
+    ) {
+        self.add_surface(layer, flag, state, dismiss, held, false);
+    }
+
+    pub(crate) fn add_modal(
+        &mut self,
+        layer: WidgetId,
+        flag: &Binding,
+        state: Rc<PopoverState>,
+        close: Rc<dyn Fn() -> HostAction>,
+        held: Vec<WidgetId>,
+    ) {
+        self.add_surface(layer, flag, state, close, held, true);
+    }
+
+    fn add_surface(
+        &mut self,
+        layer: WidgetId,
+        flag: &Binding,
+        state: Rc<PopoverState>,
+        dismiss: Rc<dyn Fn() -> HostAction>,
+        held: Vec<WidgetId>,
         modal: bool,
     ) {
         let mut controls: Vec<WidgetId> = self

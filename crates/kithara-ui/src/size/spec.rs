@@ -189,13 +189,12 @@ pub(crate) fn has_blocks(node: &ExpandedNode) -> bool {
             children.iter().any(has_blocks)
         }
         ExpandedNode::Popover { anchor, .. } => has_blocks(anchor),
-        ExpandedNode::Modal { .. } => false,
         ExpandedNode::Object { child, .. }
         | ExpandedNode::Placed { child, .. }
         | ExpandedNode::Pressable { child, .. }
         | ExpandedNode::Reveal { child, .. }
         | ExpandedNode::Scroll { child, .. } => has_blocks(child),
-        ExpandedNode::Control { .. } => false,
+        ExpandedNode::Modal { .. } | ExpandedNode::Control { .. } => false,
     }
 }
 

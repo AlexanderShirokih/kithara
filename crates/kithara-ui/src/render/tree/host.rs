@@ -665,8 +665,8 @@ mod tests {
             render::{
                 InputOwner, Published, Skin,
                 document::{
-                    Ctx, Group, GroupMount, Host, Measured, Modal, Module, PlacedMount,
-                    Popover, SplitMount, StageMount, render,
+                    Ctx, Group, GroupMount, Host, Measured, Modal, Module, PlacedMount, Popover,
+                    SplitMount, StageMount, render,
                 },
                 tree::node::IcedHost,
             },

@@ -12,6 +12,6 @@ pub(crate) use contract::WindowLayerProgram;
 pub(crate) use iced::{draw_host_layer, window_layers};
 #[cfg(feature = "iced")]
 pub(crate) use leaf::window_layer;
-pub(crate) use model::{HostLayer, LayerHit, cursor, handle};
 pub(crate) use modal::{ModalChrome, tick_marks};
+pub(crate) use model::{HostLayer, LayerHit, cursor, handle};
 pub(crate) use place::place_popover;

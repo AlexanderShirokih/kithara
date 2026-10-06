@@ -771,15 +771,7 @@ pub(in crate::expand) fn walk(
             open,
             close,
             content,
-        } => expand_modal(
-            context,
-            node,
-            id,
-            (open, close),
-            content,
-            depth,
-            machine,
-        ),
+        } => expand_modal(context, node, id, (open, close), content, depth, machine),
         ControlNode::Pressable {
             id,
             press,

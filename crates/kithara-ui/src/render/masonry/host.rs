@@ -14,11 +14,11 @@ use super::{
     custom::{HostAction, MappedCustom, MountedCustom},
     flex::{ChildLayout, Flex},
     leaf::{Leaf, TextFace, TextFaces, WindowLeafLayer},
+    modal::ModalLayer,
     mount::{
         Cx, NodeControl, NodeLayout, Viewport, activates, alignment, control_declared, declared,
         pointer_owner,
     },
-    modal::ModalLayer,
     node::{Detent, Face, Faces},
     popover::{PopoverLayer, PopoverState},
     shader::ShaderLeaf,
@@ -459,6 +459,47 @@ where
     }
 }
 
+/// Mounting a modal, which the document fold hands its built content.
+impl<Action> MasonryHost<'_, Action>
+where
+    Action: std::fmt::Debug + Send + 'static,
+{
+    /// Nothing in flow, and a layer over the whole window that stands the
+    /// content while the document holds the modal open.
+    fn mount_modal(&self, modal: Modal<'_>, content: MasonryNode<Action>) -> MasonryNode<Action> {
+        let path = self.ctx.ui.resolve(modal.path()).to_owned();
+        let state = self.state.popover(&path, modal.is_open());
+        let close = self.shared_control_action(path, ControlAction::Activate);
+        let nothing = Size::new(Length::Fixed(0.0), Length::Fixed(0.0));
+        let mut output =
+            MasonryNode::document(NodeLayout::Stack, nothing, Vec::new(), false, None, None);
+        let (content, declared, layers, registrations, boxes, native, window) =
+            LayerParts::from(content);
+        let layer = NewWidget::new(ModalLayer::new(
+            content,
+            declared,
+            Rc::clone(&state),
+            self.skin,
+        ))
+        .erased();
+        let held = registrations
+            .engines
+            .iter()
+            .map(|engine| engine.item.owner())
+            .collect();
+        output.add_modal(layer.id(), modal.flag(), state, close, held);
+        output.append_layers(layers);
+        output.append_registrations(registrations);
+        output.append_boxes(boxes);
+        output.append_native(native);
+        if let Some(window) = window {
+            output.set_window_tracker(window);
+        }
+        output.add_layer(layer);
+        output
+    }
+}
+
 impl<Action> Host for MasonryHost<'_, Action>
 where
     Action: std::fmt::Debug + Send + 'static,
@@ -697,14 +738,7 @@ where
             .iter()
             .map(|engine| engine.item.owner())
             .collect();
-        output.add_popover(
-            layer.id(),
-            popover.flag(),
-            state,
-            Rc::clone(&dismiss),
-            held,
-            false,
-        );
+        output.add_popover(layer.id(), popover.flag(), state, Rc::clone(&dismiss), held);
         output.append_layers(layers);
         output.append_registrations(registrations);
         output.append_boxes(boxes);
@@ -726,32 +760,7 @@ where
         content: &mut dyn FnMut(&mut Self) -> Self::Output,
     ) -> Self::Output {
         let content = content(self);
-        let path = self.ctx.ui.resolve(modal.path()).to_owned();
-        let state = self.state.popover(&path, modal.is_open());
-        let close = self.shared_control_action(path, ControlAction::Activate);
-        let nothing = Size::new(Length::Fixed(0.0), Length::Fixed(0.0));
-        let mut output =
-            MasonryNode::document(NodeLayout::Stack, nothing, Vec::new(), false, None, None);
-        let (content, declared, layers, registrations, boxes, native, window) =
-            LayerParts::from(content);
-        let layer =
-            NewWidget::new(ModalLayer::new(content, declared, Rc::clone(&state), self.skin))
-                .erased();
-        let held = registrations
-            .engines
-            .iter()
-            .map(|engine| engine.item.owner())
-            .collect();
-        output.add_popover(layer.id(), modal.flag(), state, close, held, true);
-        output.append_layers(layers);
-        output.append_registrations(registrations);
-        output.append_boxes(boxes);
-        output.append_native(native);
-        if let Some(window) = window {
-            output.set_window_tracker(window);
-        }
-        output.add_layer(layer);
-        output
+        self.mount_modal(modal, content)
     }
 
     fn pressable(

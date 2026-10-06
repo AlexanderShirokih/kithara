@@ -483,11 +483,7 @@ fn assert_immediate_draws(holds: Holds, surface: Rect) {
     };
 
     assert!(
-        filled(
-            &quads,
-            window,
-            faded(ColorRole::BgDeep, look::SCRIM_ALPHA)
-        ),
+        filled(&quads, window, faded(ColorRole::BgDeep, look::SCRIM_ALPHA)),
         "the scrim must cover the whole window: {quads:#?}"
     );
     let (layer, quad) = surface_quad(&quads, surface);
@@ -504,7 +500,10 @@ fn assert_immediate_draws(holds: Holds, surface: Rect) {
         covers(layer, ink),
         "the shadow inks {ink:?}, outside the layer {layer:?} it was drawn in"
     );
-    assert!(covers(window, ink), "the shadow inks {ink:?}, outside the window");
+    assert!(
+        covers(window, ink),
+        "the shadow inks {ink:?}, outside the window"
+    );
     for tick in ticks(surface) {
         assert!(
             filled(&quads, iced_rect(tick), role(ColorRole::Accent)),
@@ -539,7 +538,10 @@ fn assert_retained_draws(holds: Holds, surface: Rect, content: Rect) {
         ("ticks", role(ColorRole::Accent)),
     ];
     let hidden: Vec<usize> = with_retained(holds, Page::default(), |ui| {
-        colors.iter().map(|(_, color)| painted(ui, *color)).collect()
+        colors
+            .iter()
+            .map(|(_, color)| painted(ui, *color))
+            .collect()
     });
     with_retained(holds, Page::open(), |ui| {
         assert_eq!(
@@ -566,7 +568,10 @@ fn assert_retained_draws(holds: Holds, surface: Rect, content: Rect) {
             (look::SHADOW_BLUR / 2.0).to_bits(),
         ];
         assert!(
-            encoding.draw_data.windows(blur.len()).any(|drawn| drawn == blur),
+            encoding
+                .draw_data
+                .windows(blur.len())
+                .any(|drawn| drawn == blur),
             "the retained host must blur a {}x{} shadow out of the surface",
             surface.w,
             surface.h
@@ -682,7 +687,10 @@ fn a_hidden_modal_leaves_the_page_as_if_it_were_not_there() {
         (ui.rect_of("demo/dial"), scene.encoding().draw_data.clone())
     });
     assert_eq!(shut.0, bare.0, "a shut modal must take no room in the flow");
-    assert_eq!(shut.1, bare.1, "a shut modal must draw nothing on the retained host");
+    assert_eq!(
+        shut.1, bare.1,
+        "a shut modal must draw nothing on the retained host"
+    );
 
     assert_eq!(
         immediate_quads(Holds::SMALL, false),

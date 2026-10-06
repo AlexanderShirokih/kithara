@@ -18,9 +18,8 @@ use super::{
     panels::{
         DeckPatch, DeckSkin, DividerPatch, DividerSkin, DragPatch, DragSkin, GlobalBarPatch,
         GlobalBarSkin, LayoutPreviewPatch, LayoutPreviewSkin, MeterPatch, MeterSkin, ModalPatch,
-        ModalSkin, PopPatch,
-        PopSkin, TablePatch, TableSkin, TelemetryPatch, TelemetrySkin, TreePatch, TreeSkin,
-        WavePatch, WaveSkin,
+        ModalSkin, PopPatch, PopSkin, TablePatch, TableSkin, TelemetryPatch, TelemetrySkin,
+        TreePatch, TreeSkin, WavePatch, WaveSkin,
     },
     pictures::{PictureDoc, PicturePatch},
     primitives::{

@@ -13,11 +13,13 @@ use masonry::{
 use num_traits::cast::AsPrimitive;
 use tracing::{Span, trace_span};
 
-use super::{custom::HostAction, flex::box_constraints, node::Node, popover::PopoverState};
 use crate::{
     backends::{VelloBackend, paint_color},
     draw::{DrawListBuilder, Rect, replay},
-    render::{ModalChrome, Skin},
+    render::{
+        ModalChrome, Skin,
+        masonry::{custom::HostAction, flex::box_constraints, node::Node, popover::PopoverState},
+    },
     solve,
     solve::{Limits, Size},
 };
@@ -138,8 +140,7 @@ impl Widget for ModalLayer {
             &mut self.child,
             Point::new(f64::from(at.x), f64::from(at.y)),
         );
-        self.state
-            .stand(masonry_rect(surface), viewport.to_rect());
+        self.state.stand(masonry_rect(surface), viewport.to_rect());
         viewport
     }
 
@@ -202,7 +203,12 @@ impl Widget for ModalLayer {
         replay(&frame.finish(), &mut VelloBackend::new(scene));
     }
 
-    fn post_paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, scene: &mut Scene) {
+    fn post_paint(
+        &mut self,
+        _ctx: &mut PaintCtx<'_>,
+        _props: &PropertiesRef<'_>,
+        scene: &mut Scene,
+    ) {
         if self.state.standing().is_none() {
             return;
         }

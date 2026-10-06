@@ -17,12 +17,12 @@ use crate::{
     layout::Axis,
     module::{MeasureAxis, TextAlign},
     render::{
-        Anchored, ControlAction, InputOwner, Modal, ModuleChrome, Placement, Published, Skin, Viewport,
-        WheelSurface, Widget,
+        Anchored, ControlAction, InputOwner, Modal, ModuleChrome, Placement, Published, Skin,
+        Viewport, WheelSurface, Widget,
         document::{
             Ctx, Group, GroupMount, Host as DocumentHost, Measured as MeasuredPlan,
-            Modal as DocumentModal, Module as DocumentModule, PlacedMount, Popover as DocumentPopover, SplitMount,
-            StageMount,
+            Modal as DocumentModal, Module as DocumentModule, PlacedMount,
+            Popover as DocumentPopover, SplitMount, StageMount,
         },
         drop_outline, placed, window_layers,
     },
@@ -229,7 +229,10 @@ impl<'a> DocumentHost for IcedHost<'a, '_> {
         Modal::new(
             content,
             modal.is_open(),
-            crate::render::control_event(self.ctx.ui.resolve(modal.path()), ControlAction::Activate),
+            crate::render::control_event(
+                self.ctx.ui.resolve(modal.path()),
+                ControlAction::Activate,
+            ),
             self.skin,
         )
         .into()
