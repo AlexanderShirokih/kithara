@@ -20,7 +20,7 @@ use super::{
         pointer_owner,
     },
     node::{Detent, Face, Faces},
-    popover::{PopoverLayer, PopoverState},
+    popover::{PopoverLayer, PopoverState, SurfaceKind},
     shader::ShaderLeaf,
     spot::{Grip, Spot},
     vis::VisLeaf,
@@ -81,12 +81,12 @@ impl MasonryState {
         self.paths.borrow_mut().clear();
     }
 
-    fn popover(&self, path: &str, open: bool) -> Rc<PopoverState> {
+    fn popover(&self, path: &str, open: bool, kind: SurfaceKind) -> Rc<PopoverState> {
         let mut popovers = self.popovers.borrow_mut();
         let state = Rc::clone(
             popovers
                 .entry(path.to_owned())
-                .or_insert_with(|| Rc::new(PopoverState::default())),
+                .or_insert_with(|| Rc::new(PopoverState::new(kind))),
         );
         state.latch(open);
         state
@@ -468,7 +468,7 @@ where
     /// content while the document holds the modal open.
     fn mount_modal(&self, modal: Modal<'_>, content: MasonryNode<Action>) -> MasonryNode<Action> {
         let path = self.ctx.ui.resolve(modal.path()).to_owned();
-        let state = self.state.popover(&path, modal.is_open());
+        let state = self.state.popover(&path, modal.is_open(), SurfaceKind::Modal);
         let close = self.shared_control_action(path, ControlAction::Activate);
         let nothing = Size::new(Length::Fixed(0.0), Length::Fixed(0.0));
         let mut output =
@@ -487,7 +487,7 @@ where
             .iter()
             .map(|engine| engine.item.owner())
             .collect();
-        output.add_modal(layer.id(), modal.flag(), state, close, held);
+        output.add_popover(layer.id(), modal.flag(), state, close, held);
         output.append_layers(layers);
         output.append_registrations(registrations);
         output.append_boxes(boxes);
@@ -717,7 +717,7 @@ where
     ) -> Self::Output {
         let content = content(self);
         let path = self.ctx.ui.resolve(popover.path()).to_owned();
-        let state = self.state.popover(&path, popover.is_open());
+        let state = self.state.popover(&path, popover.is_open(), SurfaceKind::popover());
         let dismiss = self.shared_control_action(path.clone(), ControlAction::Activate);
         let size = popover.size().map_or_else(|| anchor.declared(), declared);
         let mut output =

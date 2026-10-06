@@ -23,29 +23,74 @@ use crate::{
     solve::{Limits, Size},
 };
 
-#[derive(Default)]
+/// What a surface is, which decides the room it takes from what is under it.
+pub(crate) enum SurfaceKind {
+    /// Hangs on its anchor and takes only its own surface. It opens at the
+    /// press that opened it, so it keeps the press it last saw and the one it
+    /// opened at.
+    Popover {
+        pointer: Cell<Option<Point>>,
+        press: Cell<Option<Point>>,
+    },
+    /// Takes the whole window and the keyboard.
+    Modal,
+}
+
+impl SurfaceKind {
+    pub(crate) const fn popover() -> Self {
+        Self::Popover {
+            pointer: Cell::new(None),
+            press: Cell::new(None),
+        }
+    }
+}
+
 pub(crate) struct PopoverState {
+    kind: SurfaceKind,
     anchor: Cell<Option<MasonryRect>>,
-    cover: Cell<MasonryRect>,
     open: Cell<bool>,
-    pointer: Cell<Option<Point>>,
-    press: Cell<Option<Point>>,
     surface: Cell<MasonryRect>,
 }
 
 impl PopoverState {
+    pub(crate) const fn new(kind: SurfaceKind) -> Self {
+        Self {
+            kind,
+            anchor: Cell::new(None),
+            open: Cell::new(false),
+            surface: Cell::new(MasonryRect::ZERO),
+        }
+    }
+
     pub(crate) fn bank(&self, point: Point) {
-        self.press.set(Some(point));
+        if let SurfaceKind::Popover { press, .. } = &self.kind {
+            press.set(Some(point));
+        }
     }
 
     pub(crate) fn is_open(&self) -> bool {
         self.open.get()
     }
 
+    pub(crate) const fn kind(&self) -> &SurfaceKind {
+        &self.kind
+    }
+
     pub(crate) fn latch(&self, open: bool) {
         let was_open = self.open.replace(open);
-        if open && !was_open {
-            self.pointer.set(self.press.take());
+        if open
+            && !was_open
+            && let SurfaceKind::Popover { pointer, press } = &self.kind
+        {
+            pointer.set(press.take());
+        }
+    }
+
+    /// The press the surface opened at.
+    fn pointer(&self) -> Option<Point> {
+        match &self.kind {
+            SurfaceKind::Popover { pointer, .. } => pointer.get(),
+            SurfaceKind::Modal => None,
         }
     }
 
@@ -72,16 +117,8 @@ impl PopoverState {
         self.surface.get()
     }
 
-    /// The room this surface takes from everything drawn under it: the
-    /// surface itself, or more for one that covers the window.
-    pub(crate) fn cover(&self) -> MasonryRect {
-        self.cover.get()
-    }
-
-    /// Stands the surface at `surface`, taking `cover` from what is under it.
-    pub(crate) fn stand(&self, surface: MasonryRect, cover: MasonryRect) {
+    pub(crate) fn stand(&self, surface: MasonryRect) {
         self.surface.set(surface);
-        self.cover.set(cover);
     }
 }
 
@@ -152,20 +189,20 @@ impl Widget for PopoverLayer {
 
     fn compose(&mut self, ctx: &mut ComposeCtx<'_>) {
         let Some(anchor) = self.state.standing() else {
-            self.state.stand(MasonryRect::ZERO, MasonryRect::ZERO);
+            self.state.stand(MasonryRect::ZERO);
             return;
         };
         let position = place(
             anchor,
             (self.at == PopoverAt::Pointer)
-                .then(|| self.state.pointer.get())
+                .then(|| self.state.pointer())
                 .flatten(),
             self.surface_size,
             ctx.size(),
             self.align,
         );
         let surface = MasonryRect::from_origin_size(position, self.surface_size);
-        self.state.stand(surface, surface);
+        self.state.stand(surface);
         ctx.set_animated_child_scroll_translation(
             &mut self.child,
             Vec2::new(position.x, position.y),
@@ -331,14 +368,14 @@ mod tests {
 
     #[kithara::test]
     fn every_open_latches_its_own_press_after_a_close() {
-        let state = PopoverState::default();
+        let state = PopoverState::new(SurfaceKind::popover());
         let first = Point::new(12.0, 18.0);
         let second = Point::new(44.0, 52.0);
 
         state.bank(first);
         state.latch(true);
         assert!(state.is_open());
-        assert_eq!(state.pointer.get(), Some(first));
+        assert_eq!(state.pointer(), Some(first));
 
         state.latch(false);
         assert!(!state.is_open());
@@ -346,6 +383,6 @@ mod tests {
         state.bank(second);
         state.latch(true);
         assert!(state.is_open());
-        assert_eq!(state.pointer.get(), Some(second));
+        assert_eq!(state.pointer(), Some(second));
     }
 }

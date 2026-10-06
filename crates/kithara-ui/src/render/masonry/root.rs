@@ -22,6 +22,7 @@ use super::{
     custom::HostAction,
     node::Node,
     picker::{self, HostedEngine},
+    popover::SurfaceKind,
     window_layer::WindowLayer,
 };
 #[cfg(feature = "capture")]
@@ -214,7 +215,10 @@ where
             .popovers
             .iter()
             .rev()
-            .find(|popover| popover.item.modal && popover.item.state.standing().is_some())?;
+            .find(|popover| {
+                matches!(popover.item.state.kind(), SurfaceKind::Modal)
+                    && popover.item.state.standing().is_some()
+            })?;
         let inside = self.root.focused_widget().is_some_and(|focused| {
             self.root
                 .get_widget(modal.item.layer)
@@ -465,7 +469,12 @@ where
         let at = at?;
         let point = Point::new(at.x.into(), at.y.into());
         self.popovers.iter().rposition(|popover| {
-            popover.item.state.standing().is_some() && popover.item.state.cover().contains(point)
+            let state = &popover.item.state;
+            state.standing().is_some()
+                && match state.kind() {
+                    SurfaceKind::Popover { .. } => state.surface().contains(point),
+                    SurfaceKind::Modal => true,
+                }
         })
     }
 

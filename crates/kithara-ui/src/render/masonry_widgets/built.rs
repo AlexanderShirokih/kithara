@@ -225,8 +225,6 @@ pub(crate) struct PopoverRegistration {
     pub(crate) anchor: WidgetId,
     /// The layer the surface is drawn in.
     pub(crate) layer: WidgetId,
-    /// A modal keeps the keyboard from everything outside its layer.
-    pub(crate) modal: bool,
 }
 
 /// The window layer one tree mounted, and what a root needs to keep it in step
@@ -344,29 +342,6 @@ impl<Action> MasonryNode<Action> {
         dismiss: Rc<dyn Fn() -> HostAction>,
         held: Vec<WidgetId>,
     ) {
-        self.add_surface(layer, flag, state, dismiss, held, false);
-    }
-
-    pub(crate) fn add_modal(
-        &mut self,
-        layer: WidgetId,
-        flag: &Binding,
-        state: Rc<PopoverState>,
-        close: Rc<dyn Fn() -> HostAction>,
-        held: Vec<WidgetId>,
-    ) {
-        self.add_surface(layer, flag, state, close, held, true);
-    }
-
-    fn add_surface(
-        &mut self,
-        layer: WidgetId,
-        flag: &Binding,
-        state: Rc<PopoverState>,
-        dismiss: Rc<dyn Fn() -> HostAction>,
-        held: Vec<WidgetId>,
-        modal: bool,
-    ) {
         let mut controls: Vec<WidgetId> = self
             .registrations
             .engines
@@ -380,7 +355,6 @@ impl<Action> MasonryNode<Action> {
                 state,
                 dismiss,
                 controls,
-                modal,
                 anchor: self.widget.id(),
                 flag: flag.clone(),
             }

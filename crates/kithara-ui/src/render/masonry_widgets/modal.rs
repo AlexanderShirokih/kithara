@@ -113,7 +113,7 @@ impl Widget for ModalLayer {
         let standing = self.state.standing().is_some();
         ctx.set_stashed(&mut self.child, !standing);
         if !standing {
-            self.state.stand(MasonryRect::ZERO, MasonryRect::ZERO);
+            self.state.stand(MasonryRect::ZERO);
             return viewport;
         }
         let window = Size::new(viewport.width.as_(), viewport.height.as_());
@@ -140,7 +140,7 @@ impl Widget for ModalLayer {
             &mut self.child,
             Point::new(f64::from(at.x), f64::from(at.y)),
         );
-        self.state.stand(masonry_rect(surface), viewport.to_rect());
+        self.state.stand(masonry_rect(surface));
         viewport
     }
 
