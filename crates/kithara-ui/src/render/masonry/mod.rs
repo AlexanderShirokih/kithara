@@ -4,6 +4,7 @@ pub(super) mod flex;
 mod host;
 pub(super) mod leaf;
 pub(super) mod menu;
+mod modal;
 pub(super) mod node;
 pub(super) mod picker;
 pub(super) mod popover;

@@ -189,6 +189,7 @@ pub(crate) fn has_blocks(node: &ExpandedNode) -> bool {
             children.iter().any(has_blocks)
         }
         ExpandedNode::Popover { anchor, .. } => has_blocks(anchor),
+        ExpandedNode::Modal { .. } => false,
         ExpandedNode::Object { child, .. }
         | ExpandedNode::Placed { child, .. }
         | ExpandedNode::Pressable { child, .. }
@@ -285,6 +286,7 @@ pub(crate) fn effective_size(
             return effective_size(child, skin, snapshot);
         }
         ExpandedNode::Popover { anchor, .. } => return effective_size(anchor, skin, snapshot),
+        ExpandedNode::Modal { .. } => Some(consts::NOTHING),
         ExpandedNode::Row { size, .. }
         | ExpandedNode::Column { size, .. }
         | ExpandedNode::Scroll { size, .. }
@@ -324,6 +326,7 @@ pub(crate) fn compute_size(
         | ExpandedNode::Popover { .. }
         | ExpandedNode::Pressable { .. }
         | ExpandedNode::Reveal { .. } => None,
+        ExpandedNode::Modal { .. } => Some(consts::NOTHING),
         ExpandedNode::Adaptive { size, .. }
         | ExpandedNode::Scroll { size, .. }
         | ExpandedNode::Row { size, .. }
@@ -350,6 +353,7 @@ pub(crate) fn compute_size(
         | ExpandedNode::Reveal { child, .. }
         | ExpandedNode::Scroll { child, .. } => compute_size(child, skin, snapshot),
         ExpandedNode::Popover { anchor, .. } => compute_size(anchor, skin, snapshot),
+        ExpandedNode::Modal { .. } => consts::NOTHING,
         ExpandedNode::Row {
             children,
             gap,
@@ -422,6 +426,7 @@ pub(crate) fn min_size(node: &ExpandedNode, skin: &SkinDoc) -> SizeSpec {
         | ExpandedNode::Pressable { child, .. }
         | ExpandedNode::Reveal { child, .. } => min_size(child, skin),
         ExpandedNode::Popover { anchor, .. } => min_size(anchor, skin),
+        ExpandedNode::Modal { .. } => consts::NOTHING,
         ExpandedNode::Adaptive { size, base, .. } => at_least(*size, min_size(base, skin)),
         ExpandedNode::Stage { size, children, .. } => at_least(
             *size,

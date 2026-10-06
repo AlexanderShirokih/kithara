@@ -1,7 +1,7 @@
 use num_traits::cast::AsPrimitive;
 
 use super::{
-    Band, Ctx, Group, GroupMount, Host, Lit, Measured, Module, PlacedMount, Popover, Snap,
+    Band, Ctx, Group, GroupMount, Host, Lit, Measured, Modal, Module, PlacedMount, Popover, Snap,
     SplitMount, StageMount,
 };
 use crate::{
@@ -503,6 +503,21 @@ where
             ctx,
             host,
         ),
+        ExpandedNode::Modal {
+            path,
+            open,
+            content,
+        } => {
+            let content_address = address.child(0);
+            host.modal(
+                Modal {
+                    path: *path,
+                    open: ctx.flag(Some(open)),
+                    flag: open,
+                },
+                &mut |host| expanded(content, &content_address, branch, ctx, host),
+            )
+        }
         ExpandedNode::Pressable { path, child, .. } => {
             let child = expanded(child, &address.child(0), branch, ctx, host);
             host.pressable(*path, child, effective_size(node, ctx.skin, snapshot))

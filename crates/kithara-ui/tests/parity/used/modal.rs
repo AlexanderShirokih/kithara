@@ -543,9 +543,10 @@ fn assert_retained_draws(holds: Holds, surface: Rect, content: Rect) {
     });
     with_retained(holds, Page::open(), |ui| {
         assert_eq!(
-            ui.rect_of("demo/surface"),
-            Some(content),
-            "the content must stand centred inside its frame"
+            ui.rect_of("demo/inside"),
+            Some(Rect { h: 40.0, ..content }),
+            "the content's first row must stand at the top of the content, centred inside its \
+             frame"
         );
         for ((name, color), before) in colors.iter().zip(&hidden) {
             assert!(

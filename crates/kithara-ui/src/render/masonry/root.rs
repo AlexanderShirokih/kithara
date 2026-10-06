@@ -182,6 +182,14 @@ where
             TextEvent::Keyboard(event)
                 if event.state.is_down() && event.key == Key::Named(NamedKey::Escape)
         );
+        if matches!(event, TextEvent::Keyboard(_))
+            && let Some(close) = self.modal_keeping_keys()
+        {
+            if dismiss {
+                self.push_action(Box::new(close()))?;
+            }
+            return Ok(Handled::Yes);
+        }
         let handled = self.root.handle_text_event(event);
         self.sync()?;
         if handled == Handled::No
@@ -197,6 +205,22 @@ where
             return Ok(Handled::Yes);
         }
         Ok(handled)
+    }
+
+    /// The close of the standing modal when the keyboard focus is outside it,
+    /// so a key pressed there is the modal's.
+    fn modal_keeping_keys(&self) -> Option<Rc<dyn Fn() -> HostAction>> {
+        let modal = self
+            .popovers
+            .iter()
+            .rev()
+            .find(|popover| popover.item.modal && popover.item.state.standing().is_some())?;
+        let inside = self.root.focused_widget().is_some_and(|focused| {
+            self.root
+                .get_widget(modal.item.layer)
+                .is_some_and(|layer| layer.find_widget_by_id(focused).is_some())
+        });
+        (!inside).then(|| Rc::clone(&modal.item.dismiss))
     }
 
     /// Dispatches a window event and reflows positioned layers after resize.
@@ -441,7 +465,7 @@ where
         let at = at?;
         let point = Point::new(at.x.into(), at.y.into());
         self.popovers.iter().rposition(|popover| {
-            popover.item.state.standing().is_some() && popover.item.state.surface().contains(point)
+            popover.item.state.standing().is_some() && popover.item.state.cover().contains(point)
         })
     }
 

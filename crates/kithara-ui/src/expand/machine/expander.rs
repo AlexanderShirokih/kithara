@@ -83,6 +83,8 @@ pub(crate) struct Expander<'m, 'v> {
     text: &'m TextDoc,
     /// The popover whose content is being expanded: what opens and what shuts it.
     pub(super) popover: Option<(BindingRef, PopoverDismiss)>,
+    /// Whether a modal's content is being expanded.
+    modal: bool,
     max_depth: usize,
 }
 
@@ -105,6 +107,7 @@ impl<'m, 'v> Expander<'m, 'v> {
             text,
             visitor,
             popover: None,
+            modal: false,
             address: Vec::new(),
             includes: Vec::new(),
         }
@@ -464,6 +467,45 @@ fn expand_popover(
     })
 }
 
+fn expand_modal(
+    context: &Context<'_>,
+    node: &ControlNode,
+    id: &NodeId,
+    declared: (&BindingRef, &BindingRef),
+    content: &ControlNode,
+    depth: usize,
+    machine: &mut Expander<'_, '_>,
+) -> Result<ExpandedNode, UiDocError> {
+    let (open, close) = declared;
+    machine.budget.charge(&context.origin)?;
+    let path = child_path(&context.prefix, id);
+    if machine.modal {
+        return Err(UiDocError::InvalidId {
+            origin: context.origin.clone(),
+            id: path,
+            reason: "a modal must not open inside another modal".to_owned(),
+        });
+    }
+    let open = context.substitute(open, &path)?;
+    let close = context.substitute(close, &path)?;
+    machine.visit(
+        ControlSite {
+            read: Some(&open),
+            write: Some(&close),
+            ..ControlSite::new(node, &path)
+        },
+        &context.origin,
+    )?;
+    machine.modal = true;
+    let content = walk_child(context, content, 0, depth, machine);
+    machine.modal = false;
+    Ok(ExpandedNode::Modal {
+        path: machine.interner.intern(&path, &context.origin)?,
+        open: intern_binding(machine.interner, &open, &context.origin)?,
+        content: Box::new(content?),
+    })
+}
+
 fn expand_pressable(
     context: &Context<'_>,
     node: &ControlNode,
@@ -724,6 +766,20 @@ pub(in crate::expand) fn walk(
                 machine,
             )
         }
+        ControlNode::Modal {
+            id,
+            open,
+            close,
+            content,
+        } => expand_modal(
+            context,
+            node,
+            id,
+            (open, close),
+            content,
+            depth,
+            machine,
+        ),
         ControlNode::Pressable {
             id,
             press,

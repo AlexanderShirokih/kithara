@@ -26,6 +26,7 @@ use crate::{
 #[derive(Default)]
 pub(crate) struct PopoverState {
     anchor: Cell<Option<MasonryRect>>,
+    cover: Cell<MasonryRect>,
     open: Cell<bool>,
     pointer: Cell<Option<Point>>,
     press: Cell<Option<Point>>,
@@ -69,6 +70,18 @@ impl PopoverState {
 
     pub(crate) fn surface(&self) -> MasonryRect {
         self.surface.get()
+    }
+
+    /// The room this surface takes from everything drawn under it: the
+    /// surface itself, or more for one that covers the window.
+    pub(crate) fn cover(&self) -> MasonryRect {
+        self.cover.get()
+    }
+
+    /// Stands the surface at `surface`, taking `cover` from what is under it.
+    pub(crate) fn stand(&self, surface: MasonryRect, cover: MasonryRect) {
+        self.surface.set(surface);
+        self.cover.set(cover);
     }
 }
 
@@ -139,7 +152,7 @@ impl Widget for PopoverLayer {
 
     fn compose(&mut self, ctx: &mut ComposeCtx<'_>) {
         let Some(anchor) = self.state.standing() else {
-            self.state.surface.set(MasonryRect::ZERO);
+            self.state.stand(MasonryRect::ZERO, MasonryRect::ZERO);
             return;
         };
         let position = place(
@@ -151,9 +164,8 @@ impl Widget for PopoverLayer {
             ctx.size(),
             self.align,
         );
-        self.state
-            .surface
-            .set(MasonryRect::from_origin_size(position, self.surface_size));
+        let surface = MasonryRect::from_origin_size(position, self.surface_size);
+        self.state.stand(surface, surface);
         ctx.set_animated_child_scroll_translation(
             &mut self.child,
             Vec2::new(position.x, position.y),

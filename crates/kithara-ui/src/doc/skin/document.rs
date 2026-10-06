@@ -17,7 +17,8 @@ use super::{
     palette::{PaletteDoc, PalettePatch},
     panels::{
         DeckPatch, DeckSkin, DividerPatch, DividerSkin, DragPatch, DragSkin, GlobalBarPatch,
-        GlobalBarSkin, LayoutPreviewPatch, LayoutPreviewSkin, MeterPatch, MeterSkin, PopPatch,
+        GlobalBarSkin, LayoutPreviewPatch, LayoutPreviewSkin, MeterPatch, MeterSkin, ModalPatch,
+        ModalSkin, PopPatch,
         PopSkin, TablePatch, TableSkin, TelemetryPatch, TelemetrySkin, TreePatch, TreeSkin,
         WavePatch, WaveSkin,
     },
@@ -57,6 +58,7 @@ macro_rules! skin_sections {
             layout: LayoutSkin => LayoutPatch,
             menu: MenuSkin => MenuPatch,
             meter: MeterSkin => MeterPatch,
+            modal: ModalSkin => ModalPatch,
             nav: NavSkin => NavPatch,
             pop: PopSkin => PopPatch,
             portal_map: PortalMapSkin => PortalMapPatch,
