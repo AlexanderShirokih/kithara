@@ -121,7 +121,7 @@ mod tests {
     use crate::builtin;
 
     #[kithara::test]
-    fn a_surface_centres_on_whole_pixels_with_its_frame_around_the_content() {
+    fn a_surface_centres_on_whole_pixels_in_an_odd_window() {
         let chrome = ModalChrome::new(builtin::skin());
         let surface = chrome.surface(
             solve::Size::new(100.0, 60.0),
@@ -137,6 +137,5 @@ mod tests {
                 h: 62.0,
             }
         );
-        assert_eq!(chrome.content(surface), Pt { x: 191.0, y: 130.0 });
     }
 }

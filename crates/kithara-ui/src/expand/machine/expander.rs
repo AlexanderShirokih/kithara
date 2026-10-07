@@ -83,7 +83,6 @@ pub(crate) struct Expander<'m, 'v> {
     text: &'m TextDoc,
     /// The popover whose content is being expanded: what opens and what shuts it.
     pub(super) popover: Option<(BindingRef, PopoverDismiss)>,
-    /// Whether a modal's content is being expanded.
     modal: bool,
     max_depth: usize,
 }
