@@ -211,14 +211,10 @@ where
     /// The close of the standing modal when the keyboard focus is outside it,
     /// so a key pressed there is the modal's.
     fn modal_keeping_keys(&self) -> Option<Rc<dyn Fn() -> HostAction>> {
-        let modal = self
-            .popovers
-            .iter()
-            .rev()
-            .find(|popover| {
-                matches!(popover.item.state.kind(), SurfaceKind::Modal)
-                    && popover.item.state.standing().is_some()
-            })?;
+        let modal = self.popovers.iter().rev().find(|popover| {
+            matches!(popover.item.state.kind(), SurfaceKind::Modal)
+                && popover.item.state.standing().is_some()
+        })?;
         let inside = self.root.focused_widget().is_some_and(|focused| {
             self.root
                 .get_widget(modal.item.layer)
@@ -615,12 +611,8 @@ where
     /// otherwise only the controls the surface answers for are reached.
     fn reaches(&self, engine: &HostedEngine, covered: Option<usize>) -> bool {
         engine.captures_pointer()
-            || covered.is_none_or(|index| {
-                self.popovers[index]
-                    .item
-                    .controls
-                    .contains(&engine.owner())
-            })
+            || covered
+                .is_none_or(|index| self.popovers[index].item.controls.contains(&engine.owner()))
     }
 
     fn follow_drag(
