@@ -136,6 +136,7 @@ mod look {
     pub(super) const SHADOW_OFFSET_Y: f32 = 24.0;
     pub(super) const TICK_SIZE: f32 = 10.0;
     pub(super) const TICK_WIDTH: f32 = 2.0;
+    pub(super) const BORDER: f32 = 1.0;
 }
 
 fn role(role: ColorRole) -> Rgba {
@@ -545,7 +546,7 @@ fn assert_immediate_draws(holds: Holds, surface: Rect) {
         "the scrim must cover the whole window: {quads:#?}"
     );
     let (layer, quad) = surface_quad(&quads, surface);
-    assert_eq!(quad.border.width, 1.0);
+    assert_eq!(quad.border.width, look::BORDER);
     assert_eq!(quad.border.color, iced_color(role(ColorRole::Line)));
     assert_eq!(
         quad.shadow.color,
@@ -588,6 +589,20 @@ fn painted(ui: &mut Ui<'_, Page>, color: Rgba) -> usize {
         .count()
 }
 
+/// Whether the retained picture traces `rect` as one closed outline, corner
+/// after corner from the top left, in window coordinates.
+fn outlines(path_data: &[u32], rect: Rect) -> bool {
+    let (left, top) = (rect.x, rect.y);
+    let (right, bottom) = (rect.x + rect.w, rect.y + rect.h);
+    let corners = [
+        left, top, right, top, right, bottom, left, bottom, left, top,
+    ]
+    .map(f32::to_bits);
+    path_data
+        .windows(corners.len())
+        .any(|traced| traced == corners)
+}
+
 fn assert_retained_draws(holds: Holds, surface: Rect, content: Rect) {
     let colors = [
         ("scrim", faded(ColorRole::BgDeep, look::SCRIM_ALPHA)),
@@ -618,6 +633,27 @@ fn assert_retained_draws(holds: Holds, surface: Rect, content: Rect) {
             .scene()
             .unwrap_or_else(|error| panic!("the retained host must draw: {error}"));
         let encoding = scene.encoding();
+        let inset = look::BORDER / 2.0;
+        let frame = Rect {
+            x: surface.x + inset,
+            y: surface.y + inset,
+            w: surface.w - look::BORDER,
+            h: surface.h - look::BORDER,
+        };
+        assert!(
+            outlines(&encoding.path_data, surface),
+            "the surface must fill {surface:?}"
+        );
+        assert!(
+            outlines(&encoding.path_data, frame),
+            "the frame must stroke {frame:?}, half its width inside the surface"
+        );
+        for tick in ticks(surface) {
+            assert!(
+                outlines(&encoding.path_data, tick),
+                "no corner tick at {tick:?}"
+            );
+        }
         let blur = [
             packed(faded(ColorRole::Shadow, look::SHADOW_ALPHA)),
             surface.w.to_bits(),
