@@ -465,8 +465,7 @@ where
     fn hang_surface(
         &self,
         output: &mut MasonryNode<Action>,
-        (path, open, kind): (InternId, bool, SurfaceKind),
-        flag: &Binding,
+        (path, open, kind, flag): (InternId, bool, SurfaceKind, &Binding),
         content: MasonryNode<Action>,
         layer: impl FnOnce(NewWidget<Node>, Size<Length>, Rc<PopoverState>) -> NewWidget<dyn Widget>,
     ) {
@@ -712,24 +711,16 @@ where
         let size = popover.size().map_or_else(|| anchor.declared(), declared);
         let mut output =
             MasonryNode::document(NodeLayout::Stack, size, vec![anchor], false, None, None);
-        let surface = (popover.path(), popover.is_open(), SurfaceKind::popover());
-        self.hang_surface(
-            &mut output,
-            surface,
+        let surface = (
+            popover.path(),
+            popover.is_open(),
+            SurfaceKind::popover(),
             popover.flag(),
-            content,
-            |content, declared, state| {
-                let layer = PopoverLayer::new(
-                    content,
-                    declared,
-                    state,
-                    popover.at(),
-                    popover.align(),
-                    self.skin,
-                );
-                NewWidget::new(layer).erased()
-            },
         );
+        let (at, align, skin) = (popover.at(), popover.align(), self.skin);
+        self.hang_surface(&mut output, surface, content, |content, declared, state| {
+            NewWidget::new(PopoverLayer::new(content, declared, state, at, align, skin)).erased()
+        });
         let path = self.ctx.ui.resolve(popover.path()).to_owned();
         output.set_actions(
             Some(self.control_action(path, ControlAction::Activate)),
@@ -747,16 +738,15 @@ where
         let nothing = Size::new(Length::Fixed(0.0), Length::Fixed(0.0));
         let mut output =
             MasonryNode::document(NodeLayout::Stack, nothing, Vec::new(), false, None, None);
-        let surface = (modal.path(), modal.is_open(), SurfaceKind::Modal);
-        self.hang_surface(
-            &mut output,
-            surface,
+        let surface = (
+            modal.path(),
+            modal.is_open(),
+            SurfaceKind::Modal,
             modal.flag(),
-            content,
-            |content, declared, state| {
-                NewWidget::new(ModalLayer::new(content, declared, state, self.skin)).erased()
-            },
         );
+        self.hang_surface(&mut output, surface, content, |content, declared, state| {
+            NewWidget::new(ModalLayer::new(content, declared, state, self.skin)).erased()
+        });
         output
     }
 
