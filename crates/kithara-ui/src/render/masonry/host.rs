@@ -4,7 +4,7 @@ use std::{
     rc::Rc,
 };
 
-use masonry::core::NewWidget;
+use masonry::core::{NewWidget, Widget};
 #[cfg(feature = "capture")]
 use masonry::core::WidgetId;
 
@@ -19,7 +19,7 @@ use super::{
         Cx, NodeControl, NodeLayout, Viewport, activates, alignment, control_declared, declared,
         pointer_owner,
     },
-    node::{Detent, Face, Faces},
+    node::{Detent, Face, Faces, Node},
     popover::{PopoverLayer, PopoverState, SurfaceKind},
     shader::ShaderLeaf,
     spot::{Grip, Spot},
@@ -184,16 +184,6 @@ where
         state.latch(self.ctx.flag(Some(&binding)));
         child.hidden_by(binding, &state);
         Some(state)
-    }
-
-    /// One child of a stage, with the block that hides it and whether it
-    /// floats above the stage.
-    fn stage_child(
-        &self,
-        mut child: StageMount<MasonryNode<Action>>,
-    ) -> (Option<Rc<BlockState>>, bool, MasonryNode<Action>) {
-        let block = self.block(child.block, &mut child.output);
-        (block, child.floats, child.output)
     }
 
     /// A leaf drawing content this toolkit does not own.
@@ -470,49 +460,6 @@ where
     }
 }
 
-/// Mounting a modal, which the document fold hands its built content.
-impl<Action> MasonryHost<'_, Action>
-where
-    Action: std::fmt::Debug + Send + 'static,
-{
-    /// Nothing in flow, and a layer over the whole window that stands the
-    /// content while the document holds the modal open.
-    fn mount_modal(&self, modal: Modal<'_>, content: MasonryNode<Action>) -> MasonryNode<Action> {
-        let path = self.ctx.ui.resolve(modal.path()).to_owned();
-        let state = self
-            .state
-            .popover(&path, modal.is_open(), SurfaceKind::Modal);
-        let close = self.shared_control_action(path, ControlAction::Activate);
-        let nothing = Size::new(Length::Fixed(0.0), Length::Fixed(0.0));
-        let mut output =
-            MasonryNode::document(NodeLayout::Stack, nothing, Vec::new(), false, None, None);
-        let (content, declared, layers, registrations, boxes, native, window) =
-            LayerParts::from(content);
-        let layer = NewWidget::new(ModalLayer::new(
-            content,
-            declared,
-            Rc::clone(&state),
-            self.skin,
-        ))
-        .erased();
-        let held = registrations
-            .engines
-            .iter()
-            .map(|engine| engine.item.owner())
-            .collect();
-        output.add_popover(layer.id(), modal.flag(), state, close, held);
-        output.append_layers(layers);
-        output.append_registrations(registrations);
-        output.append_boxes(boxes);
-        output.append_native(native);
-        if let Some(window) = window {
-            output.set_window_tracker(window);
-        }
-        output.add_layer(layer);
-        output
-    }
-}
-
 impl<Action> Host for MasonryHost<'_, Action>
 where
     Action: std::fmt::Debug + Send + 'static,
@@ -737,31 +684,24 @@ where
         let size = popover.size().map_or_else(|| anchor.declared(), declared);
         let mut output =
             MasonryNode::document(NodeLayout::Stack, size, vec![anchor], false, None, None);
-        let (content, declared, layers, registrations, boxes, native, window) =
-            LayerParts::from(content);
-        let layer = NewWidget::new(PopoverLayer::new(
+        hang_surface(
+            &mut output,
             content,
-            declared,
+            popover.flag(),
             Rc::clone(&state),
-            popover.at(),
-            popover.align(),
-            self.skin,
-        ))
-        .erased();
-        let held = registrations
-            .engines
-            .iter()
-            .map(|engine| engine.item.owner())
-            .collect();
-        output.add_popover(layer.id(), popover.flag(), state, Rc::clone(&dismiss), held);
-        output.append_layers(layers);
-        output.append_registrations(registrations);
-        output.append_boxes(boxes);
-        output.append_native(native);
-        if let Some(window) = window {
-            output.set_window_tracker(window);
-        }
-        output.add_layer(layer);
+            dismiss,
+            |content, declared| {
+                NewWidget::new(PopoverLayer::new(
+                    content,
+                    declared,
+                    state,
+                    popover.at(),
+                    popover.align(),
+                    self.skin,
+                ))
+                .erased()
+            },
+        );
         output.set_actions(
             Some(self.control_action(path, ControlAction::Activate)),
             None,
@@ -775,7 +715,25 @@ where
         content: &mut dyn FnMut(&mut Self) -> Self::Output,
     ) -> Self::Output {
         let content = content(self);
-        self.mount_modal(modal, content)
+        let path = self.ctx.ui.resolve(modal.path()).to_owned();
+        let state = self
+            .state
+            .popover(&path, modal.is_open(), SurfaceKind::Modal);
+        let close = self.shared_control_action(path, ControlAction::Activate);
+        let nothing = Size::new(Length::Fixed(0.0), Length::Fixed(0.0));
+        let mut output =
+            MasonryNode::document(NodeLayout::Stack, nothing, Vec::new(), false, None, None);
+        hang_surface(
+            &mut output,
+            content,
+            modal.flag(),
+            Rc::clone(&state),
+            close,
+            |content, declared| {
+                NewWidget::new(ModalLayer::new(content, declared, state, self.skin)).erased()
+            },
+        );
+        output
     }
 
     fn pressable(
@@ -884,7 +842,10 @@ where
     ) -> Self::Output {
         let children = children
             .into_iter()
-            .map(|child| self.stage_child(child))
+            .map(|mut child| {
+                let block = self.block(child.block, &mut child.output);
+                (block, child.floats, child.output)
+            })
             .collect();
         MasonryNode::stage(size, children)
     }
@@ -949,4 +910,34 @@ where
     fn apply<C: NodeControl>(self, control: &C) {
         control.wire(self.host, self.cx, self.output);
     }
+}
+
+/// Hangs a surface's layer, built from its content, on the node that mounts
+/// it, with the layers, registrations, boxes, native leaves and window tracker
+/// the content carries.
+fn hang_surface<Action>(
+    output: &mut MasonryNode<Action>,
+    content: MasonryNode<Action>,
+    flag: &Binding,
+    state: Rc<PopoverState>,
+    dismiss: Rc<dyn Fn() -> HostAction>,
+    layer: impl FnOnce(NewWidget<Node>, Size<Length>) -> NewWidget<dyn Widget>,
+) {
+    let (content, declared, layers, registrations, boxes, native, window) =
+        LayerParts::from(content);
+    let layer = layer(content, declared);
+    let held = registrations
+        .engines
+        .iter()
+        .map(|engine| engine.item.owner())
+        .collect();
+    output.add_popover(layer.id(), flag, state, dismiss, held);
+    output.append_layers(layers);
+    output.append_registrations(registrations);
+    output.append_boxes(boxes);
+    output.append_native(native);
+    if let Some(window) = window {
+        output.set_window_tracker(window);
+    }
+    output.add_layer(layer);
 }
