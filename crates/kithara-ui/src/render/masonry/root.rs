@@ -183,7 +183,7 @@ where
             TextEvent::Keyboard(event)
                 if event.state.is_down() && event.key == Key::Named(NamedKey::Escape)
         );
-        if matches!(event, TextEvent::Keyboard(_))
+        if !matches!(event, TextEvent::WindowFocusChange(_))
             && let Some(close) = self.modal_keeping_keys()
         {
             if dismiss {

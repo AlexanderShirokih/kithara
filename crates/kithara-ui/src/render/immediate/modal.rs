@@ -267,7 +267,7 @@ where
         }
         if matches!(
             event,
-            Event::Mouse(_) | Event::Touch(_) | Event::Keyboard(_)
+            Event::Mouse(_) | Event::Touch(_) | Event::Keyboard(_) | Event::InputMethod(_)
         ) {
             shell.capture_event();
         }

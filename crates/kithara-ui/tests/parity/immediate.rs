@@ -13,6 +13,7 @@ use iced::{
     advanced::{
         clipboard,
         graphics::text::font_system,
+        input_method,
         mouse::Cursor,
         renderer::{Quad, Style},
     },
@@ -236,6 +237,14 @@ impl<'a, A: App> Immediate<'a, A> {
         ]
         .into_iter()
         .fold(false, |took, event| self.play(cursor, &event) || took)
+    }
+
+    /// An input method commits text, the pointer resting at one point of the
+    /// window: the way a window hands over a paste into a field.
+    pub(crate) fn commit_at(&mut self, at: Pt, text: &str) -> bool {
+        let cursor = Point::new(at.x, at.y);
+        let commit = Event::InputMethod(input_method::Event::Commit(text.to_owned()));
+        self.play(cursor, &commit)
     }
 
     /// Mounts the document, registering the toolkit's own faces with the font

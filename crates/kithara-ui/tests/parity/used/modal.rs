@@ -13,7 +13,7 @@ use kithara_ui::{
     compile::{CompiledUi, compile},
     draw::{Pt, Rect, Rgba},
     ids::EndpointId,
-    interact::{Input, Key, MOUSE, Modifiers, PointerInput, PointerPhase},
+    interact::{Input, InputMethod, Key, MOUSE, Modifiers, PointerInput, PointerPhase},
     registry::{EndpointCategory, EndpointDesc, EndpointRegistry, ValueKind},
     render::{ReadValue, Reads, Scope, Skin, UiEvent, WriteValue},
     skin::ColorRole,
@@ -265,6 +265,8 @@ enum Step {
     Escape,
     /// Types one character, the key that types it named for the immediate host.
     Type(&'static str, iced::keyboard::key::Code),
+    /// An input method commits text, as a paste reaches a field.
+    Commit(&'static str),
 }
 
 /// Mounts the page on the retained host and hands it to the check.
@@ -331,6 +333,9 @@ fn play_retained(ui: &mut Ui<'_, Page>, steps: &[Step]) {
                     modifiers: Modifiers::default(),
                 });
             }
+            Step::Commit(text) => {
+                ui.input(Input::InputMethod(InputMethod::Commit(text)));
+            }
         }
     }
 }
@@ -374,6 +379,9 @@ fn play_immediate(holds: Holds, app: Page, steps: &[Step]) -> Vec<UiEvent> {
                     iced::keyboard::Key::Character(text.into()),
                     code,
                 );
+            }
+            Step::Commit(text) => {
+                host.commit_at(Pt { x: 1.0, y: 1.0 }, text);
             }
         }
     }
@@ -775,6 +783,52 @@ fn a_standing_modal_keeps_the_keyboard_from_the_field_under_it() {
     assert_eq!(
         immediate,
         [typed, trigger("fixture.close")],
+        "the immediate host"
+    );
+}
+
+/// Text an input method commits, which is how a paste reaches a field, belongs
+/// to the modal too: the field focused before the modal opened takes none of it.
+#[kithara::test]
+fn a_standing_modal_keeps_a_commit_from_the_field_under_it() {
+    use iced::keyboard::key::Code;
+
+    let field = with_retained(Holds::SMALL, Page::default(), |ui| {
+        ui.rect_of("demo/query")
+            .unwrap_or_else(|| panic!("the search field must be laid out"))
+    });
+    let query = |text: &str| UiEvent::Write {
+        key: "fixture.query".to_owned(),
+        value: WriteValue::Text(text.to_owned()),
+    };
+    let focus = [Step::Click(centre(field)), Step::Commit("zz")];
+    let [retained, immediate] = both(Holds::Nothing, false, &focus);
+    assert_eq!(
+        retained,
+        [query("zz")],
+        "with nothing over it the retained field takes the commit"
+    );
+    assert_eq!(
+        immediate,
+        [query("zz")],
+        "with nothing over it the immediate field takes the commit"
+    );
+
+    let steps = [
+        Step::Click(centre(field)),
+        Step::Type("a", Code::KeyA),
+        Step::Commit("zz"),
+        Step::Escape,
+    ];
+    let [retained, immediate] = both(Holds::SMALL, false, &steps);
+    assert_eq!(
+        retained,
+        [query("a"), trigger("fixture.close")],
+        "the retained host"
+    );
+    assert_eq!(
+        immediate,
+        [query("a"), trigger("fixture.close")],
         "the immediate host"
     );
 }
