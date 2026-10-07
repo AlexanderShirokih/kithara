@@ -10,6 +10,7 @@ use iced::{
         widget::{Operation, Tree},
     },
     keyboard::{self, Key, key::Named},
+    touch,
 };
 
 use crate::{
@@ -123,6 +124,7 @@ fn rectangle(rect: Rect) -> Rectangle {
 fn closes(event: &Event, surface: Rectangle, cursor: Cursor) -> bool {
     match event {
         Event::Mouse(mouse::Event::ButtonPressed(_)) => !cursor.is_over(surface),
+        Event::Touch(touch::Event::FingerPressed { position, .. }) => !surface.contains(*position),
         Event::Keyboard(keyboard::Event::KeyPressed {
             key: Key::Named(Named::Escape),
             ..

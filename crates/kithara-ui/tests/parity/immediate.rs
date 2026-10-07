@@ -24,6 +24,7 @@ use iced::{
     },
     mouse::{self, Button, Interaction, ScrollDelta},
     time::Instant,
+    touch,
     window::{self, RedrawRequest},
 };
 use iced_renderer::fallback::Renderer as FallbackRenderer;
@@ -245,6 +246,24 @@ impl<'a, A: App> Immediate<'a, A> {
         let cursor = Point::new(at.x, at.y);
         let commit = Event::InputMethod(input_method::Event::Commit(text.to_owned()));
         self.play(cursor, &commit)
+    }
+
+    /// A finger touches one point of the window and lifts there.
+    pub(crate) fn touch_at(&mut self, at: Pt) -> bool {
+        let cursor = Point::new(at.x, at.y);
+        let finger = touch::Finger(0);
+        [
+            Event::Touch(touch::Event::FingerPressed {
+                id: finger,
+                position: cursor,
+            }),
+            Event::Touch(touch::Event::FingerLifted {
+                id: finger,
+                position: cursor,
+            }),
+        ]
+        .into_iter()
+        .fold(false, |took, event| self.play(cursor, &event) || took)
     }
 
     /// Mounts the document, registering the toolkit's own faces with the font

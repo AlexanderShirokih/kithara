@@ -13,7 +13,7 @@ use kithara_ui::{
     compile::{CompiledUi, compile},
     draw::{Pt, Rect, Rgba},
     ids::EndpointId,
-    interact::{Input, InputMethod, Key, MOUSE, Modifiers, PointerInput, PointerPhase},
+    interact::{Input, InputMethod, Key, MOUSE, Modifiers, PointerInput, PointerPhase, Scroll},
     registry::{EndpointCategory, EndpointDesc, EndpointRegistry, ValueKind},
     render::{ReadValue, Reads, Scope, Skin, UiEvent, WriteValue},
     skin::ColorRole,
@@ -267,6 +267,8 @@ enum Step {
     Type(&'static str, iced::keyboard::key::Code),
     /// An input method commits text, as a paste reaches a field.
     Commit(&'static str),
+    /// Notches of the wheel over a point, the pointer arriving there first.
+    Wheel(Pt, f32),
 }
 
 /// Mounts the page on the retained host and hands it to the check.
@@ -336,6 +338,10 @@ fn play_retained(ui: &mut Ui<'_, Page>, steps: &[Step]) {
             Step::Commit(text) => {
                 ui.input(Input::InputMethod(InputMethod::Commit(text)));
             }
+            Step::Wheel(at, notches) => {
+                pointer(ui, PointerPhase::Move, at);
+                ui.input(Input::Wheel(Scroll::Lines { x: 0.0, y: notches }));
+            }
         }
     }
 }
@@ -382,6 +388,9 @@ fn play_immediate(holds: Holds, app: Page, steps: &[Step]) -> Vec<UiEvent> {
             }
             Step::Commit(text) => {
                 host.commit_at(Pt { x: 1.0, y: 1.0 }, text);
+            }
+            Step::Wheel(at, notches) => {
+                host.wheel_at(at, notches);
             }
         }
     }
@@ -879,4 +888,41 @@ fn hover_over_the_scrim_shows_nothing_of_the_controls_under_it() {
             "the scrim over the {name} shows what it shows anywhere else"
         );
     }
+}
+
+/// The wheel over the scrim turns nothing under it: the knob the same notches
+/// turn with nothing over it stays where it is.
+#[kithara::test]
+fn the_wheel_over_the_scrim_turns_nothing_under_it() {
+    let (_, dial) = page_points();
+    let steps = [Step::Wheel(dial, -2.0)];
+
+    let turned =
+        |events: &[UiEvent]| events.iter().any(|event| matches!(event, UiEvent::Write { key, .. } if key == "fixture.dial"));
+    let [retained, immediate] = both(Holds::Nothing, false, &steps);
+    assert!(turned(&retained), "the bare retained knob turns: {retained:?}");
+    assert!(turned(&immediate), "the bare immediate knob turns: {immediate:?}");
+
+    let [retained, immediate] = both(Holds::SMALL, true, &steps);
+    assert_eq!(retained, [], "the retained host");
+    assert_eq!(immediate, [], "the immediate host");
+}
+
+/// A finger on the scrim closes the modal as a press there does, and a finger
+/// inside the content does not. The retained host hears a touch as a press.
+#[kithara::test]
+fn a_touch_on_the_scrim_closes_the_modal_on_the_immediate_host() {
+    let (face, _) = page_points();
+    let inside = with_retained(Holds::SMALL, Page::open(), |ui| {
+        ui.rect_of("demo/inside")
+            .map(centre)
+            .unwrap_or_else(|| panic!("the modal content must be laid out"))
+    });
+    let ui = compiled(Holds::SMALL);
+    let mut host = Immediate::mount(Page::open(), &ui, builtin::skin(), WINDOW);
+
+    host.touch_at(inside);
+    assert_eq!(host.app().published, [], "a touch inside belongs to the content");
+    host.touch_at(face);
+    assert_eq!(host.app().published, [trigger("fixture.close")]);
 }
