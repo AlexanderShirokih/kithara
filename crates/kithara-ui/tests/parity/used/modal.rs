@@ -1122,17 +1122,22 @@ fn flow(among: Among) -> MemResolver {
 /// Where the two boxes that follow the modal stand on each host, retained
 /// first.
 fn flow_boxes(among: Among, open: bool) -> [[Rect; 2]; 2] {
+    laid_boxes(&flow(among), open)
+}
+
+/// Where the danger box and the success box of a page stand on each host,
+/// retained first.
+fn laid_boxes(resolver: &MemResolver, open: bool) -> [[Rect; 2]; 2] {
     let page = || Page {
         open,
         ..Page::default()
     };
     let endpoints = Endpoints::default();
-    let resolver = flow(among);
     let ui = Ui::new(
         page(),
         Config::builder()
             .endpoints(&endpoints)
-            .resolver(&resolver)
+            .resolver(resolver)
             .text(builtin::text_doc())
             .build(),
         WINDOW,
@@ -1147,7 +1152,7 @@ fn flow_boxes(among: Among, open: bool) -> [[Rect; 2]; 2] {
 
     let compiled = compile(
         "page.klayout.ron",
-        &resolver,
+        resolver,
         &endpoints,
         builtin::skin_doc(),
         builtin::text_doc(),
@@ -1605,4 +1610,61 @@ fn a_menu_after_the_modal_lies_under_it() {
         immediate(quiet).1,
         "the immediate hover over the menu row"
     );
+}
+
+/// A stage with no size of its own holding a box, `{modal}` naming a modal
+/// written before the box, and a second box after the stage: the stage takes
+/// the box's room, so a stage sized by anything else would move the box
+/// after it.
+const STAGED: &str = r#"Column(size: (w: Fill, h: Fill), gap: 0.0, pad: 0.0, align: Start, children: [
+    Stage(id: "stage", children: [
+        {modal}
+        Row(id: "b", size: (w: Fixed(20.0), h: Fixed(20.0)), background: Danger,
+            children: [Spacer(id: "b-face", size: Some((w: Fill, h: Fill)))]),
+    ]),
+    Row(id: "c", size: (w: Fixed(20.0), h: Fixed(20.0)), background: Success,
+        children: [Spacer(id: "c-face", size: Some((w: Fill, h: Fill)))]),
+])"#;
+
+fn staged(modal_first: bool) -> MemResolver {
+    let modal = if modal_first {
+        modal(100.0, 60.0)
+    } else {
+        String::new()
+    };
+    let mut resolver = MemResolver::default();
+    resolver.insert(
+        "page.klayout.ron",
+        r#"(schema: "kithara.layout", version: 1, id: "page",
+            root: Module(instance: "demo", source: "page.kmodule.ron", size: (w: Fill, h: Fill)))"#,
+    );
+    resolver.insert(
+        "page.kmodule.ron",
+        &format!(
+            r#"(schema: "kithara.module", version: 1, id: "page", chrome: Plain, root: {})"#,
+            STAGED.replace("{modal}", &modal)
+        ),
+    );
+    resolver
+}
+
+/// A stage with no size of its own takes the room of its first child in the
+/// flow, so a modal written before that child changes nothing: shown or shut,
+/// the box in the stage and the box after it stand where they stand with no
+/// modal there, on both hosts.
+#[kithara::test]
+fn an_unsized_stage_takes_the_room_of_its_first_child_in_the_flow() {
+    let [retained, immediate] = laid_boxes(&staged(false), false);
+    assert_eq!(retained, immediate, "the hosts agree on the bare stage");
+    for open in [false, true] {
+        let [modal_retained, modal_immediate] = laid_boxes(&staged(true), open);
+        assert_eq!(
+            modal_retained, retained,
+            "the retained host, the modal open {open}"
+        );
+        assert_eq!(
+            modal_immediate, immediate,
+            "the immediate host, the modal open {open}"
+        );
+    }
 }
