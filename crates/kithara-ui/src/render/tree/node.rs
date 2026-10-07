@@ -471,14 +471,16 @@ mod tests {
     /// underneath them and measures only what the document asked for.
     fn document_children(count: usize) -> Vec<Size> {
         let children = (0..count)
-            .map(|_| {
-                apply_size(
+            .map(|_| StageMount {
+                block: None,
+                floats: false,
+                output: apply_size(
                     Rendered::leading(Space::new().into()),
                     Some(SizeSpec::new(
                         Dim::Fixed(consts::CHILD),
                         Dim::Fixed(consts::CHILD),
                     )),
-                )
+                ),
             })
             .collect();
         let stage_height = consts::CHILD + 16.0;
