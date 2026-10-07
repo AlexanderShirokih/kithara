@@ -117,7 +117,12 @@ impl Widget for ModalLayer {
             return viewport;
         }
         let window = Size::new(viewport.width.as_(), viewport.height.as_());
-        let content = fit_content(ctx, &mut self.child, self.declared, self.chrome.room(window));
+        let content = fit_content(
+            ctx,
+            &mut self.child,
+            self.declared,
+            self.chrome.room(window),
+        );
         let surface = self.chrome.surface(content, window);
         let at = self.chrome.content(surface);
         ctx.place_child(&mut self.child, Point::from(at));

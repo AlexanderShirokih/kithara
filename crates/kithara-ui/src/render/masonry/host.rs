@@ -4,9 +4,9 @@ use std::{
     rc::Rc,
 };
 
-use masonry::core::{NewWidget, Widget};
 #[cfg(feature = "capture")]
 use masonry::core::WidgetId;
+use masonry::core::{NewWidget, Widget};
 
 use super::{
     CustomWidget, MasonryNode,
