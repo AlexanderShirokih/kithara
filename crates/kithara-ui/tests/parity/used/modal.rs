@@ -1347,3 +1347,82 @@ fn a_press_on_a_drawn_title_strip_closes_the_modal_and_reaches_no_window() {
         }
     }
 }
+
+/// Mounts the titled page with the modal standing on the retained host.
+fn with_titled<R>(order: Titled, check: impl FnOnce(&mut Ui<'_, Page>) -> R) -> R {
+    let endpoints = Endpoints::default();
+    let resolver = titled(order);
+    let mut ui = Ui::new(
+        Page::open(),
+        Config::builder()
+            .endpoints(&endpoints)
+            .resolver(&resolver)
+            .text(builtin::text_doc())
+            .build(),
+        WINDOW,
+        1.0,
+    )
+    .unwrap_or_else(|error| panic!("the titled page must mount on the retained host: {error}"));
+    check(&mut ui)
+}
+
+/// The cursor each host shows over a point of the titled page with the modal
+/// standing, retained first.
+fn titled_cursors(order: Titled, at: Pt) -> (String, String) {
+    let retained = with_titled(order, |ui| {
+        pointer(ui, PointerPhase::Move, at);
+        format!("{:?}", ui.take_cursor())
+    });
+    let compiled = compile(
+        "page.klayout.ron",
+        &titled(order),
+        &Endpoints::default(),
+        builtin::skin_doc(),
+        builtin::text_doc(),
+        &UiConfig::default(),
+        &view::EMPTY,
+    )
+    .unwrap_or_else(|error| panic!("the titled page must compile: {error}"));
+    let mut host = Immediate::mount(Page::open(), &compiled, builtin::skin(), WINDOW);
+    host.hover_at(at);
+    (retained, format!("{:?}", host.hand()))
+}
+
+/// A drawn title strip lies under the scrim in the picture and under the
+/// pointer whatever its place in the document: the retained host paints the
+/// strip before the scrim, and hover over the strip shows the cursor a quiet
+/// part of the scrim shows.
+#[kithara::test]
+fn a_drawn_title_strip_paints_and_hovers_under_the_modal_whatever_its_order() {
+    let title_ink = packed(role(builtin::skin().window.titlebar_text.color));
+    let scrim = packed(faded(ColorRole::BgDeep, look::SCRIM_ALPHA));
+    for order in [Titled::Before, Titled::After] {
+        let drawn = with_titled(order, |ui| {
+            ui.scene()
+                .unwrap_or_else(|error| panic!("the titled page must draw: {error}"))
+                .encoding()
+                .draw_data
+                .clone()
+        });
+        let title = drawn.iter().rposition(|word| *word == title_ink);
+        let covered = drawn.iter().position(|word| *word == scrim);
+        assert!(
+            matches!((title, covered), (Some(title), Some(covered)) if title < covered),
+            "the retained title must be painted before the scrim, modal {order:?} it: title at \
+             {title:?}, scrim at {covered:?}"
+        );
+
+        let quiet = titled_cursors(order, Pt { x: 300.0, y: 250.0 });
+        for (target, at) in [
+            ("title bar", Pt { x: 300.0, y: 16.0 }),
+            ("minimise cell", Pt { x: 17.5, y: 16.0 }),
+            ("close cell", Pt { x: 62.5, y: 16.0 }),
+        ] {
+            assert_eq!(
+                titled_cursors(order, at),
+                quiet,
+                "hover over the {target} under the scrim, modal {order:?} it"
+            );
+        }
+    }
+}
