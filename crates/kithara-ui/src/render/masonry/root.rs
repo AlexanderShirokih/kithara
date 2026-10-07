@@ -955,8 +955,8 @@ fn changes_modifiers(event: &TextEvent) -> bool {
     let TextEvent::Keyboard(keyboard) = event else {
         return false;
     };
-    masonry_text_event(Input::ModifiersChanged(portable_modifiers(keyboard.modifiers))).as_ref()
-        == Some(event)
+    let held = Input::ModifiersChanged(portable_modifiers(keyboard.modifiers));
+    masonry_text_event(held).as_ref() == Some(event)
 }
 
 /// Stacks every modal above the other surfaces and layers, under only the

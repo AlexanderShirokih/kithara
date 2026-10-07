@@ -286,8 +286,8 @@ impl EndpointRegistry for Endpoints {
             (
                 EndpointCategory::Command,
                 "fixture.close" | "fixture.page" | "fixture.pick" | "fixture.shut" | "fixture.save"
-                | "fixture.burger" | "fixture.row0"
-                | "fixture.row1" | "fixture.row2" | "fixture.row3" | "fixture.row4",
+                | "fixture.burger" | "fixture.row0" | "fixture.row1" | "fixture.row2"
+                | "fixture.row3" | "fixture.row4",
             ) => Some(&self.trigger),
             _ => None,
         }
@@ -1521,9 +1521,9 @@ fn a_modal_in_a_hosted_module_hears_its_content_and_keeps_the_page() {
     for (host, events) in [("retained", &retained), ("immediate", &immediate)] {
         assert!(
             events.contains(&trigger("fixture.page"))
-                && events
-                    .iter()
-                    .any(|event| matches!(event, UiEvent::Write { key, .. } if key == "fixture.dial")),
+                && events.iter().any(
+                    |event| matches!(event, UiEvent::Write { key, .. } if key == "fixture.dial")
+                ),
             "with the modal shut the {host} page hears the press and the drag: {events:?}"
         );
     }
@@ -1615,7 +1615,11 @@ fn a_menu_after_the_modal_lies_under_it() {
     let (_, pressed, _) = retained(None, &[Step::Click(row)]);
     assert_eq!(pressed, [trigger("fixture.close")], "the retained menu row");
     let (pressed, _) = immediate(row);
-    assert_eq!(pressed, [trigger("fixture.close")], "the immediate menu row");
+    assert_eq!(
+        pressed,
+        [trigger("fixture.close")],
+        "the immediate menu row"
+    );
 
     let (_, _, over_row) = retained(Some(row), &[]);
     let (_, _, over_scrim) = retained(Some(quiet), &[]);
