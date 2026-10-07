@@ -143,7 +143,7 @@ where
         } = &mut self.0;
         let surface = overlay::Element::new(Box::new(Surface {
             content: &mut **content,
-            tree: &mut **tree,
+            tree,
             on_close: on_close.clone(),
             chrome: *chrome,
         }));
