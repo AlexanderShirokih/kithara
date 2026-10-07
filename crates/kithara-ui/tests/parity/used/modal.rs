@@ -1172,3 +1172,103 @@ fn a_resize_edge_answers_before_the_modal() {
         "the immediate window, with the modal left standing"
     );
 }
+
+/// Where the modal stands in the document against the title strip.
+#[derive(Clone, Copy, Debug)]
+enum Titled {
+    Before,
+    After,
+}
+
+/// A page whose document draws its own title strip: window controls and a
+/// title bar along the top, the modal before or after them.
+fn titled(order: Titled) -> MemResolver {
+    let strip = r#"Row(size: (w: Fill, h: Fixed(32.0)), gap: 0.0, pad: 0.0, children: [
+            WindowControls(id: "controls", style: Standard),
+            TitleBar(id: "title", label: "KITHARA"),
+        ]),"#;
+    let (first, second) = match order {
+        Titled::Before => (modal(100.0, 60.0), strip.to_owned()),
+        Titled::After => (strip.to_owned(), modal(100.0, 60.0)),
+    };
+    let mut resolver = MemResolver::default();
+    resolver.insert(
+        "page.klayout.ron",
+        r#"(schema: "kithara.layout", version: 1, id: "page",
+            root: Module(instance: "demo", source: "page.kmodule.ron", size: (w: Fill, h: Fill)))"#,
+    );
+    resolver.insert(
+        "page.kmodule.ron",
+        &format!(
+            r#"(schema: "kithara.module", version: 1, id: "page", chrome: Plain,
+                root: Column(size: (w: Fill, h: Fill), gap: 0.0, pad: 0.0, children: [
+                    {first}
+                    {second}
+                    Pressable(id: "page", press: Command(id: "fixture.page"),
+                        child: Spacer(id: "page-face", size: Some((w: Fill, h: Fill)))),
+                ]))"#
+        ),
+    );
+    resolver
+}
+
+/// A title bar and window controls drawn by the document lie under the scrim
+/// whatever their place in it: a press on one closes the modal and moves,
+/// shrinks or closes no window.
+#[kithara::test]
+fn a_press_on_a_drawn_title_strip_closes_the_modal_and_reaches_no_window() {
+    let targets = [
+        ("title bar", Pt { x: 300.0, y: 16.0 }),
+        ("minimise cell", Pt { x: 17.5, y: 16.0 }),
+        ("close cell", Pt { x: 62.5, y: 16.0 }),
+    ];
+    let closed = [trigger("fixture.close")];
+    let endpoints = Endpoints::default();
+    for order in [Titled::Before, Titled::After] {
+        let resolver = titled(order);
+        let compiled = compile(
+            "page.klayout.ron",
+            &resolver,
+            &endpoints,
+            builtin::skin_doc(),
+            builtin::text_doc(),
+            &UiConfig::default(),
+            &view::EMPTY,
+        )
+        .unwrap_or_else(|error| panic!("the titled page must compile: {error}"));
+        for (target, at) in targets {
+            let mut ui = Ui::new(
+                Page::open(),
+                Config::builder()
+                    .endpoints(&endpoints)
+                    .resolver(&resolver)
+                    .text(builtin::text_doc())
+                    .build(),
+                WINDOW,
+                1.0,
+            )
+            .unwrap_or_else(|error| {
+                panic!("the titled page must mount on the retained host: {error}")
+            });
+            play_retained(&mut ui, &[Step::Click(at)]);
+            assert_eq!(
+                ui.take_window_commands(),
+                [],
+                "the retained {target}, modal {order:?} it"
+            );
+            assert_eq!(
+                ui.app().published,
+                closed,
+                "the retained {target}, modal {order:?} it"
+            );
+
+            let mut host = Immediate::mount(Page::open(), &compiled, builtin::skin(), WINDOW);
+            host.click_at(at);
+            assert_eq!(
+                host.app().published,
+                closed,
+                "the immediate {target}, modal {order:?} it"
+            );
+        }
+    }
+}
