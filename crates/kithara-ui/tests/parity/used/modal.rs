@@ -537,27 +537,9 @@ fn immediate_quads(holds: Holds, open: bool) -> Vec<(Rectangle, Quad, Background
     host.quads()
 }
 
-fn iced_rect(rect: Rect) -> Rectangle {
-    Rectangle {
-        x: rect.x,
-        y: rect.y,
-        width: rect.w,
-        height: rect.h,
-    }
-}
-
-fn iced_color(color: Rgba) -> Color {
-    Color {
-        r: color.r,
-        g: color.g,
-        b: color.b,
-        a: color.a,
-    }
-}
-
-fn filled(quads: &[(Rectangle, Quad, Background)], bounds: Rectangle, color: Rgba) -> bool {
+fn filled(quads: &[(Rectangle, Quad, Background)], bounds: Rect, color: Rgba) -> bool {
     quads.iter().any(|(_, quad, background)| {
-        quad.bounds == bounds && *background == Background::Color(iced_color(color))
+        Rect::from(quad.bounds) == bounds && *background == Background::Color(color.into())
     })
 }
 
@@ -596,41 +578,41 @@ fn ticks(surface: Rect) -> [Rect; 4] {
 }
 
 /// Where the shadow of a surface inks: offset down and spread by its blur.
-fn shadow_ink(surface: Rect) -> Rectangle {
-    Rectangle {
+fn shadow_ink(surface: Rect) -> Rect {
+    Rect {
         x: surface.x - look::SHADOW_BLUR,
         y: surface.y + look::SHADOW_OFFSET_Y - look::SHADOW_BLUR,
-        width: surface.w + look::SHADOW_BLUR * 2.0,
-        height: surface.h + look::SHADOW_BLUR * 2.0,
+        w: surface.w + look::SHADOW_BLUR * 2.0,
+        h: surface.h + look::SHADOW_BLUR * 2.0,
     }
 }
 
-fn covers(outer: Rectangle, inner: Rectangle) -> bool {
+fn covers(outer: Rect, inner: Rect) -> bool {
     outer.x <= inner.x
         && outer.y <= inner.y
-        && inner.x + inner.width <= outer.x + outer.width
-        && inner.y + inner.height <= outer.y + outer.height
+        && inner.x + inner.w <= outer.x + outer.w
+        && inner.y + inner.h <= outer.y + outer.h
 }
 
 /// The surface quad the immediate host drew, carrying frame and shadow.
-fn surface_quad(quads: &[(Rectangle, Quad, Background)], surface: Rect) -> (Rectangle, Quad) {
+fn surface_quad(quads: &[(Rectangle, Quad, Background)], surface: Rect) -> (Rect, Quad) {
     quads
         .iter()
         .find(|(_, quad, background)| {
-            quad.bounds == iced_rect(surface)
-                && *background == Background::Color(iced_color(role(ColorRole::BgPanel)))
+            Rect::from(quad.bounds) == surface
+                && *background == Background::Color(role(ColorRole::BgPanel).into())
         })
-        .map(|(layer, quad, _)| (*layer, *quad))
+        .map(|(layer, quad, _)| (Rect::from(*layer), *quad))
         .unwrap_or_else(|| panic!("no surface quad at {surface:?} in {quads:#?}"))
 }
 
 fn assert_immediate_draws(holds: Holds, surface: Rect) {
     let quads = immediate_quads(holds, true);
-    let window = Rectangle {
+    let window = Rect {
         x: 0.0,
         y: 0.0,
-        width: 480.0,
-        height: 320.0,
+        w: 480.0,
+        h: 320.0,
     };
 
     assert!(
@@ -639,10 +621,10 @@ fn assert_immediate_draws(holds: Holds, surface: Rect) {
     );
     let (layer, quad) = surface_quad(&quads, surface);
     assert_eq!(quad.border.width, look::BORDER);
-    assert_eq!(quad.border.color, iced_color(role(ColorRole::Line)));
+    assert_eq!(quad.border.color, Color::from(role(ColorRole::Line)));
     assert_eq!(
         quad.shadow.color,
-        iced_color(faded(ColorRole::Shadow, look::SHADOW_ALPHA))
+        Color::from(faded(ColorRole::Shadow, look::SHADOW_ALPHA))
     );
     assert_eq!(quad.shadow.offset, Vector::new(0.0, look::SHADOW_OFFSET_Y));
     assert_eq!(quad.shadow.blur_radius, look::SHADOW_BLUR);
@@ -657,7 +639,7 @@ fn assert_immediate_draws(holds: Holds, surface: Rect) {
     );
     for tick in ticks(surface) {
         assert!(
-            filled(&quads, iced_rect(tick), role(ColorRole::Accent)),
+            filled(&quads, tick, role(ColorRole::Accent)),
             "no corner tick at {tick:?}"
         );
     }
@@ -1044,13 +1026,8 @@ fn laid_boxes(resolver: &MemResolver, open: bool) -> [[Rect; 2]; 2] {
     let filled_with = |role_: ColorRole| {
         quads
             .iter()
-            .find(|(_, _, background)| *background == Background::Color(iced_color(role(role_))))
-            .map(|(_, quad, _)| Rect {
-                x: quad.bounds.x,
-                y: quad.bounds.y,
-                w: quad.bounds.width,
-                h: quad.bounds.height,
-            })
+            .find(|(_, _, background)| *background == Background::Color(role(role_).into()))
+            .map(|(_, quad, _)| Rect::from(quad.bounds))
             .unwrap_or_else(|| panic!("no box filled with {role_:?} in {quads:#?}"))
     };
     let immediate = [
