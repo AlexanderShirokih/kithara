@@ -5,7 +5,8 @@ use masonry::{
     accesskit::TreeUpdate,
     app::{RenderRoot, RenderRootOptions, RenderRootSignal},
     core::{
-        CursorIcon, ErasedAction, Handled, PointerEvent, TextEvent, Widget, WidgetId, WindowEvent,
+        CursorIcon, ErasedAction, Handled, NewWidget, PointerEvent, TextEvent, Widget, WidgetId,
+        WindowEvent,
     },
     kurbo::{Point, Rect as MasonryRect},
     ui_events::keyboard::{Key, NamedKey},
@@ -109,14 +110,15 @@ where
         node: MasonryNode<Action>,
         options: RenderRootOptions,
     ) -> Result<Self, MasonryRootError> {
-        let (base, layers, registrations, boxes, native, window) = RootParts::from(node);
+        let (base, mut layers, registrations, boxes, native, window) = RootParts::from(node);
         let Registrations {
             watched,
             blocks,
-            popovers,
+            mut popovers,
             engines,
             ..
         } = registrations;
+        stack_modals_on_top(&mut layers, &mut popovers, window.as_ref());
         let scale = options.scale_factor;
         let signals = Rc::new(RefCell::new(VecDeque::new()));
         let sink = Rc::clone(&signals);
@@ -942,6 +944,27 @@ where
         }
         self.sync_menus();
     }
+}
+
+/// Stacks every modal above the other surfaces and layers, under only the
+/// window's own layer, whatever its place in the document: the layer order is
+/// the paint order, and the surface order is the order input finds them in.
+fn stack_modals_on_top(
+    layers: &mut [NewWidget<dyn Widget>],
+    popovers: &mut [Within<PopoverRegistration>],
+    window: Option<&WindowTracker>,
+) {
+    popovers.sort_by_key(|popover| matches!(popover.item.state.kind(), SurfaceKind::Modal));
+    let modals: Vec<WidgetId> = popovers
+        .iter()
+        .filter(|popover| matches!(popover.item.state.kind(), SurfaceKind::Modal))
+        .map(|popover| popover.item.layer)
+        .collect();
+    let edges = window.and_then(|window| window.layer);
+    layers.sort_by_key(|layer| {
+        let id = layer.id();
+        (Some(id) == edges, modals.contains(&id))
+    });
 }
 
 fn complete_frame_signals(signals: &mut Vec<RenderRootSignal>) -> bool {
