@@ -63,6 +63,11 @@ fn registry() -> TestRegistry {
             "ui.press",
             EndpointDesc::new(ValueKind::Trigger),
         ),
+        (
+            EndpointCategory::Command,
+            "library.select_scope",
+            EndpointDesc::new(ValueKind::Index),
+        ),
     ] {
         registry.insert(category, id, description);
     }
@@ -891,4 +896,29 @@ fn a_modal_inside_a_popover_is_refused() {
         matches!(&error, UiDocError::InvalidId { id, .. } if id == "demo/settings"),
         "{error:?}"
     );
+}
+
+#[kithara::test]
+fn a_node_the_hosts_draw_outside_the_flow_is_refused_inside_a_modal() {
+    for (id, node) in [
+        ("drag", r#"WindowDrag(id: "drag")"#),
+        ("title", r#"TitleBar(id: "title", label: "SETTINGS")"#),
+        ("controls", r#"WindowControls(id: "controls")"#),
+        (
+            "scope",
+            r#"ContextBar(id: "scope",
+                read: Model(id: "library.breadcrumb"),
+                write: Command(id: "library.select_scope"),
+                scope_items: ["ZVUK", "LOCAL"],
+                scope: Model(id: "ui.measure"))"#,
+        ),
+    ] {
+        accepted(module_root(node));
+        let error = refused(module_root(&modal("settings", SHUT, node)));
+
+        assert!(
+            matches!(&error, UiDocError::InvalidId { id: path, .. } if *path == format!("demo/{id}")),
+            "{id}: {error:?}"
+        );
+    }
 }
