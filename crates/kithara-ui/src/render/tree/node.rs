@@ -323,10 +323,7 @@ impl<'a> DocumentHost for IcedHost<'a, '_> {
         children: Vec<StageMount<Self::Output>>,
         size: Option<SizeSpec>,
     ) -> Self::Output {
-        stage(
-            children.into_iter().map(|child| child.output).collect(),
-            size,
-        )
+        stage(children, size)
     }
 
     fn window(&mut self, content: Self::Output, resize_edges: bool) -> Self::Output {
@@ -355,16 +352,27 @@ impl<'a> DocumentHost for IcedHost<'a, '_> {
 /// retained host makes: measured on the sprites page, where a 96-tall sprite
 /// came out 112 tall here and 96 there, which a turn then carried 8 across the
 /// screen.
+///
+/// A child floating above the stage takes no room in it, so it stands after
+/// the children that do and never sizes the stack.
 fn stage<'a>(
-    children: Vec<Element<'a, Published>>,
+    children: Vec<StageMount<Element<'a, Published>>>,
     size: Option<SizeSpec>,
 ) -> Element<'a, Published> {
-    let size = match (size, children.is_empty()) {
+    let count = children.len();
+    let (in_flow, floating): (Vec<_>, Vec<_>) =
+        children.into_iter().partition(|child| !child.floats);
+    let bare = in_flow.is_empty();
+    let children = in_flow
+        .into_iter()
+        .chain(floating)
+        .map(|child| child.output);
+    let size = match (size, bare) {
         (Some(size), _) => size,
         (None, false) => return Stack::with_children(children).into(),
         (None, true) => SizeSpec::FILL,
     };
-    let mut layers: Vec<Element<'a, Published>> = Vec::with_capacity(children.len() + 1);
+    let mut layers: Vec<Element<'a, Published>> = Vec::with_capacity(count + 1);
     layers.push(Element::from(Space::new()));
     layers.extend(children);
     Stack::with_children(layers)

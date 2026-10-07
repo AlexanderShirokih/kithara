@@ -53,6 +53,9 @@ pub struct SplitMount<T> {
 pub struct StageMount<T> {
     /// What the document reads to know this child is hidden.
     pub block: Option<Binding>,
+    /// Whether it stands above the stage rather than in it, taking no room
+    /// there.
+    pub floats: bool,
     pub output: T,
 }
 

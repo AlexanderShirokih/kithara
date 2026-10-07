@@ -554,6 +554,7 @@ where
                 .filter(|(_, child)| H::MOUNTS_HIDDEN || !is_hidden(*child, snapshot))
                 .map(|(index, child)| StageMount {
                     block: block_of(child),
+                    floats: floats(child),
                     output: mount_staged(child, &address.child(index), branch, &scene, ctx, host),
                 })
                 .collect();

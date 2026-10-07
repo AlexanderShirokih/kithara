@@ -874,7 +874,13 @@ where
     ) -> Self::Output {
         let children = children
             .into_iter()
-            .map(|mut child| (self.block(child.block, &mut child.output), child.output))
+            .map(|mut child| {
+                (
+                    self.block(child.block, &mut child.output),
+                    child.floats,
+                    child.output,
+                )
+            })
             .collect();
         MasonryNode::stage(size, children)
     }
