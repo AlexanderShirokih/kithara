@@ -856,17 +856,6 @@ fn a_modal_must_close_through_a_binding_it_can_write() {
     );
 }
 
-#[kithara::test]
-fn a_modal_inside_another_modal_is_refused() {
-    let inner = modal("inner", SHUT, QUIET);
-    let error = refused(module_root(&modal("outer", SHUT, &inner)));
-
-    assert!(
-        matches!(&error, UiDocError::InvalidId { id, .. } if id == "demo/inner"),
-        "{error:?}"
-    );
-}
-
 /// A popover opening on the same view flag the modal reads.
 fn popover(id: &str, content: &str) -> String {
     format!(
@@ -876,26 +865,22 @@ fn popover(id: &str, content: &str) -> String {
     )
 }
 
+/// A modal or a popover nested in a modal, or a modal nested in a popover, is
+/// refused at the inner one.
 #[kithara::test]
-fn a_popover_inside_a_modal_is_refused() {
-    let inner = popover("menu", QUIET);
-    let error = refused(module_root(&modal("settings", SHUT, &inner)));
+fn a_surface_nested_in_a_modal_or_a_modal_in_a_popover_is_refused() {
+    for (inner_id, outer) in [
+        ("inner", modal("outer", SHUT, &modal("inner", SHUT, QUIET))),
+        ("menu", modal("settings", SHUT, &popover("menu", QUIET))),
+        ("settings", popover("menu", &modal("settings", SHUT, QUIET))),
+    ] {
+        let error = refused(module_root(&outer));
 
-    assert!(
-        matches!(&error, UiDocError::InvalidId { id, .. } if id == "demo/menu"),
-        "{error:?}"
-    );
-}
-
-#[kithara::test]
-fn a_modal_inside_a_popover_is_refused() {
-    let inner = modal("settings", SHUT, QUIET);
-    let error = refused(module_root(&popover("menu", &inner)));
-
-    assert!(
-        matches!(&error, UiDocError::InvalidId { id, .. } if id == "demo/settings"),
-        "{error:?}"
-    );
+        assert!(
+            matches!(&error, UiDocError::InvalidId { id, .. } if *id == format!("demo/{inner_id}")),
+            "{inner_id}: {error:?}"
+        );
+    }
 }
 
 #[kithara::test]

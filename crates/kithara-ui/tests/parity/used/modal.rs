@@ -21,6 +21,7 @@ use kithara_ui::{
     view,
 };
 
+use super::press::trigger;
 use crate::immediate::Immediate;
 
 /// The window both hosts open the page in.
@@ -40,6 +41,37 @@ const PAGE: &str = r#"Column(size: (w: Fill, h: Fill), gap: 0.0, pad: 0.0, child
     Pressable(id: "page", press: Command(id: "fixture.page"),
         child: Spacer(id: "page-face", size: Some((w: Fill, h: Fill)))),
 ])"#;
+
+/// A page whose layout mounts one module, `demo`, with `root` as its root.
+fn page(module_id: &str, root: &str, resize_edges: bool) -> MemResolver {
+    let mut resolver = MemResolver::default();
+    resolver.insert(
+        "page.klayout.ron",
+        &format!(
+            r#"(schema: "kithara.layout", version: 1, id: "page", resize_edges: {resize_edges},
+                root: Module(instance: "demo", source: "page.kmodule.ron", size: (w: Fill, h: Fill)))"#
+        ),
+    );
+    resolver.insert(
+        "page.kmodule.ron",
+        &format!(
+            r#"(schema: "kithara.module", version: 1, id: "{module_id}", chrome: Plain,
+                root: {root})"#
+        ),
+    );
+    resolver
+}
+
+/// A column holding `children` above the page pressable.
+fn over_page(children: &str) -> String {
+    format!(
+        r#"Column(size: (w: Fill, h: Fill), gap: 0.0, pad: 0.0, children: [
+            {children}
+            Pressable(id: "page", press: Command(id: "fixture.page"),
+                child: Spacer(id: "page-face", size: Some((w: Fill, h: Fill)))),
+        ])"#
+    )
+}
 
 /// A modal over the page, its content a quiet strip above a pressable row.
 fn modal(width: f32, height: f32) -> String {
@@ -91,7 +123,7 @@ fn hosted_listing() -> String {
 
 /// What the page holds: no modal, a modal whose content asks for a size, or
 /// the listing modal, the last in a module whose input an engine owns.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Holds {
     Nothing,
     Modal(f32, f32),
@@ -114,21 +146,7 @@ impl Holds {
             Self::HostedListing => "app-bar",
             Self::Nothing | Self::Modal(..) | Self::Listing => "page",
         };
-        let mut resolver = MemResolver::default();
-        resolver.insert(
-            "page.klayout.ron",
-            r#"(schema: "kithara.layout", version: 1, id: "page",
-                root: Module(instance: "demo", source: "page.kmodule.ron", size: (w: Fill, h: Fill)))"#,
-        );
-        resolver.insert(
-            "page.kmodule.ron",
-            &format!(
-                r#"(schema: "kithara.module", version: 1, id: "{module}", chrome: Plain,
-                    root: {})"#,
-                PAGE.replace("{modal}", &modal)
-            ),
-        );
-        resolver
+        page(module, &PAGE.replace("{modal}", &modal), false)
     }
 }
 
@@ -206,8 +224,12 @@ struct Page {
 
 impl Page {
     fn open() -> Self {
+        Self::with(true)
+    }
+
+    fn with(open: bool) -> Self {
         Self {
-            open: true,
+            open,
             ..Self::default()
         }
     }
@@ -294,11 +316,17 @@ impl EndpointRegistry for Endpoints {
     }
 }
 
-fn trigger(key: &str) -> UiEvent {
+fn query(text: &str) -> UiEvent {
     UiEvent::Write {
-        key: key.to_owned(),
-        value: WriteValue::Trigger,
+        key: "fixture.query".to_owned(),
+        value: WriteValue::Text(text.to_owned()),
     }
+}
+
+fn wrote(events: &[UiEvent], to: &str) -> bool {
+    events
+        .iter()
+        .any(|event| matches!(event, UiEvent::Write { key, .. } if key == to))
 }
 
 fn centre(rect: Rect) -> Pt {
@@ -326,14 +354,17 @@ enum Step {
 }
 
 /// Mounts the page on the retained host and hands it to the check.
-fn with_retained<R>(holds: Holds, app: Page, check: impl FnOnce(&mut Ui<'_, Page>) -> R) -> R {
+fn with_retained<R>(
+    resolver: &MemResolver,
+    app: Page,
+    check: impl FnOnce(&mut Ui<'_, Page>) -> R,
+) -> R {
     let endpoints = Endpoints::default();
-    let resolver = holds.documents();
     let mut ui = Ui::new(
         app,
         Config::builder()
             .endpoints(&endpoints)
-            .resolver(&resolver)
+            .resolver(resolver)
             .text(builtin::text_doc())
             .build(),
         WINDOW,
@@ -341,6 +372,11 @@ fn with_retained<R>(holds: Holds, app: Page, check: impl FnOnce(&mut Ui<'_, Page
     )
     .unwrap_or_else(|error| panic!("the page must mount on the retained host: {error}"));
     check(&mut ui)
+}
+
+fn laid(ui: &Ui<'_, Page>, path: &str) -> Rect {
+    ui.rect_of(path)
+        .unwrap_or_else(|| panic!("{path} must be laid out"))
 }
 
 fn pointer(ui: &mut Ui<'_, Page>, phase: PointerPhase, at: Pt) {
@@ -405,10 +441,10 @@ fn play_retained(ui: &mut Ui<'_, Page>, steps: &[Step]) {
     }
 }
 
-fn compiled(holds: Holds) -> CompiledUi {
+fn compiled(resolver: &MemResolver) -> CompiledUi {
     compile(
         "page.klayout.ron",
-        &holds.documents(),
+        resolver,
         &Endpoints::default(),
         builtin::skin_doc(),
         builtin::text_doc(),
@@ -418,8 +454,8 @@ fn compiled(holds: Holds) -> CompiledUi {
     .unwrap_or_else(|error| panic!("the page must compile: {error}"))
 }
 
-fn play_immediate(holds: Holds, app: Page, steps: &[Step]) -> Vec<UiEvent> {
-    let ui = compiled(holds);
+fn play_immediate(resolver: &MemResolver, app: Page, steps: &[Step]) -> Vec<UiEvent> {
+    let ui = compiled(resolver);
     let mut host = Immediate::mount(app, &ui, builtin::skin(), WINDOW);
     for step in steps {
         match *step {
@@ -460,49 +496,44 @@ fn play_immediate(holds: Holds, app: Page, steps: &[Step]) -> Vec<UiEvent> {
 }
 
 /// What each host published for the gesture, retained first.
-fn both(holds: Holds, open: bool, steps: &[Step]) -> [Vec<UiEvent>; 2] {
-    let app = || Page {
-        open,
-        ..Page::default()
-    };
-    let retained = with_retained(holds, app(), |ui| {
+fn both(resolver: &MemResolver, app: impl Fn() -> Page, steps: &[Step]) -> [Vec<UiEvent>; 2] {
+    let retained = with_retained(resolver, app(), |ui| {
         play_retained(ui, steps);
         ui.app().published.clone()
     });
-    [retained, play_immediate(holds, app(), steps)]
+    [retained, play_immediate(resolver, app(), steps)]
+}
+
+/// Both hosts published `expected` for the gesture.
+fn assert_both(
+    resolver: &MemResolver,
+    open: bool,
+    steps: &[Step],
+    expected: &[UiEvent],
+    what: &str,
+) {
+    let [retained, immediate] = both(resolver, || Page::with(open), steps);
+    assert_eq!(retained, expected, "the retained host: {what}");
+    assert_eq!(immediate, expected, "the immediate host: {what}");
 }
 
 /// Where the page's controls stand on the retained host, with nothing over
 /// them.
 fn page_points() -> (Pt, Pt) {
-    with_retained(Holds::Nothing, Page::default(), |ui| {
-        let face = ui
-            .rect_of("demo/page-face")
-            .unwrap_or_else(|| panic!("the page pressable must be laid out"));
-        let dial = ui
-            .rect_of("demo/dial")
-            .unwrap_or_else(|| panic!("the knob must be laid out"));
+    with_retained(&Holds::Nothing.documents(), Page::default(), |ui| {
+        let face = laid(ui, "demo/page-face");
         let face = Pt {
             x: face.x + face.w - 20.0,
             y: face.y + face.h - 20.0,
         };
-        let dial = centre(dial);
-        (face, dial)
+        (face, centre(laid(ui, "demo/dial")))
     })
 }
 
 /// The quads the immediate host draws for the page.
 fn immediate_quads(holds: Holds, open: bool) -> Vec<(Rectangle, Quad, Background)> {
-    let ui = compiled(holds);
-    let mut host = Immediate::mount(
-        Page {
-            open,
-            ..Page::default()
-        },
-        &ui,
-        builtin::skin(),
-        WINDOW,
-    );
+    let ui = compiled(&holds.documents());
+    let mut host = Immediate::mount(Page::with(open), &ui, builtin::skin(), WINDOW);
     host.quads()
 }
 
@@ -636,48 +667,37 @@ fn packed(color: Rgba) -> u32 {
     paint_color(color).premultiply().to_rgba8().to_u32()
 }
 
-/// How many times the retained host's picture names one colour.
-fn painted(ui: &mut Ui<'_, Page>, color: Rgba) -> usize {
-    let scene = ui
-        .scene()
-        .unwrap_or_else(|error| panic!("the retained host must draw: {error}"));
-    let word = packed(color);
-    scene
+/// The colour words of the retained host's picture.
+fn drawn(ui: &mut Ui<'_, Page>) -> Vec<u32> {
+    ui.scene()
+        .unwrap_or_else(|error| panic!("the retained host must draw: {error}"))
         .encoding()
         .draw_data
-        .iter()
-        .filter(|drawn| **drawn == word)
-        .count()
+        .clone()
 }
 
-/// Whether the retained picture traces `rect` as one closed outline, corner
-/// after corner from the top left, in window coordinates.
-fn outlines(path_data: &[u32], rect: Rect) -> bool {
-    let (left, top) = (rect.x, rect.y);
-    let (right, bottom) = (rect.x + rect.w, rect.y + rect.h);
-    let corners = [
-        left, top, right, top, right, bottom, left, bottom, left, top,
-    ]
-    .map(f32::to_bits);
-    path_data
-        .windows(corners.len())
-        .any(|traced| traced == corners)
+/// How many times the retained host's picture names one colour.
+fn painted(ui: &mut Ui<'_, Page>, color: Rgba) -> usize {
+    let word = packed(color);
+    drawn(ui).iter().filter(|drawn| **drawn == word).count()
 }
 
-fn assert_retained_draws(holds: Holds, surface: Rect, content: Rect) {
+fn assert_retained_draws(holds: Holds, content: Rect) {
     let colors = [
         ("scrim", faded(ColorRole::BgDeep, look::SCRIM_ALPHA)),
         ("background", role(ColorRole::BgPanel)),
         ("frame", role(ColorRole::Line)),
         ("ticks", role(ColorRole::Accent)),
+        ("shadow", faded(ColorRole::Shadow, look::SHADOW_ALPHA)),
     ];
-    let hidden: Vec<usize> = with_retained(holds, Page::default(), |ui| {
+    let resolver = holds.documents();
+    let hidden: Vec<usize> = with_retained(&resolver, Page::default(), |ui| {
         colors
             .iter()
             .map(|(_, color)| painted(ui, *color))
             .collect()
     });
-    with_retained(holds, Page::open(), |ui| {
+    with_retained(&resolver, Page::open(), |ui| {
         assert_eq!(
             ui.rect_of("demo/inside"),
             Some(Rect { h: 40.0, ..content }),
@@ -690,58 +710,6 @@ fn assert_retained_draws(holds: Holds, surface: Rect, content: Rect) {
                 "the shown modal must paint its {name}"
             );
         }
-        let scene = ui
-            .scene()
-            .unwrap_or_else(|error| panic!("the retained host must draw: {error}"));
-        let encoding = scene.encoding();
-        let inset = look::BORDER / 2.0;
-        let frame = Rect {
-            x: surface.x + inset,
-            y: surface.y + inset,
-            w: surface.w - look::BORDER,
-            h: surface.h - look::BORDER,
-        };
-        assert!(
-            outlines(&encoding.path_data, surface),
-            "the surface must fill {surface:?}"
-        );
-        assert!(
-            outlines(&encoding.path_data, frame),
-            "the frame must stroke {frame:?}, half its width inside the surface"
-        );
-        for tick in ticks(surface) {
-            assert!(
-                outlines(&encoding.path_data, tick),
-                "no corner tick at {tick:?}"
-            );
-        }
-        let blur = [
-            packed(faded(ColorRole::Shadow, look::SHADOW_ALPHA)),
-            surface.w.to_bits(),
-            surface.h.to_bits(),
-            0.0_f32.to_bits(),
-            (look::SHADOW_BLUR / 2.0).to_bits(),
-        ];
-        assert!(
-            encoding
-                .draw_data
-                .windows(blur.len())
-                .any(|drawn| drawn == blur),
-            "the retained host must blur a {}x{} shadow out of the surface",
-            surface.w,
-            surface.h
-        );
-        let at = [
-            surface.x + surface.w / 2.0,
-            surface.y + surface.h / 2.0 + look::SHADOW_OFFSET_Y,
-        ];
-        assert!(
-            encoding
-                .transforms
-                .iter()
-                .any(|transform| transform.translation == at),
-            "the shadow must centre at {at:?}, under the surface by its offset"
-        );
     });
 }
 
@@ -754,7 +722,7 @@ fn a_shown_modal_draws_its_scrim_surface_ticks_and_shadow_on_the_immediate_host(
 
 #[kithara::test]
 fn a_shown_modal_draws_its_scrim_surface_ticks_and_shadow_on_the_retained_host() {
-    assert_retained_draws(Holds::SMALL, small::SURFACE, small::CONTENT);
+    assert_retained_draws(Holds::SMALL, small::CONTENT);
 }
 
 /// Content larger than the window shrinks to the window less the shadow's
@@ -762,113 +730,136 @@ fn a_shown_modal_draws_its_scrim_surface_ticks_and_shadow_on_the_retained_host()
 #[kithara::test]
 fn oversize_content_shrinks_to_the_window_with_its_shadow_whole() {
     assert_immediate_draws(Holds::OVERSIZE, oversize::SURFACE);
-    assert_retained_draws(Holds::OVERSIZE, oversize::SURFACE, oversize::CONTENT);
+    assert_retained_draws(Holds::OVERSIZE, oversize::CONTENT);
 }
 
-/// A press on the scrim writes the modal's close binding, and neither the
-/// pressable nor the knob it covers hears it.
+/// A gesture on the scrim reaches nothing under it, in a plain module and in
+/// one whose input an engine owns: a press or a drag writes the modal's close
+/// binding and the wheel writes nothing, though with the modal shut each
+/// reaches the control it lands on.
 #[kithara::test]
-fn a_press_on_the_scrim_closes_the_modal_and_reaches_nothing_under_it() {
+fn a_gesture_on_the_scrim_reaches_nothing_under_it() {
     let (face, dial) = page_points();
     let up = Pt {
         x: dial.x,
         y: dial.y - 20.0,
     };
-    let steps = [Step::Click(face), Step::Drag(dial, up)];
-
-    let [bare, _] = both(Holds::Nothing, false, &steps);
-    assert!(
-        bare.contains(&trigger("fixture.page"))
-            && bare
-                .iter()
-                .any(|event| matches!(event, UiEvent::Write { key, .. } if key == "fixture.dial")),
-        "with nothing over them the press and the drag must reach the page: {bare:?}"
-    );
-
-    let [retained, immediate] = both(Holds::SMALL, true, &steps);
-    let closed = vec![trigger("fixture.close"), trigger("fixture.close")];
-    assert_eq!(retained, closed, "the retained host");
-    assert_eq!(immediate, closed, "the immediate host");
+    let close = trigger("fixture.close");
+    let gestures: [(&str, Step, &str, &[UiEvent]); 3] = [
+        ("press", Step::Click(face), "fixture.page", &[close.clone()]),
+        ("drag", Step::Drag(dial, up), "fixture.dial", &[close]),
+        ("wheel", Step::Wheel(dial, -2.0), "fixture.dial", &[]),
+    ];
+    for holds in [Holds::SMALL, Holds::HostedListing] {
+        let resolver = holds.documents();
+        for (name, step, under, expected) in &gestures {
+            let [retained, immediate] = both(&resolver, Page::default, &[*step]);
+            assert!(
+                wrote(&retained, under) && wrote(&immediate, under),
+                "with the modal shut the {name} in {holds:?} reaches {under}: {retained:?} \
+                 {immediate:?}"
+            );
+            assert_both(
+                &resolver,
+                true,
+                &[*step],
+                expected,
+                &format!("{name} in {holds:?}"),
+            );
+        }
+    }
 }
 
 /// Escape writes the close binding wherever the pointer rests.
 #[kithara::test]
 fn escape_closes_the_modal() {
-    let [retained, immediate] = both(Holds::SMALL, true, &[Step::Escape]);
-
-    assert_eq!(retained, [trigger("fixture.close")], "the retained host");
-    assert_eq!(immediate, [trigger("fixture.close")], "the immediate host");
+    assert_both(
+        &Holds::SMALL.documents(),
+        true,
+        &[Step::Escape],
+        &[trigger("fixture.close")],
+        "escape",
+    );
 }
 
 /// A press inside the content belongs to the content: on a quiet part of it
 /// nothing is written, and on its pressable row that row's binding is.
 #[kithara::test]
 fn a_press_inside_the_modal_reaches_its_content_and_never_closes_it() {
-    let (inside, pick) = with_retained(Holds::SMALL, Page::open(), |ui| {
-        let inside = ui
-            .rect_of("demo/inside")
-            .unwrap_or_else(|| panic!("the modal content must be laid out"));
-        let pick = ui
-            .rect_of("demo/pick-face")
-            .unwrap_or_else(|| panic!("the modal row must be laid out"));
-        (centre(inside), centre(pick))
+    let resolver = Holds::SMALL.documents();
+    let (inside, pick) = with_retained(&resolver, Page::open(), |ui| {
+        (
+            centre(laid(ui, "demo/inside")),
+            centre(laid(ui, "demo/pick-face")),
+        )
     });
 
-    let [retained, immediate] = both(
-        Holds::SMALL,
+    assert_both(
+        &resolver,
         true,
         &[Step::Click(inside), Step::Click(pick)],
+        &[trigger("fixture.pick")],
+        "press inside",
     );
-
-    assert_eq!(retained, [trigger("fixture.pick")], "the retained host");
-    assert_eq!(immediate, [trigger("fixture.pick")], "the immediate host");
 }
 
-/// The header's press publishes the header's own write and not the close, and
-/// the wheel over the list scrolls it: the row under the list's top edge
-/// after the notches is a later row than the one standing there before.
+/// The header's press publishes the header's own write and not the close, a
+/// button an engine drives publishes its own, and the wheel over the list
+/// scrolls it: the row under the list's top edge after the notches is a later
+/// row than the one standing there before. A plain and a hosted module alike.
 #[kithara::test]
-fn a_header_press_and_a_wheel_inside_the_modal_reach_its_content() {
-    let (header, top) = with_retained(Holds::Listing, Page::open(), |ui| {
-        let header = ui
-            .rect_of("demo/header-face")
-            .unwrap_or_else(|| panic!("the header must be laid out"));
-        let first = ui
-            .rect_of("demo/row0-face")
-            .unwrap_or_else(|| panic!("the list must be laid out"));
-        let top = Pt {
-            x: first.x + first.w / 2.0,
-            y: first.y + 10.0,
-        };
-        (centre(header), top)
-    });
+fn presses_and_the_wheel_inside_the_modal_reach_its_content() {
+    for (holds, button) in [(Holds::Listing, false), (Holds::HostedListing, true)] {
+        let resolver = holds.documents();
+        let (header, top, save) = with_retained(&resolver, Page::open(), |ui| {
+            let first = laid(ui, "demo/row0-face");
+            let top = Pt {
+                x: first.x + first.w / 2.0,
+                y: first.y + 10.0,
+            };
+            let save = button.then(|| centre(laid(ui, "demo/save")));
+            (centre(laid(ui, "demo/header-face")), top, save)
+        });
 
-    let [retained, immediate] = both(Holds::Listing, true, &[Step::Click(header)]);
-    assert_eq!(retained, [trigger("fixture.shut")], "the retained host");
-    assert_eq!(immediate, [trigger("fixture.shut")], "the immediate host");
+        let what = |name: &str| format!("{name} in {holds:?}");
+        assert_both(
+            &resolver,
+            true,
+            &[Step::Click(header)],
+            &[trigger("fixture.shut")],
+            &what("header"),
+        );
+        if let Some(save) = save {
+            assert_both(
+                &resolver,
+                true,
+                &[Step::Click(save)],
+                &[trigger("fixture.save")],
+                &what("button"),
+            );
+        }
+        assert_both(
+            &resolver,
+            true,
+            &[Step::Click(top)],
+            &[trigger("fixture.row0")],
+            &what("unscrolled list"),
+        );
 
-    let [retained, immediate] = both(Holds::Listing, true, &[Step::Click(top)]);
-    assert_eq!(
-        retained,
-        [trigger("fixture.row0")],
-        "the unscrolled retained list"
-    );
-    assert_eq!(
-        immediate,
-        [trigger("fixture.row0")],
-        "the unscrolled immediate list"
-    );
-
-    let steps = [Step::Wheel(top, -2.0), Step::Click(top)];
-    let [retained, immediate] = both(Holds::Listing, true, &steps);
-    for (host, events) in [("retained", &retained), ("immediate", &immediate)] {
-        assert!(
-            matches!(events.as_slice(), [UiEvent::Write { key, .. }]
-                if key.starts_with("fixture.row") && key != "fixture.row0"),
-            "the {host} list must scroll under the wheel: {events:?}"
+        let steps = [Step::Wheel(top, -2.0), Step::Click(top)];
+        let [retained, immediate] = both(&resolver, Page::open, &steps);
+        for (host, events) in [("retained", &retained), ("immediate", &immediate)] {
+            assert!(
+                matches!(events.as_slice(), [UiEvent::Write { key, .. }]
+                    if key.starts_with("fixture.row") && key != "fixture.row0"),
+                "the {host} list in {holds:?} must scroll under the wheel: {events:?}"
+            );
+        }
+        assert_eq!(
+            retained, immediate,
+            "both hosts scroll the list alike in {holds:?}"
         );
     }
-    assert_eq!(retained, immediate, "both hosts scroll the list alike");
 }
 
 /// A modal its flag holds shut draws nothing, takes no room and no press: the
@@ -876,18 +867,10 @@ fn a_header_press_and_a_wheel_inside_the_modal_reach_its_content() {
 #[kithara::test]
 fn a_hidden_modal_leaves_the_page_as_if_it_were_not_there() {
     let (face, _) = page_points();
-    let bare = with_retained(Holds::Nothing, Page::default(), |ui| {
-        let scene = ui
-            .scene()
-            .unwrap_or_else(|error| panic!("the bare page must draw: {error}"));
-        (ui.rect_of("demo/dial"), scene.encoding().draw_data.clone())
-    });
-    let shut = with_retained(Holds::SMALL, Page::default(), |ui| {
-        let scene = ui
-            .scene()
-            .unwrap_or_else(|error| panic!("the page must draw: {error}"));
-        (ui.rect_of("demo/dial"), scene.encoding().draw_data.clone())
-    });
+    let resolver = Holds::SMALL.documents();
+    let seen = |ui: &mut Ui<'_, Page>| (ui.rect_of("demo/dial"), drawn(ui));
+    let bare = with_retained(&Holds::Nothing.documents(), Page::default(), seen);
+    let shut = with_retained(&resolver, Page::default(), seen);
     assert_eq!(shut.0, bare.0, "a shut modal must take no room in the flow");
     assert_eq!(
         shut.1, bare.1,
@@ -900,106 +883,57 @@ fn a_hidden_modal_leaves_the_page_as_if_it_were_not_there() {
         "a shut modal must draw nothing on the immediate host"
     );
 
-    let [retained, immediate] = both(Holds::SMALL, false, &[Step::Click(face)]);
-    assert_eq!(retained, [trigger("fixture.page")], "the retained host");
-    assert_eq!(immediate, [trigger("fixture.page")], "the immediate host");
-}
-
-/// A key belongs to the modal even while a field under it holds the keyboard:
-/// the field typed into before the modal opened hears nothing more, and Escape
-/// closes the modal.
-#[kithara::test]
-fn a_standing_modal_keeps_the_keyboard_from_the_field_under_it() {
-    use iced::keyboard::key::Code;
-
-    let field = with_retained(Holds::SMALL, Page::default(), |ui| {
-        ui.rect_of("demo/query")
-            .unwrap_or_else(|| panic!("the search field must be laid out"))
-    });
-    let steps = [
-        Step::Click(centre(field)),
-        Step::Type("a", Code::KeyA),
-        Step::Type("b", Code::KeyB),
-        Step::Escape,
-    ];
-
-    let typed = UiEvent::Write {
-        key: "fixture.query".to_owned(),
-        value: WriteValue::Text("a".to_owned()),
-    };
-    let [retained, immediate] = both(Holds::SMALL, false, &steps);
-    assert_eq!(
-        retained,
-        [typed.clone(), trigger("fixture.close")],
-        "the retained host"
-    );
-    assert_eq!(
-        immediate,
-        [typed, trigger("fixture.close")],
-        "the immediate host"
+    assert_both(
+        &resolver,
+        false,
+        &[Step::Click(face)],
+        &[trigger("fixture.page")],
+        "press on the page",
     );
 }
 
-/// Text an input method commits, which is how a paste reaches a field, belongs
-/// to the modal too: the field focused before the modal opened takes none of it.
+/// A key, or text an input method commits as a paste does, belongs to the
+/// modal even while a field under it holds the keyboard: the field typed into
+/// before the modal opened takes nothing more.
 #[kithara::test]
-fn a_standing_modal_keeps_a_commit_from_the_field_under_it() {
+fn a_standing_modal_keeps_keys_and_commits_from_the_field_under_it() {
     use iced::keyboard::key::Code;
 
-    let field = with_retained(Holds::SMALL, Page::default(), |ui| {
-        ui.rect_of("demo/query")
-            .unwrap_or_else(|| panic!("the search field must be laid out"))
+    let resolver = Holds::SMALL.documents();
+    let field = with_retained(&resolver, Page::default(), |ui| {
+        centre(laid(ui, "demo/query"))
     });
-    let query = |text: &str| UiEvent::Write {
-        key: "fixture.query".to_owned(),
-        value: WriteValue::Text(text.to_owned()),
-    };
-    let focus = [Step::Click(centre(field)), Step::Commit("zz")];
-    let [retained, immediate] = both(Holds::Nothing, false, &focus);
-    assert_eq!(
-        retained,
-        [query("zz")],
-        "with nothing over it the retained field takes the commit"
+    assert_both(
+        &Holds::Nothing.documents(),
+        false,
+        &[Step::Click(field), Step::Commit("zz")],
+        &[query("zz")],
+        "with nothing over it the field takes the commit",
     );
-    assert_eq!(
-        immediate,
-        [query("zz")],
-        "with nothing over it the immediate field takes the commit"
-    );
-
-    let steps = [
-        Step::Click(centre(field)),
-        Step::Type("a", Code::KeyA),
-        Step::Commit("zz"),
-        Step::Escape,
-    ];
-    let [retained, immediate] = both(Holds::SMALL, false, &steps);
-    assert_eq!(
-        retained,
-        [query("a"), trigger("fixture.close")],
-        "the retained host"
-    );
-    assert_eq!(
-        immediate,
-        [query("a"), trigger("fixture.close")],
-        "the immediate host"
+    assert_both(
+        &resolver,
+        false,
+        &[
+            Step::Click(field),
+            Step::Type("a", Code::KeyA),
+            Step::Type("b", Code::KeyB),
+            Step::Commit("zz"),
+        ],
+        &[query("a")],
+        "the field under the modal",
     );
 }
 
 /// The cursor each host shows once the pointer arrives at a point, retained
 /// first: what the retained host asked its window for, and the hand the
 /// immediate tree answers with.
-fn cursors(holds: Holds, open: bool, at: Pt) -> (String, String) {
-    let page = || Page {
-        open,
-        ..Page::default()
-    };
-    let retained = with_retained(holds, page(), |ui| {
+fn cursors(resolver: &MemResolver, open: bool, at: Pt) -> (String, String) {
+    let retained = with_retained(resolver, Page::with(open), |ui| {
         pointer(ui, PointerPhase::Move, at);
         format!("{:?}", ui.take_cursor())
     });
-    let ui = compiled(holds);
-    let mut host = Immediate::mount(page(), &ui, builtin::skin(), WINDOW);
+    let ui = compiled(resolver);
+    let mut host = Immediate::mount(Page::with(open), &ui, builtin::skin(), WINDOW);
     host.hover_at(at);
     (retained, format!("{:?}", host.hand()))
 }
@@ -1010,55 +944,25 @@ fn cursors(holds: Holds, open: bool, at: Pt) -> (String, String) {
 #[kithara::test]
 fn hover_over_the_scrim_shows_nothing_of_the_controls_under_it() {
     let (face, dial) = page_points();
-    let field = with_retained(Holds::Nothing, Page::default(), |ui| {
-        ui.rect_of("demo/query")
-            .map(centre)
-            .unwrap_or_else(|| panic!("the search field must be laid out"))
-    });
-    let quiet = cursors(Holds::SMALL, true, face);
+    let (bare, small) = (Holds::Nothing.documents(), Holds::SMALL.documents());
+    let field = with_retained(&bare, Page::default(), |ui| centre(laid(ui, "demo/query")));
+    let quiet = cursors(&small, true, face);
     for (name, at) in [("knob", dial), ("search field", field)] {
-        let bare = cursors(Holds::Nothing, false, at);
+        let own = cursors(&bare, false, at);
         assert_ne!(
-            bare.0, quiet.0,
+            own.0, quiet.0,
             "with nothing over it the retained {name} shows its own cursor"
         );
         assert_ne!(
-            bare.1, quiet.1,
+            own.1, quiet.1,
             "with nothing over it the immediate {name} shows its own cursor"
         );
         assert_eq!(
-            cursors(Holds::SMALL, true, at),
+            cursors(&small, true, at),
             quiet,
             "the scrim over the {name} shows what it shows anywhere else"
         );
     }
-}
-
-/// The wheel over the scrim turns nothing under it: the knob the same notches
-/// turn with nothing over it stays where it is.
-#[kithara::test]
-fn the_wheel_over_the_scrim_turns_nothing_under_it() {
-    let (_, dial) = page_points();
-    let steps = [Step::Wheel(dial, -2.0)];
-
-    let turned = |events: &[UiEvent]| {
-        events
-            .iter()
-            .any(|event| matches!(event, UiEvent::Write { key, .. } if key == "fixture.dial"))
-    };
-    let [retained, immediate] = both(Holds::Nothing, false, &steps);
-    assert!(
-        turned(&retained),
-        "the bare retained knob turns: {retained:?}"
-    );
-    assert!(
-        turned(&immediate),
-        "the bare immediate knob turns: {immediate:?}"
-    );
-
-    let [retained, immediate] = both(Holds::SMALL, true, &steps);
-    assert_eq!(retained, [], "the retained host");
-    assert_eq!(immediate, [], "the immediate host");
 }
 
 /// A finger on the scrim closes the modal as a press there does, and a finger
@@ -1066,12 +970,11 @@ fn the_wheel_over_the_scrim_turns_nothing_under_it() {
 #[kithara::test]
 fn a_touch_on_the_scrim_closes_the_modal_on_the_immediate_host() {
     let (face, _) = page_points();
-    let inside = with_retained(Holds::SMALL, Page::open(), |ui| {
-        ui.rect_of("demo/inside")
-            .map(centre)
-            .unwrap_or_else(|| panic!("the modal content must be laid out"))
+    let resolver = Holds::SMALL.documents();
+    let inside = with_retained(&resolver, Page::open(), |ui| {
+        centre(laid(ui, "demo/inside"))
     });
-    let ui = compiled(Holds::SMALL);
+    let ui = compiled(&resolver);
     let mut host = Immediate::mount(Page::open(), &ui, builtin::skin(), WINDOW);
 
     host.touch_at(inside);
@@ -1118,64 +1021,26 @@ fn flow(among: Among) -> MemResolver {
         Among::Between => (modal.as_str(), ""),
         Among::Last => ("", modal.as_str()),
     };
-    let mut resolver = MemResolver::default();
-    resolver.insert(
-        "page.klayout.ron",
-        r#"(schema: "kithara.layout", version: 1, id: "page",
-            root: Module(instance: "demo", source: "page.kmodule.ron", size: (w: Fill, h: Fill)))"#,
-    );
-    resolver.insert(
-        "page.kmodule.ron",
-        &format!(
-            r#"(schema: "kithara.module", version: 1, id: "page", chrome: Plain, root: {})"#,
-            FLOW.replace("{between}", between).replace("{last}", last)
-        ),
-    );
-    resolver
-}
-
-/// Where the two boxes that follow the modal stand on each host, retained
-/// first.
-fn flow_boxes(among: Among, open: bool) -> [[Rect; 2]; 2] {
-    laid_boxes(&flow(among), open)
+    page(
+        "page",
+        &FLOW.replace("{between}", between).replace("{last}", last),
+        false,
+    )
 }
 
 /// Where the danger box and the success box of a page stand on each host,
 /// retained first.
 fn laid_boxes(resolver: &MemResolver, open: bool) -> [[Rect; 2]; 2] {
-    let page = || Page {
-        open,
-        ..Page::default()
-    };
-    let endpoints = Endpoints::default();
-    let ui = Ui::new(
-        page(),
-        Config::builder()
-            .endpoints(&endpoints)
-            .resolver(resolver)
-            .text(builtin::text_doc())
-            .build(),
+    let retained = with_retained(resolver, Page::with(open), |ui| {
+        [laid(ui, "demo/b-face"), laid(ui, "demo/c-face")]
+    });
+    let quads = Immediate::mount(
+        Page::with(open),
+        &compiled(resolver),
+        builtin::skin(),
         WINDOW,
-        1.0,
     )
-    .unwrap_or_else(|error| panic!("the flow page must mount on the retained host: {error}"));
-    let laid = |path: &str| {
-        ui.rect_of(path)
-            .unwrap_or_else(|| panic!("{path} must be laid out"))
-    };
-    let retained = [laid("demo/b-face"), laid("demo/c-face")];
-
-    let compiled = compile(
-        "page.klayout.ron",
-        resolver,
-        &endpoints,
-        builtin::skin_doc(),
-        builtin::text_doc(),
-        &UiConfig::default(),
-        &view::EMPTY,
-    )
-    .unwrap_or_else(|error| panic!("the flow page must compile: {error}"));
-    let quads = Immediate::mount(page(), &compiled, builtin::skin(), WINDOW).quads();
+    .quads();
     let filled_with = |role_: ColorRole| {
         quads
             .iter()
@@ -1199,11 +1064,11 @@ fn laid_boxes(resolver: &MemResolver, open: bool) -> [[Rect; 2]; 2] {
 /// boxes after it stand where they stand with no modal there at all.
 #[kithara::test]
 fn a_modal_takes_no_room_and_no_gap_in_a_flow() {
-    let [retained, immediate] = flow_boxes(Among::Nowhere, false);
+    let [retained, immediate] = laid_boxes(&flow(Among::Nowhere), false);
     assert_eq!(retained, immediate, "the hosts agree on the bare flow");
     for among in [Among::Between, Among::Last] {
         for open in [false, true] {
-            let [shown_retained, shown_immediate] = flow_boxes(among, open);
+            let [shown_retained, shown_immediate] = laid_boxes(&flow(among), open);
             assert_eq!(
                 shown_retained, retained,
                 "the retained host, the modal {among:?}, open {open}"
@@ -1216,67 +1081,25 @@ fn a_modal_takes_no_room_and_no_gap_in_a_flow() {
     }
 }
 
-/// A window that resizes by its own edges, with the modal over the page.
-fn chrome() -> MemResolver {
-    let mut resolver = MemResolver::default();
-    resolver.insert(
-        "page.klayout.ron",
-        r#"(schema: "kithara.layout", version: 1, id: "page", resize_edges: true,
-            root: Module(instance: "demo", source: "page.kmodule.ron", size: (w: Fill, h: Fill)))"#,
-    );
-    resolver.insert(
-        "page.kmodule.ron",
-        &format!(
-            r#"(schema: "kithara.module", version: 1, id: "page", chrome: Plain,
-                root: Column(size: (w: Fill, h: Fill), gap: 0.0, pad: 0.0, children: [
-                    {}
-                    Pressable(id: "page", press: Command(id: "fixture.page"),
-                        child: Spacer(id: "page-face", size: Some((w: Fill, h: Fill)))),
-                ]))"#,
-            modal(100.0, 60.0)
-        ),
-    );
-    resolver
-}
-
 /// The window's resize edges answer before the modal: a press on one under
 /// the scrim resizes the window and leaves the modal standing.
 #[kithara::test]
 fn a_resize_edge_answers_before_the_modal() {
     let edge = Pt { x: 1.0, y: 250.0 };
     let commands = [WindowCommand::Resize(WindowEdge::West)];
+    let resolver = page("page", &over_page(&modal(100.0, 60.0)), true);
 
-    let endpoints = Endpoints::default();
-    let resolver = chrome();
-    let mut ui = Ui::new(
-        Page::open(),
-        Config::builder()
-            .endpoints(&endpoints)
-            .resolver(&resolver)
-            .text(builtin::text_doc())
-            .build(),
-        WINDOW,
-        1.0,
-    )
-    .unwrap_or_else(|error| panic!("the chrome page must mount on the retained host: {error}"));
-    play_retained(&mut ui, &[Step::Click(edge)]);
-    assert_eq!(ui.take_window_commands(), commands, "the retained window");
-    assert_eq!(
-        ui.app().published,
-        commands.map(UiEvent::Window),
-        "the retained window, with the modal left standing"
-    );
+    with_retained(&resolver, Page::open(), |ui| {
+        play_retained(ui, &[Step::Click(edge)]);
+        assert_eq!(ui.take_window_commands(), commands, "the retained window");
+        assert_eq!(
+            ui.app().published,
+            commands.map(UiEvent::Window),
+            "the retained window, with the modal left standing"
+        );
+    });
 
-    let compiled = compile(
-        "page.klayout.ron",
-        &resolver,
-        &endpoints,
-        builtin::skin_doc(),
-        builtin::text_doc(),
-        &UiConfig::default(),
-        &view::EMPTY,
-    )
-    .unwrap_or_else(|error| panic!("the chrome page must compile: {error}"));
+    let compiled = compiled(&resolver);
     let mut host = Immediate::mount(Page::open(), &compiled, builtin::skin(), WINDOW);
     host.click_at(edge);
     assert_eq!(
@@ -1300,164 +1123,57 @@ fn titled(order: Titled) -> MemResolver {
             WindowControls(id: "controls", style: Standard),
             TitleBar(id: "title", label: "KITHARA"),
         ]),"#;
-    let (first, second) = match order {
-        Titled::Before => (modal(100.0, 60.0), strip.to_owned()),
-        Titled::After => (strip.to_owned(), modal(100.0, 60.0)),
+    let modal = modal(100.0, 60.0);
+    let children = match order {
+        Titled::Before => format!("{modal}\n{strip}"),
+        Titled::After => format!("{strip}\n{modal}"),
     };
-    let mut resolver = MemResolver::default();
-    resolver.insert(
-        "page.klayout.ron",
-        r#"(schema: "kithara.layout", version: 1, id: "page",
-            root: Module(instance: "demo", source: "page.kmodule.ron", size: (w: Fill, h: Fill)))"#,
-    );
-    resolver.insert(
-        "page.kmodule.ron",
-        &format!(
-            r#"(schema: "kithara.module", version: 1, id: "page", chrome: Plain,
-                root: Column(size: (w: Fill, h: Fill), gap: 0.0, pad: 0.0, children: [
-                    {first}
-                    {second}
-                    Pressable(id: "page", press: Command(id: "fixture.page"),
-                        child: Spacer(id: "page-face", size: Some((w: Fill, h: Fill)))),
-                ]))"#
-        ),
-    );
-    resolver
+    page("page", &over_page(&children), false)
 }
 
 /// A title bar and window controls drawn by the document lie under the scrim
-/// whatever their place in it: a press on one closes the modal and moves,
-/// shrinks or closes no window.
+/// whatever their place in it: the retained host paints the strip before the
+/// scrim, a press on one closes the modal and moves, shrinks or closes no
+/// window, and hover over one shows the cursor a quiet part of the scrim shows.
 #[kithara::test]
-fn a_press_on_a_drawn_title_strip_closes_the_modal_and_reaches_no_window() {
-    let targets = [
-        ("title bar", Pt { x: 300.0, y: 16.0 }),
-        ("minimise cell", Pt { x: 17.5, y: 16.0 }),
-        ("close cell", Pt { x: 62.5, y: 16.0 }),
-    ];
-    let closed = [trigger("fixture.close")];
-    let endpoints = Endpoints::default();
-    for order in [Titled::Before, Titled::After] {
-        let resolver = titled(order);
-        let compiled = compile(
-            "page.klayout.ron",
-            &resolver,
-            &endpoints,
-            builtin::skin_doc(),
-            builtin::text_doc(),
-            &UiConfig::default(),
-            &view::EMPTY,
-        )
-        .unwrap_or_else(|error| panic!("the titled page must compile: {error}"));
-        for (target, at) in targets {
-            let mut ui = Ui::new(
-                Page::open(),
-                Config::builder()
-                    .endpoints(&endpoints)
-                    .resolver(&resolver)
-                    .text(builtin::text_doc())
-                    .build(),
-                WINDOW,
-                1.0,
-            )
-            .unwrap_or_else(|error| {
-                panic!("the titled page must mount on the retained host: {error}")
-            });
-            play_retained(&mut ui, &[Step::Click(at)]);
-            assert_eq!(
-                ui.take_window_commands(),
-                [],
-                "the retained {target}, modal {order:?} it"
-            );
-            assert_eq!(
-                ui.app().published,
-                closed,
-                "the retained {target}, modal {order:?} it"
-            );
-
-            let mut host = Immediate::mount(Page::open(), &compiled, builtin::skin(), WINDOW);
-            host.click_at(at);
-            assert_eq!(
-                host.app().published,
-                closed,
-                "the immediate {target}, modal {order:?} it"
-            );
-        }
-    }
-}
-
-/// Mounts the titled page with the modal standing on the retained host.
-fn with_titled<R>(order: Titled, check: impl FnOnce(&mut Ui<'_, Page>) -> R) -> R {
-    let endpoints = Endpoints::default();
-    let resolver = titled(order);
-    let mut ui = Ui::new(
-        Page::open(),
-        Config::builder()
-            .endpoints(&endpoints)
-            .resolver(&resolver)
-            .text(builtin::text_doc())
-            .build(),
-        WINDOW,
-        1.0,
-    )
-    .unwrap_or_else(|error| panic!("the titled page must mount on the retained host: {error}"));
-    check(&mut ui)
-}
-
-/// The cursor each host shows over a point of the titled page with the modal
-/// standing, retained first.
-fn titled_cursors(order: Titled, at: Pt) -> (String, String) {
-    let retained = with_titled(order, |ui| {
-        pointer(ui, PointerPhase::Move, at);
-        format!("{:?}", ui.take_cursor())
-    });
-    let compiled = compile(
-        "page.klayout.ron",
-        &titled(order),
-        &Endpoints::default(),
-        builtin::skin_doc(),
-        builtin::text_doc(),
-        &UiConfig::default(),
-        &view::EMPTY,
-    )
-    .unwrap_or_else(|error| panic!("the titled page must compile: {error}"));
-    let mut host = Immediate::mount(Page::open(), &compiled, builtin::skin(), WINDOW);
-    host.hover_at(at);
-    (retained, format!("{:?}", host.hand()))
-}
-
-/// A drawn title strip lies under the scrim in the picture and under the
-/// pointer whatever its place in the document: the retained host paints the
-/// strip before the scrim, and hover over the strip shows the cursor a quiet
-/// part of the scrim shows.
-#[kithara::test]
-fn a_drawn_title_strip_paints_and_hovers_under_the_modal_whatever_its_order() {
+fn a_drawn_title_strip_lies_under_the_modal_whatever_its_order() {
     let title_ink = packed(role(builtin::skin().window.titlebar_text.color));
     let scrim = packed(faded(ColorRole::BgDeep, look::SCRIM_ALPHA));
+    let closed = [trigger("fixture.close")];
     for order in [Titled::Before, Titled::After] {
-        let drawn = with_titled(order, |ui| {
-            ui.scene()
-                .unwrap_or_else(|error| panic!("the titled page must draw: {error}"))
-                .encoding()
-                .draw_data
-                .clone()
-        });
-        let title = drawn.iter().rposition(|word| *word == title_ink);
-        let covered = drawn.iter().position(|word| *word == scrim);
+        let resolver = titled(order);
+        let picture = with_retained(&resolver, Page::open(), drawn);
+        let title = picture.iter().rposition(|word| *word == title_ink);
+        let covered = picture.iter().position(|word| *word == scrim);
         assert!(
             matches!((title, covered), (Some(title), Some(covered)) if title < covered),
             "the retained title must be painted before the scrim, modal {order:?} it: title at \
              {title:?}, scrim at {covered:?}"
         );
 
-        let quiet = titled_cursors(order, Pt { x: 300.0, y: 250.0 });
+        let quiet = cursors(&resolver, true, Pt { x: 300.0, y: 250.0 });
         for (target, at) in [
             ("title bar", Pt { x: 300.0, y: 16.0 }),
             ("minimise cell", Pt { x: 17.5, y: 16.0 }),
             ("close cell", Pt { x: 62.5, y: 16.0 }),
         ] {
+            with_retained(&resolver, Page::open(), |ui| {
+                play_retained(ui, &[Step::Click(at)]);
+                assert_eq!(
+                    ui.take_window_commands(),
+                    [],
+                    "the retained {target}, modal {order:?} it"
+                );
+            });
+            assert_both(
+                &resolver,
+                true,
+                &[Step::Click(at)],
+                &closed,
+                &format!("press on the {target}, modal {order:?} it"),
+            );
             assert_eq!(
-                titled_cursors(order, at),
+                cursors(&resolver, true, at),
                 quiet,
                 "hover over the {target} under the scrim, modal {order:?} it"
             );
@@ -1465,169 +1181,36 @@ fn a_drawn_title_strip_paints_and_hovers_under_the_modal_whatever_its_order() {
     }
 }
 
-/// A modal inside a module whose input an engine owns keeps the same input as
-/// one in a plain module: the header and the button an engine drives publish
-/// their own writes, the wheel scrolls the list, and a press, a drag or the
-/// wheel on the scrim writes the close or nothing and reaches nothing under it.
-#[kithara::test]
-fn a_modal_in_a_hosted_module_hears_its_content_and_keeps_the_page() {
-    let (face, dial) = page_points();
-    let (header, save, top) = with_retained(Holds::HostedListing, Page::open(), |ui| {
-        let header = ui
-            .rect_of("demo/header-face")
-            .unwrap_or_else(|| panic!("the header must be laid out"));
-        let save = ui
-            .rect_of("demo/save")
-            .unwrap_or_else(|| panic!("the button must be laid out"));
-        let first = ui
-            .rect_of("demo/row0-face")
-            .unwrap_or_else(|| panic!("the list must be laid out"));
-        let top = Pt {
-            x: first.x + first.w / 2.0,
-            y: first.y + 10.0,
-        };
-        (centre(header), centre(save), top)
-    });
-
-    let [retained, immediate] = both(Holds::HostedListing, true, &[Step::Click(header)]);
-    assert_eq!(retained, [trigger("fixture.shut")], "the retained header");
-    assert_eq!(immediate, [trigger("fixture.shut")], "the immediate header");
-
-    let [retained, immediate] = both(Holds::HostedListing, true, &[Step::Click(save)]);
-    assert_eq!(retained, [trigger("fixture.save")], "the retained button");
-    assert_eq!(immediate, [trigger("fixture.save")], "the immediate button");
-
-    let steps = [Step::Wheel(top, -2.0), Step::Click(top)];
-    let [retained, immediate] = both(Holds::HostedListing, true, &steps);
-    for (host, events) in [("retained", &retained), ("immediate", &immediate)] {
-        assert!(
-            matches!(events.as_slice(), [UiEvent::Write { key, .. }]
-                if key.starts_with("fixture.row") && key != "fixture.row0"),
-            "the {host} list must scroll under the wheel: {events:?}"
-        );
-    }
-    assert_eq!(retained, immediate, "both hosts scroll the list alike");
-
-    let up = Pt {
-        x: dial.x,
-        y: dial.y - 20.0,
-    };
-    let steps = [
-        Step::Click(face),
-        Step::Drag(dial, up),
-        Step::Wheel(dial, -2.0),
-    ];
-    let [retained, immediate] = both(Holds::HostedListing, false, &steps);
-    for (host, events) in [("retained", &retained), ("immediate", &immediate)] {
-        assert!(
-            events.contains(&trigger("fixture.page"))
-                && events.iter().any(
-                    |event| matches!(event, UiEvent::Write { key, .. } if key == "fixture.dial")
-                ),
-            "with the modal shut the {host} page hears the press and the drag: {events:?}"
-        );
-    }
-    let closed = vec![trigger("fixture.close"), trigger("fixture.close")];
-    let [retained, immediate] = both(Holds::HostedListing, true, &steps);
-    assert_eq!(retained, closed, "the retained scrim");
-    assert_eq!(immediate, closed, "the immediate scrim");
-}
-
-/// A page with the modal first and an open menu after it, the menu holding the
-/// pressable `pick` row: both read the same flag, so both stand at once.
-fn popped() -> MemResolver {
-    let mut resolver = MemResolver::default();
-    resolver.insert(
-        "page.klayout.ron",
-        r#"(schema: "kithara.layout", version: 1, id: "page",
-            root: Module(instance: "demo", source: "page.kmodule.ron", size: (w: Fill, h: Fill)))"#,
-    );
-    resolver.insert(
-        "page.kmodule.ron",
-        &format!(
-            r#"(schema: "kithara.module", version: 1, id: "page", chrome: Plain,
-                root: Column(size: (w: Fill, h: Fill), gap: 0.0, pad: 0.0, children: [
-                    {}
-                    Popover(id: "menu", open: Model(id: "fixture.open"), align: Start,
-                        anchor: Pressable(id: "burger", press: Command(id: "fixture.burger"),
-                            child: Spacer(id: "anchor", size: Some((w: Fixed(40.0), h: Fixed(20.0))))),
-                        content: Pressable(id: "menu-row", press: Command(id: "fixture.pick"),
-                            child: Spacer(id: "menu-face", size: Some((w: Fixed(100.0), h: Fixed(60.0)))))),
-                    Pressable(id: "page", press: Command(id: "fixture.page"),
-                        child: Spacer(id: "page-face", size: Some((w: Fill, h: Fill)))),
-                ]))"#,
-            modal(100.0, 60.0)
-        ),
-    );
-    resolver
-}
-
 /// A menu standing after the modal in the document lies under it like the
 /// rest of the page: a press on the menu's row closes the modal and reaches
 /// nothing of the menu, and hover over the row shows what the scrim shows.
 #[kithara::test]
 fn a_menu_after_the_modal_lies_under_it() {
-    let endpoints = Endpoints::default();
-    let resolver = popped();
-    let retained = |hover: Option<Pt>, steps: &[Step]| {
-        let mut ui = Ui::new(
-            Page::open(),
-            Config::builder()
-                .endpoints(&endpoints)
-                .resolver(&resolver)
-                .text(builtin::text_doc())
-                .build(),
-            WINDOW,
-            1.0,
-        )
-        .unwrap_or_else(|error| panic!("the menu page must mount on the retained host: {error}"));
-        let row = ui
-            .rect_of("demo/menu-face")
-            .map(centre)
-            .unwrap_or_else(|| panic!("the open menu must be laid out"));
-        if let Some(at) = hover {
-            pointer(&mut ui, PointerPhase::Move, at);
-        }
-        let cursor = format!("{:?}", ui.take_cursor());
-        play_retained(&mut ui, steps);
-        (row, ui.app().published.clone(), cursor)
-    };
-    let (row, _, _) = retained(None, &[]);
-    let quiet = Pt { x: 300.0, y: 250.0 };
-    let compiled = compile(
-        "page.klayout.ron",
-        &resolver,
-        &endpoints,
-        builtin::skin_doc(),
-        builtin::text_doc(),
-        &UiConfig::default(),
-        &view::EMPTY,
-    )
-    .unwrap_or_else(|error| panic!("the menu page must compile: {error}"));
-    let immediate = |at: Pt| {
-        let mut host = Immediate::mount(Page::open(), &compiled, builtin::skin(), WINDOW);
-        host.hover_at(at);
-        let hand = format!("{:?}", host.hand());
-        host.click_at(at);
-        (host.app().published.clone(), hand)
-    };
-
-    let (_, pressed, _) = retained(None, &[Step::Click(row)]);
-    assert_eq!(pressed, [trigger("fixture.close")], "the retained menu row");
-    let (pressed, _) = immediate(row);
-    assert_eq!(
-        pressed,
-        [trigger("fixture.close")],
-        "the immediate menu row"
+    let menu = r#"Popover(id: "menu", open: Model(id: "fixture.open"), align: Start,
+            anchor: Pressable(id: "burger", press: Command(id: "fixture.burger"),
+                child: Spacer(id: "anchor", size: Some((w: Fixed(40.0), h: Fixed(20.0))))),
+            content: Pressable(id: "menu-row", press: Command(id: "fixture.pick"),
+                child: Spacer(id: "menu-face", size: Some((w: Fixed(100.0), h: Fixed(60.0)))))),"#;
+    let resolver = page(
+        "page",
+        &over_page(&format!("{}\n{menu}", modal(100.0, 60.0))),
+        false,
     );
+    let row = with_retained(&resolver, Page::open(), |ui| {
+        centre(laid(ui, "demo/menu-face"))
+    });
 
-    let (_, _, over_row) = retained(Some(row), &[]);
-    let (_, _, over_scrim) = retained(Some(quiet), &[]);
-    assert_eq!(over_row, over_scrim, "the retained hover over the menu row");
+    assert_both(
+        &resolver,
+        true,
+        &[Step::Click(row)],
+        &[trigger("fixture.close")],
+        "the menu row",
+    );
     assert_eq!(
-        immediate(row).1,
-        immediate(quiet).1,
-        "the immediate hover over the menu row"
+        cursors(&resolver, true, row),
+        cursors(&resolver, true, Pt { x: 300.0, y: 250.0 }),
+        "hover over the menu row"
     );
 }
 
@@ -1651,20 +1234,7 @@ fn staged(modal_first: bool) -> MemResolver {
     } else {
         String::new()
     };
-    let mut resolver = MemResolver::default();
-    resolver.insert(
-        "page.klayout.ron",
-        r#"(schema: "kithara.layout", version: 1, id: "page",
-            root: Module(instance: "demo", source: "page.kmodule.ron", size: (w: Fill, h: Fill)))"#,
-    );
-    resolver.insert(
-        "page.kmodule.ron",
-        &format!(
-            r#"(schema: "kithara.module", version: 1, id: "page", chrome: Plain, root: {})"#,
-            STAGED.replace("{modal}", &modal)
-        ),
-    );
-    resolver
+    page("page", &STAGED.replace("{modal}", &modal), false)
 }
 
 /// A stage with no size of its own takes the room of its first child in the
@@ -1696,10 +1266,8 @@ fn an_unsized_stage_takes_the_room_of_its_first_child_in_the_flow() {
 fn a_modifier_held_under_the_modal_reaches_the_page_once_it_shuts() {
     use iced::keyboard::key::Code;
 
-    let field = with_retained(Holds::SMALL, Page::default(), |ui| {
-        ui.rect_of("demo/query")
-            .unwrap_or_else(|| panic!("the search field must be laid out"))
-    });
+    let resolver = Holds::SMALL.documents();
+    let field = with_retained(&resolver, Page::default(), |ui| laid(ui, "demo/query"));
     let start = Pt {
         x: field.x + 40.0,
         y: field.y + field.h / 2.0,
@@ -1713,23 +1281,12 @@ fn a_modifier_held_under_the_modal_reaches_the_page_once_it_shuts() {
         Step::Click(start),
         Step::Type("b", Code::KeyB),
     ];
-    let query = |text: &str| UiEvent::Write {
-        key: "fixture.query".to_owned(),
-        value: WriteValue::Text(text.to_owned()),
-    };
-    let expected = [query("a"), trigger("fixture.close"), query("b")];
     let page = || Page {
         shuts: true,
         ..Page::default()
     };
-    let retained = with_retained(Holds::SMALL, page(), |ui| {
-        play_retained(ui, &steps);
-        ui.app().published.clone()
-    });
+    let [retained, immediate] = both(&resolver, page, &steps);
+    let expected = [query("a"), trigger("fixture.close"), query("b")];
     assert_eq!(retained, expected, "the retained host");
-    assert_eq!(
-        play_immediate(Holds::SMALL, page(), &steps),
-        expected,
-        "the immediate host"
-    );
+    assert_eq!(immediate, expected, "the immediate host");
 }
