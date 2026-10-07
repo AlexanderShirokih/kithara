@@ -78,13 +78,25 @@ const LISTING: &str = r#"Modal(id: "settings", open: Model(id: "fixture.open"),
                 ])),
         ])),"#;
 
+/// The listing modal with a button between the header and the list, the kind
+/// of control an engine drives in a hosted module.
+fn hosted_listing() -> String {
+    LISTING
+        .replace("h: Fixed(100.0)", "h: Fixed(126.0)")
+        .replace(
+            "            Scroll(id: \"list\"",
+            "            Button(id: \"save\", label: \"SAVE\", write: Command(id: \"fixture.save\"),\n                size: (w: Fill, h: Fixed(26.0))),\n            Scroll(id: \"list\"",
+        )
+}
+
 /// What the page holds: no modal, a modal whose content asks for a size, or
-/// the listing modal.
+/// the listing modal, the last in a module whose input an engine owns.
 #[derive(Clone, Copy)]
 enum Holds {
     Nothing,
     Modal(f32, f32),
     Listing,
+    HostedListing,
 }
 
 impl Holds {
@@ -96,6 +108,11 @@ impl Holds {
             Self::Nothing => String::new(),
             Self::Modal(width, height) => modal(width, height),
             Self::Listing => LISTING.to_owned(),
+            Self::HostedListing => hosted_listing(),
+        };
+        let module = match self {
+            Self::HostedListing => "app-bar",
+            Self::Nothing | Self::Modal(..) | Self::Listing => "page",
         };
         let mut resolver = MemResolver::default();
         resolver.insert(
@@ -106,7 +123,7 @@ impl Holds {
         resolver.insert(
             "page.kmodule.ron",
             &format!(
-                r#"(schema: "kithara.module", version: 1, id: "page", chrome: Plain,
+                r#"(schema: "kithara.module", version: 1, id: "{module}", chrome: Plain,
                     root: {})"#,
                 PAGE.replace("{modal}", &modal)
             ),
@@ -263,7 +280,8 @@ impl EndpointRegistry for Endpoints {
             }
             (
                 EndpointCategory::Command,
-                "fixture.close" | "fixture.page" | "fixture.pick" | "fixture.shut" | "fixture.row0"
+                "fixture.close" | "fixture.page" | "fixture.pick" | "fixture.shut" | "fixture.save"
+                | "fixture.row0"
                 | "fixture.row1" | "fixture.row2" | "fixture.row3" | "fixture.row4",
             ) => Some(&self.trigger),
             _ => None,
@@ -1425,4 +1443,72 @@ fn a_drawn_title_strip_paints_and_hovers_under_the_modal_whatever_its_order() {
             );
         }
     }
+}
+
+/// A modal inside a module whose input an engine owns keeps the same input as
+/// one in a plain module: the header and the button an engine drives publish
+/// their own writes, the wheel scrolls the list, and a press, a drag or the
+/// wheel on the scrim writes the close or nothing and reaches nothing under it.
+#[kithara::test]
+fn a_modal_in_a_hosted_module_hears_its_content_and_keeps_the_page() {
+    let (face, dial) = page_points();
+    let (header, save, top) = with_retained(Holds::HostedListing, Page::open(), |ui| {
+        let header = ui
+            .rect_of("demo/header-face")
+            .unwrap_or_else(|| panic!("the header must be laid out"));
+        let save = ui
+            .rect_of("demo/save")
+            .unwrap_or_else(|| panic!("the button must be laid out"));
+        let first = ui
+            .rect_of("demo/row0-face")
+            .unwrap_or_else(|| panic!("the list must be laid out"));
+        let top = Pt {
+            x: first.x + first.w / 2.0,
+            y: first.y + 10.0,
+        };
+        (centre(header), centre(save), top)
+    });
+
+    let [retained, immediate] = both(Holds::HostedListing, true, &[Step::Click(header)]);
+    assert_eq!(retained, [trigger("fixture.shut")], "the retained header");
+    assert_eq!(immediate, [trigger("fixture.shut")], "the immediate header");
+
+    let [retained, immediate] = both(Holds::HostedListing, true, &[Step::Click(save)]);
+    assert_eq!(retained, [trigger("fixture.save")], "the retained button");
+    assert_eq!(immediate, [trigger("fixture.save")], "the immediate button");
+
+    let steps = [Step::Wheel(top, -2.0), Step::Click(top)];
+    let [retained, immediate] = both(Holds::HostedListing, true, &steps);
+    for (host, events) in [("retained", &retained), ("immediate", &immediate)] {
+        assert!(
+            matches!(events.as_slice(), [UiEvent::Write { key, .. }]
+                if key.starts_with("fixture.row") && key != "fixture.row0"),
+            "the {host} list must scroll under the wheel: {events:?}"
+        );
+    }
+    assert_eq!(retained, immediate, "both hosts scroll the list alike");
+
+    let up = Pt {
+        x: dial.x,
+        y: dial.y - 20.0,
+    };
+    let steps = [
+        Step::Click(face),
+        Step::Drag(dial, up),
+        Step::Wheel(dial, -2.0),
+    ];
+    let [retained, immediate] = both(Holds::HostedListing, false, &steps);
+    for (host, events) in [("retained", &retained), ("immediate", &immediate)] {
+        assert!(
+            events.contains(&trigger("fixture.page"))
+                && events
+                    .iter()
+                    .any(|event| matches!(event, UiEvent::Write { key, .. } if key == "fixture.dial")),
+            "with the modal shut the {host} page hears the press and the drag: {events:?}"
+        );
+    }
+    let closed = vec![trigger("fixture.close"), trigger("fixture.close")];
+    let [retained, immediate] = both(Holds::HostedListing, true, &steps);
+    assert_eq!(retained, closed, "the retained scrim");
+    assert_eq!(immediate, closed, "the immediate scrim");
 }
