@@ -14,7 +14,8 @@ use crate::{
     render::{InputOwner, ReadValue},
     size::{
         BlockNode, Dim, SizeSpec, Snapshot, branch as adaptive_branch,
-        compiled_node_size_with_hidden, effective_size, is_hidden, visible_compiled_children,
+        compiled_node_size_with_hidden, effective_size, floats, is_hidden,
+        visible_compiled_children,
     },
     skin::{ColorRole, SkinDoc},
 };
@@ -641,6 +642,7 @@ where
         .map(|(index, child)| GroupMount {
             band: band_of(child),
             block: block_of(child),
+            floats: floats(child),
             minimum: main_minimum(child, axis, ctx.skin, snapshot),
             output: expanded(
                 child,

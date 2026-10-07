@@ -206,13 +206,20 @@ pub(crate) fn is_hidden<N: BlockNode>(node: &N, snapshot: &dyn Snapshot) -> bool
     node.block().is_some_and(|block| snapshot.hidden(block))
 }
 
-pub(crate) fn visible<'a, N: BlockNode>(
-    children: &'a [N],
+/// Whether a child of a flow stands above it rather than in it, taking no room
+/// and no gap there: a modal covers the whole window wherever it is written.
+pub(crate) const fn floats(node: &ExpandedNode) -> bool {
+    matches!(node, ExpandedNode::Modal { .. })
+}
+
+/// The children that take room in a flow: shown, and not floating above it.
+fn in_flow<'a>(
+    children: &'a [ExpandedNode],
     snapshot: &'a dyn Snapshot,
-) -> impl Iterator<Item = &'a N> {
+) -> impl Iterator<Item = &'a ExpandedNode> {
     children
         .iter()
-        .filter(move |child| !is_hidden(*child, snapshot))
+        .filter(move |child| !is_hidden(*child, snapshot) && !floats(child))
 }
 
 pub(crate) fn branch<'a>(
@@ -361,7 +368,7 @@ pub(crate) fn compute_size(
             pad_y,
             ..
         } => {
-            let laid_out: Vec<_> = visible(children, snapshot).collect();
+            let laid_out: Vec<_> = in_flow(children, snapshot).collect();
             inset(
                 combine_horizontal(
                     laid_out
@@ -381,7 +388,7 @@ pub(crate) fn compute_size(
             pad_y,
             ..
         } => {
-            let laid_out: Vec<_> = visible(children, snapshot).collect();
+            let laid_out: Vec<_> = in_flow(children, snapshot).collect();
             inset(
                 combine_vertical(
                     laid_out
@@ -393,11 +400,11 @@ pub(crate) fn compute_size(
                 Pad::new(*pad, *pad_x, *pad_y, skin.layout.grid_pad),
             )
         }
-        ExpandedNode::Stage { children, .. } => visible(children, snapshot)
+        ExpandedNode::Stage { children, .. } => in_flow(children, snapshot)
             .next()
             .map_or(SizeSpec::FILL, |first| compute_size(first, skin, snapshot)),
         ExpandedNode::Slot { children, .. } => {
-            let laid_out: Vec<_> = visible(children, snapshot).collect();
+            let laid_out: Vec<_> = in_flow(children, snapshot).collect();
             if laid_out.is_empty() {
                 SizeSpec::FILL
             } else {
@@ -539,6 +546,7 @@ impl Cells {
         };
         let cells = children
             .iter()
+            .filter(|child| !floats(child))
             .map(|child| {
                 let (from, until) = match child {
                     ExpandedNode::Reveal { from, until, .. } => (*from, *until),

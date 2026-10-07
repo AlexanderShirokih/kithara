@@ -897,11 +897,20 @@ fn the_wheel_over_the_scrim_turns_nothing_under_it() {
     let (_, dial) = page_points();
     let steps = [Step::Wheel(dial, -2.0)];
 
-    let turned =
-        |events: &[UiEvent]| events.iter().any(|event| matches!(event, UiEvent::Write { key, .. } if key == "fixture.dial"));
+    let turned = |events: &[UiEvent]| {
+        events
+            .iter()
+            .any(|event| matches!(event, UiEvent::Write { key, .. } if key == "fixture.dial"))
+    };
     let [retained, immediate] = both(Holds::Nothing, false, &steps);
-    assert!(turned(&retained), "the bare retained knob turns: {retained:?}");
-    assert!(turned(&immediate), "the bare immediate knob turns: {immediate:?}");
+    assert!(
+        turned(&retained),
+        "the bare retained knob turns: {retained:?}"
+    );
+    assert!(
+        turned(&immediate),
+        "the bare immediate knob turns: {immediate:?}"
+    );
 
     let [retained, immediate] = both(Holds::SMALL, true, &steps);
     assert_eq!(retained, [], "the retained host");
@@ -922,7 +931,138 @@ fn a_touch_on_the_scrim_closes_the_modal_on_the_immediate_host() {
     let mut host = Immediate::mount(Page::open(), &ui, builtin::skin(), WINDOW);
 
     host.touch_at(inside);
-    assert_eq!(host.app().published, [], "a touch inside belongs to the content");
+    assert_eq!(
+        host.app().published,
+        [],
+        "a touch inside belongs to the content"
+    );
     host.touch_at(face);
     assert_eq!(host.app().published, [trigger("fixture.close")]);
+}
+
+/// Where a modal stands in the strip of the flow page.
+#[derive(Clone, Copy, Debug)]
+enum Among {
+    Nowhere,
+    Between,
+    Last,
+}
+
+/// A row of two boxes ten apart, `{between}` and `{last}` naming where a modal
+/// stands among them, and a third box right after the row: the row takes the
+/// room its boxes and gaps need, so a gap the modal charged would move the
+/// box after it.
+const FLOW: &str = r#"Column(size: (w: Fill, h: Fill), gap: 0.0, pad: 0.0, align: Start, children: [
+    Row(id: "line", gap: 0.0, pad: 0.0, align: Start, children: [
+        Row(id: "strip", size: (w: Shrink, h: Fixed(20.0)), gap: 10.0, pad: 0.0, align: Start,
+            children: [
+            Row(id: "a", size: (w: Fixed(20.0), h: Fixed(20.0)), children: []),
+            {between}
+            Row(id: "b", size: (w: Fixed(20.0), h: Fixed(20.0)), background: Danger,
+                children: [Spacer(id: "b-face", size: Some((w: Fill, h: Fill)))]),
+            {last}
+        ]),
+        Row(id: "c", size: (w: Fixed(20.0), h: Fixed(20.0)), background: Success,
+            children: [Spacer(id: "c-face", size: Some((w: Fill, h: Fill)))]),
+    ]),
+])"#;
+
+fn flow(among: Among) -> MemResolver {
+    let modal = modal(100.0, 60.0);
+    let (between, last) = match among {
+        Among::Nowhere => ("", ""),
+        Among::Between => (modal.as_str(), ""),
+        Among::Last => ("", modal.as_str()),
+    };
+    let mut resolver = MemResolver::default();
+    resolver.insert(
+        "page.klayout.ron",
+        r#"(schema: "kithara.layout", version: 1, id: "page",
+            root: Module(instance: "demo", source: "page.kmodule.ron", size: (w: Fill, h: Fill)))"#,
+    );
+    resolver.insert(
+        "page.kmodule.ron",
+        &format!(
+            r#"(schema: "kithara.module", version: 1, id: "page", chrome: Plain, root: {})"#,
+            FLOW.replace("{between}", between).replace("{last}", last)
+        ),
+    );
+    resolver
+}
+
+/// Where the two boxes that follow the modal stand on each host, retained
+/// first.
+fn flow_boxes(among: Among, open: bool) -> [[Rect; 2]; 2] {
+    let page = || Page {
+        open,
+        ..Page::default()
+    };
+    let endpoints = Endpoints::default();
+    let resolver = flow(among);
+    let ui = Ui::new(
+        page(),
+        Config::builder()
+            .endpoints(&endpoints)
+            .resolver(&resolver)
+            .text(builtin::text_doc())
+            .build(),
+        WINDOW,
+        1.0,
+    )
+    .unwrap_or_else(|error| panic!("the flow page must mount on the retained host: {error}"));
+    let laid = |path: &str| {
+        ui.rect_of(path)
+            .unwrap_or_else(|| panic!("{path} must be laid out"))
+    };
+    let retained = [laid("demo/b-face"), laid("demo/c-face")];
+
+    let compiled = compile(
+        "page.klayout.ron",
+        &resolver,
+        &endpoints,
+        builtin::skin_doc(),
+        builtin::text_doc(),
+        &UiConfig::default(),
+        &view::EMPTY,
+    )
+    .unwrap_or_else(|error| panic!("the flow page must compile: {error}"));
+    let quads = Immediate::mount(page(), &compiled, builtin::skin(), WINDOW).quads();
+    let filled_with = |role_: ColorRole| {
+        quads
+            .iter()
+            .find(|(_, _, background)| *background == Background::Color(iced_color(role(role_))))
+            .map(|(_, quad, _)| Rect {
+                x: quad.bounds.x,
+                y: quad.bounds.y,
+                w: quad.bounds.width,
+                h: quad.bounds.height,
+            })
+            .unwrap_or_else(|| panic!("no box filled with {role_:?} in {quads:#?}"))
+    };
+    let immediate = [
+        filled_with(ColorRole::Danger),
+        filled_with(ColorRole::Success),
+    ];
+    [retained, immediate]
+}
+
+/// A modal takes no room in a flow and charges it no gap, shown or shut: the
+/// boxes after it stand where they stand with no modal there at all.
+#[kithara::test]
+fn a_modal_takes_no_room_and_no_gap_in_a_flow() {
+    let [retained, immediate] = flow_boxes(Among::Nowhere, false);
+    assert_eq!(retained, immediate, "the hosts agree on the bare flow");
+    for among in [Among::Between, Among::Last] {
+        for open in [false, true] {
+            let [shown_retained, shown_immediate] = flow_boxes(among, open);
+            assert_eq!(
+                shown_retained, retained,
+                "the retained host, the modal {among:?}, open {open}"
+            );
+            assert_eq!(
+                shown_immediate, immediate,
+                "the immediate host, the modal {among:?}, open {open}"
+            );
+        }
+    }
 }

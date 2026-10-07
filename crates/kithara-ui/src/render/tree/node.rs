@@ -68,23 +68,15 @@ impl<'a> DocumentHost for IcedHost<'a, '_> {
     fn group(&mut self, group: Group<'_>, children: Vec<GroupMount<Self::Output>>) -> Self::Output {
         let size = content_size(group.size());
         let flex = match group.axis() {
-            Axis::Horizontal => Flex::row(
-                children
-                    .into_iter()
-                    .map(|child| (child.output, child.minimum, child.band)),
-            )
-            .spacing(group.gap())
-            .align(column_alignment(group.alignment()))
-            .width(size.0)
-            .height(size.1),
-            Axis::Vertical => Flex::column(
-                children
-                    .into_iter()
-                    .map(|child| (child.output, child.minimum, child.band)),
-            )
-            .spacing(group.gap())
-            .align(column_alignment(group.alignment()))
-            .width(size.0),
+            Axis::Horizontal => Flex::row(children)
+                .spacing(group.gap())
+                .align(column_alignment(group.alignment()))
+                .width(size.0)
+                .height(size.1),
+            Axis::Vertical => Flex::column(children)
+                .spacing(group.gap())
+                .align(column_alignment(group.alignment()))
+                .width(size.0),
         }
         .measure(group.measure())
         .padding(padding(group.padding_x(), group.padding_y()));
@@ -283,13 +275,9 @@ impl<'a> DocumentHost for IcedHost<'a, '_> {
         size: Option<SizeSpec>,
     ) -> Self::Output {
         let element = container(
-            Flex::column(
-                children
-                    .into_iter()
-                    .map(|child| (child.output, child.minimum, child.band)),
-            )
-            .spacing(self.skin.layout.grid_gap)
-            .width(Length::Fill),
+            Flex::column(children)
+                .spacing(self.skin.layout.grid_gap)
+                .width(Length::Fill),
         )
         .width(Length::Fill)
         .into();

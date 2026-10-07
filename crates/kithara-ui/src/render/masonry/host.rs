@@ -226,6 +226,7 @@ where
             layouts.push(
                 ChildLayout::natural(child.output.natural(), child.minimum)
                     .within(child.band)
+                    .floating(child.floats)
                     .blocked(block),
             );
             nodes.push(child.output);
@@ -468,7 +469,9 @@ where
     /// content while the document holds the modal open.
     fn mount_modal(&self, modal: Modal<'_>, content: MasonryNode<Action>) -> MasonryNode<Action> {
         let path = self.ctx.ui.resolve(modal.path()).to_owned();
-        let state = self.state.popover(&path, modal.is_open(), SurfaceKind::Modal);
+        let state = self
+            .state
+            .popover(&path, modal.is_open(), SurfaceKind::Modal);
         let close = self.shared_control_action(path, ControlAction::Activate);
         let nothing = Size::new(Length::Fixed(0.0), Length::Fixed(0.0));
         let mut output =
@@ -717,7 +720,9 @@ where
     ) -> Self::Output {
         let content = content(self);
         let path = self.ctx.ui.resolve(popover.path()).to_owned();
-        let state = self.state.popover(&path, popover.is_open(), SurfaceKind::popover());
+        let state = self
+            .state
+            .popover(&path, popover.is_open(), SurfaceKind::popover());
         let dismiss = self.shared_control_action(path.clone(), ControlAction::Activate);
         let size = popover.size().map_or_else(|| anchor.declared(), declared);
         let mut output =
