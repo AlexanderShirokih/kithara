@@ -316,6 +316,20 @@ fn expand_control(
     let (read, write) = control.bindings();
     let fields = ControlFields::new(id, control.size().copied(), read, write);
     let path = begin_control(context, fields.id, machine)?;
+    let floats = match control {
+        ControlNode::WindowDrag { .. }
+        | ControlNode::TitleBar { .. }
+        | ControlNode::WindowControls { .. } => true,
+        ControlNode::ContextBar { scope_items, .. } => !scope_items.is_empty(),
+        _ => false,
+    };
+    if machine.modal && floats {
+        return Err(UiDocError::InvalidId {
+            origin: context.origin.clone(),
+            id: path,
+            reason: "a modal hosts in-flow content only".to_owned(),
+        });
+    }
     let extra = ExtraBindings::substitute(context, control, &path)?;
     let Some(spec) = control_spec(context, control, &extra, &path, machine)? else {
         return walk(context, control, depth, machine);
