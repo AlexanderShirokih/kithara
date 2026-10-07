@@ -516,7 +516,14 @@ where
                     open: ctx.flag(Some(open)),
                     flag: open,
                 },
-                &mut |host| expanded(content, &content_address, branch, ctx, host),
+                &mut |host| {
+                    let child = expanded(content, &content_address, branch, ctx, host);
+                    if branch.input_owner == InputOwner::Engine {
+                        host.hosted(content, child)
+                    } else {
+                        child
+                    }
+                },
             )
         }
         ExpandedNode::Pressable { path, child, .. } => {
