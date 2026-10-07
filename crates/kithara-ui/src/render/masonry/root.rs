@@ -584,9 +584,7 @@ where
         for engine in self.routers() {
             let owner = engine.owner();
             let held = engine.captures_pointer();
-            if !held
-                && covered.is_some_and(|index| !self.popovers[index].item.controls.contains(&owner))
-            {
+            if !self.reaches(&engine, covered) {
                 continue;
             }
             let routed = engine.route(input, at);
@@ -610,6 +608,19 @@ where
             }
         }
         Ok(false)
+    }
+
+    /// Whether the pointer reaches this engine past the surface that covers
+    /// the point, if one does: an engine holding the pointer keeps it, and
+    /// otherwise only the controls the surface answers for are reached.
+    fn reaches(&self, engine: &HostedEngine, covered: Option<usize>) -> bool {
+        engine.captures_pointer()
+            || covered.is_none_or(|index| {
+                self.popovers[index]
+                    .item
+                    .controls
+                    .contains(&engine.owner())
+            })
     }
 
     fn follow_drag(
@@ -696,9 +707,11 @@ where
     /// is over the deck that is the deck, which knows nothing about the drag.
     /// The list that started it does, so its answer is the last word.
     fn show_cursor(&mut self, point: Pt) {
+        let covered = self.covering_surface(Some(point));
         let shape = self
             .routers()
             .into_iter()
+            .filter(|engine| self.reaches(engine, covered))
             .map(|engine| engine.cursor(point))
             .find(|shape| *shape != CursorShape::None);
         if let Some(shape) = shape {

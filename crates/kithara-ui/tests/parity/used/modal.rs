@@ -832,3 +832,51 @@ fn a_standing_modal_keeps_a_commit_from_the_field_under_it() {
         "the immediate host"
     );
 }
+
+/// The cursor each host shows once the pointer arrives at a point, retained
+/// first: what the retained host asked its window for, and the hand the
+/// immediate tree answers with.
+fn cursors(holds: Holds, open: bool, at: Pt) -> (String, String) {
+    let page = || Page {
+        open,
+        ..Page::default()
+    };
+    let retained = with_retained(holds, page(), |ui| {
+        pointer(ui, PointerPhase::Move, at);
+        format!("{:?}", ui.take_cursor())
+    });
+    let ui = compiled(holds);
+    let mut host = Immediate::mount(page(), &ui, builtin::skin(), WINDOW);
+    host.hover_at(at);
+    (retained, format!("{:?}", host.hand()))
+}
+
+/// Hover over the scrim reaches nothing under it: above the knob and above the
+/// search field each host shows the cursor it shows over a quiet part of the
+/// scrim, not the one the control beneath asks for.
+#[kithara::test]
+fn hover_over_the_scrim_shows_nothing_of_the_controls_under_it() {
+    let (face, dial) = page_points();
+    let field = with_retained(Holds::Nothing, Page::default(), |ui| {
+        ui.rect_of("demo/query")
+            .map(centre)
+            .unwrap_or_else(|| panic!("the search field must be laid out"))
+    });
+    let quiet = cursors(Holds::SMALL, true, face);
+    for (name, at) in [("knob", dial), ("search field", field)] {
+        let bare = cursors(Holds::Nothing, false, at);
+        assert_ne!(
+            bare.0, quiet.0,
+            "with nothing over it the retained {name} shows its own cursor"
+        );
+        assert_ne!(
+            bare.1, quiet.1,
+            "with nothing over it the immediate {name} shows its own cursor"
+        );
+        assert_eq!(
+            cursors(Holds::SMALL, true, at),
+            quiet,
+            "the scrim over the {name} shows what it shows anywhere else"
+        );
+    }
+}
