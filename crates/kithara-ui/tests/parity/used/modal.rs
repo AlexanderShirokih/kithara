@@ -55,11 +55,36 @@ fn modal(width: f32, height: f32) -> String {
     )
 }
 
-/// What the page holds: no modal, or a modal whose content asks for a size.
+/// A modal whose content is a header that shuts it above a list taller
+/// than the box it scrolls in.
+const LISTING: &str = r#"Modal(id: "settings", open: Model(id: "fixture.open"),
+    close: Command(id: "fixture.close"),
+    content: Column(id: "surface", size: (w: Fixed(200.0), h: Fixed(100.0)),
+        gap: 0.0, pad: 0.0, children: [
+            Pressable(id: "header", press: Command(id: "fixture.shut"),
+                child: Spacer(id: "header-face", size: Some((w: Fill, h: Fixed(20.0))))),
+            Scroll(id: "list", size: (w: Fill, h: Fixed(80.0)),
+                child: Column(gap: 0.0, pad: 0.0, children: [
+                    Pressable(id: "row0", press: Command(id: "fixture.row0"),
+                        child: Spacer(id: "row0-face", size: Some((w: Fill, h: Fixed(40.0))))),
+                    Pressable(id: "row1", press: Command(id: "fixture.row1"),
+                        child: Spacer(id: "row1-face", size: Some((w: Fill, h: Fixed(40.0))))),
+                    Pressable(id: "row2", press: Command(id: "fixture.row2"),
+                        child: Spacer(id: "row2-face", size: Some((w: Fill, h: Fixed(40.0))))),
+                    Pressable(id: "row3", press: Command(id: "fixture.row3"),
+                        child: Spacer(id: "row3-face", size: Some((w: Fill, h: Fixed(40.0))))),
+                    Pressable(id: "row4", press: Command(id: "fixture.row4"),
+                        child: Spacer(id: "row4-face", size: Some((w: Fill, h: Fixed(40.0))))),
+                ])),
+        ])),"#;
+
+/// What the page holds: no modal, a modal whose content asks for a size, or
+/// the listing modal.
 #[derive(Clone, Copy)]
 enum Holds {
     Nothing,
     Modal(f32, f32),
+    Listing,
 }
 
 impl Holds {
@@ -70,6 +95,7 @@ impl Holds {
         let modal = match self {
             Self::Nothing => String::new(),
             Self::Modal(width, height) => modal(width, height),
+            Self::Listing => LISTING.to_owned(),
         };
         let mut resolver = MemResolver::default();
         resolver.insert(
@@ -235,9 +261,11 @@ impl EndpointRegistry for Endpoints {
             (EndpointCategory::Model | EndpointCategory::Command, "fixture.query") => {
                 Some(&self.text)
             }
-            (EndpointCategory::Command, "fixture.close" | "fixture.page" | "fixture.pick") => {
-                Some(&self.trigger)
-            }
+            (
+                EndpointCategory::Command,
+                "fixture.close" | "fixture.page" | "fixture.pick" | "fixture.shut" | "fixture.row0"
+                | "fixture.row1" | "fixture.row2" | "fixture.row3" | "fixture.row4",
+            ) => Some(&self.trigger),
             _ => None,
         }
     }
@@ -761,6 +789,53 @@ fn a_press_inside_the_modal_reaches_its_content_and_never_closes_it() {
 
     assert_eq!(retained, [trigger("fixture.pick")], "the retained host");
     assert_eq!(immediate, [trigger("fixture.pick")], "the immediate host");
+}
+
+/// The header's press publishes the header's own write and not the close, and
+/// the wheel over the list scrolls it: the row under the list's top edge
+/// after the notches is a later row than the one standing there before.
+#[kithara::test]
+fn a_header_press_and_a_wheel_inside_the_modal_reach_its_content() {
+    let (header, top) = with_retained(Holds::Listing, Page::open(), |ui| {
+        let header = ui
+            .rect_of("demo/header-face")
+            .unwrap_or_else(|| panic!("the header must be laid out"));
+        let first = ui
+            .rect_of("demo/row0-face")
+            .unwrap_or_else(|| panic!("the list must be laid out"));
+        let top = Pt {
+            x: first.x + first.w / 2.0,
+            y: first.y + 10.0,
+        };
+        (centre(header), top)
+    });
+
+    let [retained, immediate] = both(Holds::Listing, true, &[Step::Click(header)]);
+    assert_eq!(retained, [trigger("fixture.shut")], "the retained host");
+    assert_eq!(immediate, [trigger("fixture.shut")], "the immediate host");
+
+    let [retained, immediate] = both(Holds::Listing, true, &[Step::Click(top)]);
+    assert_eq!(
+        retained,
+        [trigger("fixture.row0")],
+        "the unscrolled retained list"
+    );
+    assert_eq!(
+        immediate,
+        [trigger("fixture.row0")],
+        "the unscrolled immediate list"
+    );
+
+    let steps = [Step::Wheel(top, -2.0), Step::Click(top)];
+    let [retained, immediate] = both(Holds::Listing, true, &steps);
+    for (host, events) in [("retained", &retained), ("immediate", &immediate)] {
+        assert!(
+            matches!(events.as_slice(), [UiEvent::Write { key, .. }]
+                if key.starts_with("fixture.row") && key != "fixture.row0"),
+            "the {host} list must scroll under the wheel: {events:?}"
+        );
+    }
+    assert_eq!(retained, immediate, "both hosts scroll the list alike");
 }
 
 /// A modal its flag holds shut draws nothing, takes no room and no press: the
