@@ -30,7 +30,10 @@ use super::{
 use crate::draw::Rgba;
 use crate::{
     draw::Pt,
-    interact::{CursorShape, masonry::cursor_icon},
+    interact::{
+        CursorShape, Input,
+        masonry::{cursor_icon, masonry_text_event, portable_modifiers},
+    },
     render::{
         DragSession, Published,
         document::{Ctx, placements},
@@ -186,6 +189,7 @@ where
                 if event.state.is_down() && event.key == Key::Named(NamedKey::Escape)
         );
         if !matches!(event, TextEvent::WindowFocusChange(_))
+            && !changes_modifiers(&event)
             && let Some(close) = self.modal_keeping_keys()
         {
             if dismiss {
@@ -944,6 +948,15 @@ where
         }
         self.sync_menus();
     }
+}
+
+/// Whether the event only says which modifiers are held, which types nothing.
+fn changes_modifiers(event: &TextEvent) -> bool {
+    let TextEvent::Keyboard(keyboard) = event else {
+        return false;
+    };
+    masonry_text_event(Input::ModifiersChanged(portable_modifiers(keyboard.modifiers))).as_ref()
+        == Some(event)
 }
 
 /// Stacks every modal above the other surfaces and layers, under only the
