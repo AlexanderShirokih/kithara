@@ -15,13 +15,17 @@ use tracing::{Span, trace_span};
 
 use crate::{
     backends::{VelloBackend, paint_color},
-    draw::{DrawList, DrawListBuilder, Rect, replay},
+    draw::{DrawListBuilder, Rect, replay},
     render::{
         ModalChrome, Skin,
-        masonry::{custom::HostAction, flex::box_constraints, node::Node, popover::PopoverState},
+        masonry::{
+            custom::HostAction,
+            node::Node,
+            popover::{PopoverState, fit_content},
+        },
     },
     solve,
-    solve::{Limits, Size},
+    solve::Size,
 };
 
 /// The layer a modal stands in: a scrim over the whole window and the framed
@@ -31,9 +35,6 @@ pub(crate) struct ModalLayer {
     state: Rc<PopoverState>,
     declared: Size<solve::Length>,
     child: WidgetPod<Node>,
-    /// What the layer draws under its content and over it, laid out with it.
-    under: [DrawList; 2],
-    over: DrawList,
 }
 
 impl ModalLayer {
@@ -48,45 +49,7 @@ impl ModalLayer {
             state,
             chrome: ModalChrome::new(skin),
             child: content.to_pod(),
-            under: [DrawList::default(), DrawList::default()],
-            over: DrawList::default(),
         }
-    }
-
-    /// Draws the scrim over the window, the framed surface under the content
-    /// and the corner ticks over it.
-    fn draw(&mut self, viewport: MasonrySize, surface: Rect) {
-        let chrome = self.chrome;
-        let mut scrim = DrawListBuilder::default();
-        scrim.fill_rect(
-            Rect {
-                x: 0.0,
-                y: 0.0,
-                w: viewport.width.as_(),
-                h: viewport.height.as_(),
-            },
-            chrome.scrim,
-        );
-        let inset = chrome.border_width / 2.0;
-        let mut frame = DrawListBuilder::default();
-        frame.fill_rounded_rect(surface, chrome.radius, chrome.background);
-        frame.stroke_rounded_rect(
-            Rect {
-                x: surface.x + inset,
-                y: surface.y + inset,
-                w: surface.w - chrome.border_width,
-                h: surface.h - chrome.border_width,
-            },
-            chrome.radius,
-            chrome.border,
-            chrome.border_width,
-        );
-        let mut ticks = DrawListBuilder::default();
-        for tick in chrome.ticks(surface) {
-            ticks.fill_rect(tick, chrome.tick);
-        }
-        self.under = [scrim.finish(), frame.finish()];
-        self.over = ticks.finish();
     }
 }
 
@@ -97,6 +60,15 @@ fn masonry_rect(rect: Rect) -> MasonryRect {
         f64::from(rect.x + rect.w),
         f64::from(rect.y + rect.h),
     )
+}
+
+fn draw_rect(rect: MasonryRect) -> Rect {
+    Rect {
+        x: rect.x0.as_(),
+        y: rect.y0.as_(),
+        w: rect.width().as_(),
+        h: rect.height().as_(),
+    }
 }
 
 impl Widget for ModalLayer {
@@ -145,23 +117,7 @@ impl Widget for ModalLayer {
             return viewport;
         }
         let window = Size::new(viewport.width.as_(), viewport.height.as_());
-        let limits = Limits::new(Size::ZERO, self.chrome.room(window));
-        Node::set_child_limits(ctx, &mut self.child, limits);
-        let measured = ctx.run_layout(&mut self.child, &box_constraints(limits));
-        let content = limits.resolve(
-            self.declared.width,
-            self.declared.height,
-            Size::new(measured.width.as_(), measured.height.as_()),
-        );
-        let exact = Limits::new(content, content);
-        Node::set_child_limits(ctx, &mut self.child, exact);
-        ctx.run_layout(
-            &mut self.child,
-            &BoxConstraints::tight(MasonrySize::new(
-                f64::from(content.width),
-                f64::from(content.height),
-            )),
-        );
+        let content = fit_content(ctx, &mut self.child, self.declared, self.chrome.room(window));
         let surface = self.chrome.surface(content, window);
         let at = self.chrome.content(surface);
         ctx.place_child(
@@ -169,7 +125,6 @@ impl Widget for ModalLayer {
             Point::new(f64::from(at.x), f64::from(at.y)),
         );
         self.state.stand(masonry_rect(surface));
-        self.draw(viewport, surface);
         viewport
     }
 
@@ -186,13 +141,25 @@ impl Widget for ModalLayer {
         ctx.set_handled();
     }
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, scene: &mut Scene) {
+    /// Draws the scrim over the window, then the shadow and the framed
+    /// surface under the content.
+    fn paint(&mut self, ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, scene: &mut Scene) {
         if self.state.standing().is_none() {
             return;
         }
         let chrome = self.chrome;
-        let [scrim, frame] = &self.under;
-        replay(scrim, &mut VelloBackend::new(scene));
+        let viewport = ctx.size();
+        let mut scrim = DrawListBuilder::default();
+        scrim.fill_rect(
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: viewport.width.as_(),
+                h: viewport.height.as_(),
+            },
+            chrome.scrim,
+        );
+        replay(&scrim.finish(), &mut VelloBackend::new(scene));
         let surface = self.state.surface();
         let offset = Vec2::new(
             f64::from(chrome.shadow_offset.x),
@@ -205,9 +172,25 @@ impl Widget for ModalLayer {
             f64::from(chrome.radius),
             f64::from(chrome.blur / 2.0),
         );
-        replay(frame, &mut VelloBackend::new(scene));
+        let surface = draw_rect(surface);
+        let inset = chrome.border_width / 2.0;
+        let mut frame = DrawListBuilder::default();
+        frame.fill_rounded_rect(surface, chrome.radius, chrome.background);
+        frame.stroke_rounded_rect(
+            Rect {
+                x: surface.x + inset,
+                y: surface.y + inset,
+                w: surface.w - chrome.border_width,
+                h: surface.h - chrome.border_width,
+            },
+            chrome.radius,
+            chrome.border,
+            chrome.border_width,
+        );
+        replay(&frame.finish(), &mut VelloBackend::new(scene));
     }
 
+    /// Draws the corner ticks over the content.
     fn post_paint(
         &mut self,
         _ctx: &mut PaintCtx<'_>,
@@ -217,7 +200,11 @@ impl Widget for ModalLayer {
         if self.state.standing().is_none() {
             return;
         }
-        replay(&self.over, &mut VelloBackend::new(scene));
+        let mut ticks = DrawListBuilder::default();
+        for tick in self.chrome.ticks(draw_rect(self.state.surface())) {
+            ticks.fill_rect(tick, self.chrome.tick);
+        }
+        replay(&ticks.finish(), &mut VelloBackend::new(scene));
     }
 
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {

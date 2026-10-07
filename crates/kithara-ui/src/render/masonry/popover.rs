@@ -239,23 +239,7 @@ impl Widget for PopoverLayer {
             (viewport.width - frame * 2.0).max(0.0).as_(),
             (viewport.height - frame * 2.0 - cap).max(0.0).as_(),
         );
-        let limits = Limits::new(Size::ZERO, inner_max);
-        Node::set_child_limits(ctx, &mut self.child, limits);
-        let measured = ctx.run_layout(&mut self.child, &box_constraints(limits));
-        let content = limits.resolve(
-            self.declared.width,
-            self.declared.height,
-            Size::new(measured.width.as_(), measured.height.as_()),
-        );
-        let exact = Limits::new(content, content);
-        Node::set_child_limits(ctx, &mut self.child, exact);
-        ctx.run_layout(
-            &mut self.child,
-            &BoxConstraints::tight(MasonrySize::new(
-                f64::from(content.width),
-                f64::from(content.height),
-            )),
-        );
+        let content = fit_content(ctx, &mut self.child, self.declared, inner_max);
         ctx.place_child(&mut self.child, Point::new(frame, frame + cap));
         self.surface_size = MasonrySize::new(
             f64::from(content.width) + frame * 2.0,
@@ -308,6 +292,33 @@ impl Widget for PopoverLayer {
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
         ctx.register_child(&mut self.child);
     }
+}
+
+/// Lays a surface's content out within `room`: measured first, then held at
+/// the size its declared lengths resolve to, which it returns.
+pub(crate) fn fit_content(
+    ctx: &mut LayoutCtx<'_>,
+    child: &mut WidgetPod<Node>,
+    declared: Size<solve::Length>,
+    room: Size,
+) -> Size {
+    let limits = Limits::new(Size::ZERO, room);
+    Node::set_child_limits(ctx, child, limits);
+    let measured = ctx.run_layout(child, &box_constraints(limits));
+    let content = limits.resolve(
+        declared.width,
+        declared.height,
+        Size::new(measured.width.as_(), measured.height.as_()),
+    );
+    Node::set_child_limits(ctx, child, Limits::new(content, content));
+    ctx.run_layout(
+        child,
+        &BoxConstraints::tight(MasonrySize::new(
+            f64::from(content.width),
+            f64::from(content.height),
+        )),
+    );
+    content
 }
 
 fn place(
