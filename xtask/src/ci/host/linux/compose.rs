@@ -167,9 +167,11 @@ mod tests {
                 );
             }
         }
-        assert!(yaml.contains("kithara-ci-sccache:/cache/sccache"), "{yaml}");
         assert!(
-            yaml.contains("/var/lib/kithara-ci/lanes:/cache/lanes"),
+            yaml.contains(&format!(
+                "/var/lib/kithara-ci/cargo/review:{}",
+                consts::CARGO_HOME_MOUNT
+            )),
             "{yaml}"
         );
         assert!(
