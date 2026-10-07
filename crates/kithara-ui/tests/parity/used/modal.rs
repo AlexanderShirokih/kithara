@@ -954,7 +954,7 @@ fn the_wheel_over_the_scrim_turns_nothing_under_it() {
 }
 
 /// A finger on the scrim closes the modal as a press there does, and a finger
-/// inside the content does not. The retained host hears a touch as a press.
+/// inside the content does not.
 #[kithara::test]
 fn a_touch_on_the_scrim_closes_the_modal_on_the_immediate_host() {
     let (face, _) = page_points();
