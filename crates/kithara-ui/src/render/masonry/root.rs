@@ -188,17 +188,16 @@ where
             TextEvent::Keyboard(event)
                 if event.state.is_down() && event.key == Key::Named(NamedKey::Escape)
         );
-        if !matches!(event, TextEvent::WindowFocusChange(_))
+        let kept = !matches!(event, TextEvent::WindowFocusChange(_))
             && !changes_modifiers(&event)
-            && let Some(close) = self.modal_keeping_keys()
-        {
-            if dismiss {
-                self.push_action(Box::new(close()))?;
-            }
-            return Ok(Handled::Yes);
-        }
-        let handled = self.root.handle_text_event(event);
-        self.sync()?;
+            && self.modal_keeps_keys();
+        let handled = if kept {
+            Handled::No
+        } else {
+            let handled = self.root.handle_text_event(event);
+            self.sync()?;
+            handled
+        };
         if handled == Handled::No
             && dismiss
             && let Some(action) = self
@@ -211,22 +210,23 @@ where
             self.push_action(Box::new(action))?;
             return Ok(Handled::Yes);
         }
-        Ok(handled)
+        Ok(if kept { Handled::Yes } else { handled })
     }
 
-    /// The close of the standing modal when the keyboard focus is outside it,
-    /// so a key pressed there is the modal's.
-    fn modal_keeping_keys(&self) -> Option<Rc<dyn Fn() -> HostAction>> {
-        let modal = self.popovers.iter().rev().find(|popover| {
+    /// Whether a modal stands while the keyboard focus is outside it, so a
+    /// key pressed there is the modal's.
+    fn modal_keeps_keys(&self) -> bool {
+        let Some(modal) = self.popovers.iter().rev().find(|popover| {
             matches!(popover.item.state.kind(), SurfaceKind::Modal)
                 && popover.item.state.standing().is_some()
-        })?;
-        let inside = self.root.focused_widget().is_some_and(|focused| {
+        }) else {
+            return false;
+        };
+        !self.root.focused_widget().is_some_and(|focused| {
             self.root
                 .get_widget(modal.item.layer)
                 .is_some_and(|layer| layer.find_widget_by_id(focused).is_some())
-        });
-        (!inside).then(|| Rc::clone(&modal.item.dismiss))
+        })
     }
 
     /// Dispatches a window event and reflows positioned layers after resize.
