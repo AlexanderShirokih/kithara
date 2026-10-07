@@ -15,7 +15,7 @@ use kithara_ui::{
     ids::EndpointId,
     interact::{Input, InputMethod, Key, MOUSE, Modifiers, PointerInput, PointerPhase, Scroll},
     registry::{EndpointCategory, EndpointDesc, EndpointRegistry, ValueKind},
-    render::{ReadValue, Reads, Scope, Skin, UiEvent, WriteValue},
+    render::{ReadValue, Reads, Scope, Skin, UiEvent, WindowCommand, WindowEdge, WriteValue},
     skin::ColorRole,
     source::{MemResolver, UiConfig},
     view,
@@ -1065,4 +1065,74 @@ fn a_modal_takes_no_room_and_no_gap_in_a_flow() {
             );
         }
     }
+}
+
+/// A window that resizes by its own edges, with the modal over the page.
+fn chrome() -> MemResolver {
+    let mut resolver = MemResolver::default();
+    resolver.insert(
+        "page.klayout.ron",
+        r#"(schema: "kithara.layout", version: 1, id: "page", resize_edges: true,
+            root: Module(instance: "demo", source: "page.kmodule.ron", size: (w: Fill, h: Fill)))"#,
+    );
+    resolver.insert(
+        "page.kmodule.ron",
+        &format!(
+            r#"(schema: "kithara.module", version: 1, id: "page", chrome: Plain,
+                root: Column(size: (w: Fill, h: Fill), gap: 0.0, pad: 0.0, children: [
+                    {}
+                    Pressable(id: "page", press: Command(id: "fixture.page"),
+                        child: Spacer(id: "page-face", size: Some((w: Fill, h: Fill)))),
+                ]))"#,
+            modal(100.0, 60.0)
+        ),
+    );
+    resolver
+}
+
+/// The window's resize edges answer before the modal: a press on one under
+/// the scrim resizes the window and leaves the modal standing.
+#[kithara::test]
+fn a_resize_edge_answers_before_the_modal() {
+    let edge = Pt { x: 1.0, y: 250.0 };
+    let commands = [WindowCommand::Resize(WindowEdge::West)];
+
+    let endpoints = Endpoints::default();
+    let resolver = chrome();
+    let mut ui = Ui::new(
+        Page::open(),
+        Config::builder()
+            .endpoints(&endpoints)
+            .resolver(&resolver)
+            .text(builtin::text_doc())
+            .build(),
+        WINDOW,
+        1.0,
+    )
+    .unwrap_or_else(|error| panic!("the chrome page must mount on the retained host: {error}"));
+    play_retained(&mut ui, &[Step::Click(edge)]);
+    assert_eq!(ui.take_window_commands(), commands, "the retained window");
+    assert_eq!(
+        ui.app().published,
+        commands.map(UiEvent::Window),
+        "the retained window, with the modal left standing"
+    );
+
+    let compiled = compile(
+        "page.klayout.ron",
+        &resolver,
+        &endpoints,
+        builtin::skin_doc(),
+        builtin::text_doc(),
+        &UiConfig::default(),
+        &view::EMPTY,
+    )
+    .unwrap_or_else(|error| panic!("the chrome page must compile: {error}"));
+    let mut host = Immediate::mount(Page::open(), &compiled, builtin::skin(), WINDOW);
+    host.click_at(edge);
+    assert_eq!(
+        host.app().published,
+        commands.map(UiEvent::Window),
+        "the immediate window, with the modal left standing"
+    );
 }
