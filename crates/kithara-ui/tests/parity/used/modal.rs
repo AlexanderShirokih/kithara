@@ -281,7 +281,7 @@ impl EndpointRegistry for Endpoints {
             (
                 EndpointCategory::Command,
                 "fixture.close" | "fixture.page" | "fixture.pick" | "fixture.shut" | "fixture.save"
-                | "fixture.row0"
+                | "fixture.burger" | "fixture.row0"
                 | "fixture.row1" | "fixture.row2" | "fixture.row3" | "fixture.row4",
             ) => Some(&self.trigger),
             _ => None,
@@ -1511,4 +1511,98 @@ fn a_modal_in_a_hosted_module_hears_its_content_and_keeps_the_page() {
     let [retained, immediate] = both(Holds::HostedListing, true, &steps);
     assert_eq!(retained, closed, "the retained scrim");
     assert_eq!(immediate, closed, "the immediate scrim");
+}
+
+/// A page with the modal first and an open menu after it, the menu holding the
+/// pressable `pick` row: both read the same flag, so both stand at once.
+fn popped() -> MemResolver {
+    let mut resolver = MemResolver::default();
+    resolver.insert(
+        "page.klayout.ron",
+        r#"(schema: "kithara.layout", version: 1, id: "page",
+            root: Module(instance: "demo", source: "page.kmodule.ron", size: (w: Fill, h: Fill)))"#,
+    );
+    resolver.insert(
+        "page.kmodule.ron",
+        &format!(
+            r#"(schema: "kithara.module", version: 1, id: "page", chrome: Plain,
+                root: Column(size: (w: Fill, h: Fill), gap: 0.0, pad: 0.0, children: [
+                    {}
+                    Popover(id: "menu", open: Model(id: "fixture.open"), align: Start,
+                        anchor: Pressable(id: "burger", press: Command(id: "fixture.burger"),
+                            child: Spacer(id: "anchor", size: Some((w: Fixed(40.0), h: Fixed(20.0))))),
+                        content: Pressable(id: "menu-row", press: Command(id: "fixture.pick"),
+                            child: Spacer(id: "menu-face", size: Some((w: Fixed(100.0), h: Fixed(60.0)))))),
+                    Pressable(id: "page", press: Command(id: "fixture.page"),
+                        child: Spacer(id: "page-face", size: Some((w: Fill, h: Fill)))),
+                ]))"#,
+            modal(100.0, 60.0)
+        ),
+    );
+    resolver
+}
+
+/// A menu standing after the modal in the document lies under it like the
+/// rest of the page: a press on the menu's row closes the modal and reaches
+/// nothing of the menu, and hover over the row shows what the scrim shows.
+#[kithara::test]
+fn a_menu_after_the_modal_lies_under_it() {
+    let endpoints = Endpoints::default();
+    let resolver = popped();
+    let retained = |hover: Option<Pt>, steps: &[Step]| {
+        let mut ui = Ui::new(
+            Page::open(),
+            Config::builder()
+                .endpoints(&endpoints)
+                .resolver(&resolver)
+                .text(builtin::text_doc())
+                .build(),
+            WINDOW,
+            1.0,
+        )
+        .unwrap_or_else(|error| panic!("the menu page must mount on the retained host: {error}"));
+        let row = ui
+            .rect_of("demo/menu-face")
+            .map(centre)
+            .unwrap_or_else(|| panic!("the open menu must be laid out"));
+        if let Some(at) = hover {
+            pointer(&mut ui, PointerPhase::Move, at);
+        }
+        let cursor = format!("{:?}", ui.take_cursor());
+        play_retained(&mut ui, steps);
+        (row, ui.app().published.clone(), cursor)
+    };
+    let (row, _, _) = retained(None, &[]);
+    let quiet = Pt { x: 300.0, y: 250.0 };
+    let compiled = compile(
+        "page.klayout.ron",
+        &resolver,
+        &endpoints,
+        builtin::skin_doc(),
+        builtin::text_doc(),
+        &UiConfig::default(),
+        &view::EMPTY,
+    )
+    .unwrap_or_else(|error| panic!("the menu page must compile: {error}"));
+    let immediate = |at: Pt| {
+        let mut host = Immediate::mount(Page::open(), &compiled, builtin::skin(), WINDOW);
+        host.hover_at(at);
+        let hand = format!("{:?}", host.hand());
+        host.click_at(at);
+        (host.app().published.clone(), hand)
+    };
+
+    let (_, pressed, _) = retained(None, &[Step::Click(row)]);
+    assert_eq!(pressed, [trigger("fixture.close")], "the retained menu row");
+    let (pressed, _) = immediate(row);
+    assert_eq!(pressed, [trigger("fixture.close")], "the immediate menu row");
+
+    let (_, _, over_row) = retained(Some(row), &[]);
+    let (_, _, over_scrim) = retained(Some(quiet), &[]);
+    assert_eq!(over_row, over_scrim, "the retained hover over the menu row");
+    assert_eq!(
+        immediate(row).1,
+        immediate(quiet).1,
+        "the immediate hover over the menu row"
+    );
 }
