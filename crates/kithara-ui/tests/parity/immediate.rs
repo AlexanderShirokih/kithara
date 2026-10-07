@@ -240,6 +240,14 @@ impl<'a, A: App> Immediate<'a, A> {
         .fold(false, |took, event| self.play(cursor, &event) || took)
     }
 
+    /// The held modifiers change, the pointer resting at one point of the
+    /// window.
+    pub(crate) fn modifiers_at(&mut self, at: Pt, modifiers: Modifiers) -> bool {
+        let cursor = Point::new(at.x, at.y);
+        let changed = Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers));
+        self.play(cursor, &changed)
+    }
+
     /// An input method commits text, the pointer resting at one point of the
     /// window: the way a window hands over a paste into a field.
     pub(crate) fn commit_at(&mut self, at: Pt, text: &str) -> bool {

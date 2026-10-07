@@ -198,6 +198,8 @@ fn faded(role_: ColorRole, alpha: f32) -> Rgba {
 #[derive(Default)]
 struct Page {
     open: bool,
+    /// Whether the close the modal writes shuts it.
+    shuts: bool,
     published: Vec<UiEvent>,
     query: String,
 }
@@ -246,6 +248,9 @@ impl App for Page {
         {
             self.query.clone_from(query);
             self.open = true;
+        }
+        if self.shuts && event == trigger("fixture.close") {
+            self.open = false;
         }
         self.published.push(event);
     }
@@ -316,6 +321,8 @@ enum Step {
     Commit(&'static str),
     /// Notches of the wheel over a point, the pointer arriving there first.
     Wheel(Pt, f32),
+    /// Shift comes to be held.
+    Shift,
 }
 
 /// Mounts the page on the retained host and hands it to the check.
@@ -389,6 +396,11 @@ fn play_retained(ui: &mut Ui<'_, Page>, steps: &[Step]) {
                 pointer(ui, PointerPhase::Move, at);
                 ui.input(Input::Wheel(Scroll::Lines { x: 0.0, y: notches }));
             }
+            Step::Shift => {
+                ui.input(Input::ModifiersChanged(Modifiers::new(
+                    false, false, false, true,
+                )));
+            }
         }
     }
 }
@@ -438,6 +450,9 @@ fn play_immediate(holds: Holds, app: Page, steps: &[Step]) -> Vec<UiEvent> {
             }
             Step::Wheel(at, notches) => {
                 host.wheel_at(at, notches);
+            }
+            Step::Shift => {
+                host.modifiers_at(Pt { x: 1.0, y: 1.0 }, iced::keyboard::Modifiers::SHIFT);
             }
         }
     }
@@ -1667,4 +1682,50 @@ fn an_unsized_stage_takes_the_room_of_its_first_child_in_the_flow() {
             "the immediate host, the modal open {open}"
         );
     }
+}
+
+/// A modifier pressed while the modal stands reaches the page all the same,
+/// since it types nothing: once a press on the scrim shuts the modal, a
+/// shift-press just before the first letter of the field typed into before it
+/// opened selects what it typed, and the next key replaces it.
+#[kithara::test]
+fn a_modifier_held_under_the_modal_reaches_the_page_once_it_shuts() {
+    use iced::keyboard::key::Code;
+
+    let field = with_retained(Holds::SMALL, Page::default(), |ui| {
+        ui.rect_of("demo/query")
+            .unwrap_or_else(|| panic!("the search field must be laid out"))
+    });
+    let start = Pt {
+        x: field.x + 40.0,
+        y: field.y + field.h / 2.0,
+    };
+    let (scrim, _) = page_points();
+    let steps = [
+        Step::Click(centre(field)),
+        Step::Type("a", Code::KeyA),
+        Step::Shift,
+        Step::Click(scrim),
+        Step::Click(start),
+        Step::Type("b", Code::KeyB),
+    ];
+    let query = |text: &str| UiEvent::Write {
+        key: "fixture.query".to_owned(),
+        value: WriteValue::Text(text.to_owned()),
+    };
+    let expected = [query("a"), trigger("fixture.close"), query("b")];
+    let page = || Page {
+        shuts: true,
+        ..Page::default()
+    };
+    let retained = with_retained(Holds::SMALL, page(), |ui| {
+        play_retained(ui, &steps);
+        ui.app().published.clone()
+    });
+    assert_eq!(retained, expected, "the retained host");
+    assert_eq!(
+        play_immediate(Holds::SMALL, page(), &steps),
+        expected,
+        "the immediate host"
+    );
 }
