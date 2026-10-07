@@ -229,13 +229,7 @@ where
                 .as_widget()
                 .draw(self.tree, renderer, theme, style, content, cursor, &surface);
         }
-        let framed = Rect {
-            x: surface.x,
-            y: surface.y,
-            w: surface.width,
-            h: surface.height,
-        };
-        for tick in chrome.ticks(framed) {
+        for tick in chrome.ticks(Rect::from(surface)) {
             renderer.fill_quad(
                 Quad {
                     bounds: rectangle(tick),
@@ -259,7 +253,7 @@ where
             .chrome
             .surface(solve::Size::new(size.width, size.height), viewport);
         let at = self.chrome.content(surface);
-        Node::with_children(bounds, vec![content.move_to(Point::new(at.x, at.y))])
+        Node::with_children(bounds, vec![content.move_to(Point::from(at))])
     }
 
     fn mouse_interaction(

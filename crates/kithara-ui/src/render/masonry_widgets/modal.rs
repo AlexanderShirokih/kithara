@@ -120,10 +120,7 @@ impl Widget for ModalLayer {
         let content = fit_content(ctx, &mut self.child, self.declared, self.chrome.room(window));
         let surface = self.chrome.surface(content, window);
         let at = self.chrome.content(surface);
-        ctx.place_child(
-            &mut self.child,
-            Point::new(f64::from(at.x), f64::from(at.y)),
-        );
+        ctx.place_child(&mut self.child, Point::from(at));
         self.state.stand(masonry_rect(surface));
         viewport
     }
