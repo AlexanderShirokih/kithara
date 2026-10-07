@@ -31,8 +31,8 @@ use crate::draw::Rgba;
 use crate::{
     draw::Pt,
     interact::{
-        CursorShape, Input,
-        masonry::{cursor_icon, masonry_text_event, portable_modifiers},
+        CursorShape,
+        masonry::{changes_modifiers, cursor_icon},
     },
     render::{
         DragSession, Published,
@@ -948,15 +948,6 @@ where
         }
         self.sync_menus();
     }
-}
-
-/// Whether the event only says which modifiers are held, which types nothing.
-fn changes_modifiers(event: &TextEvent) -> bool {
-    let TextEvent::Keyboard(keyboard) = event else {
-        return false;
-    };
-    let held = Input::ModifiersChanged(portable_modifiers(keyboard.modifiers));
-    masonry_text_event(held).as_ref() == Some(event)
 }
 
 /// Stacks every modal above the other surfaces and layers, under only the

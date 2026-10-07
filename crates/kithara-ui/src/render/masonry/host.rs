@@ -186,6 +186,16 @@ where
         Some(state)
     }
 
+    /// One child of a stage, with the block that hides it and whether it
+    /// floats above the stage.
+    fn stage_child(
+        &self,
+        mut child: StageMount<MasonryNode<Action>>,
+    ) -> (Option<Rc<BlockState>>, bool, MasonryNode<Action>) {
+        let block = self.block(child.block, &mut child.output);
+        (block, child.floats, child.output)
+    }
+
     /// A leaf drawing content this toolkit does not own.
     ///
     /// The dressing is taken here rather than at paint because the leaf
@@ -874,13 +884,7 @@ where
     ) -> Self::Output {
         let children = children
             .into_iter()
-            .map(|mut child| {
-                (
-                    self.block(child.block, &mut child.output),
-                    child.floats,
-                    child.output,
-                )
-            })
+            .map(|child| self.stage_child(child))
             .collect();
         MasonryNode::stage(size, children)
     }
