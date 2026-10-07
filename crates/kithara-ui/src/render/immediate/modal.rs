@@ -86,13 +86,12 @@ where
         let [content_tree] = tree.children.as_mut_slice() else {
             return None;
         };
-        let surface = overlay::Element::new(Box::new(Surface {
+        Some(overlay::Element::new(Box::new(Above(Surface {
             content: &mut self.content,
             tree: content_tree,
             on_close: self.on_close.clone(),
             chrome: self.chrome,
-        }));
-        Some(Group::with_children(vec![surface]).overlay())
+        }))))
     }
 
     fn size(&self) -> Size<Length> {
@@ -106,6 +105,49 @@ where
 {
     fn from(modal: Modal<'a, Message>) -> Self {
         Self::new(modal)
+    }
+}
+
+/// Holds the surface one overlay level above the floating layers of the page,
+/// so it draws over them and takes input before them whatever their order.
+struct Above<'a, 'b, Message>(Surface<'a, 'b, Message>);
+
+impl<Message> overlay::Overlay<Message, Theme, Renderer> for Above<'_, '_, Message>
+where
+    Message: Clone,
+{
+    fn draw(
+        &self,
+        _renderer: &mut Renderer,
+        _theme: &Theme,
+        _style: &renderer::Style,
+        _layout: Layout<'_>,
+        _cursor: Cursor,
+    ) {
+    }
+
+    fn layout(&mut self, _renderer: &Renderer, bounds: Size) -> Node {
+        Node::new(bounds)
+    }
+
+    fn overlay<'c>(
+        &'c mut self,
+        _layout: Layout<'c>,
+        _renderer: &Renderer,
+    ) -> Option<overlay::Element<'c, Message, Theme, Renderer>> {
+        let Surface {
+            content,
+            tree,
+            on_close,
+            chrome,
+        } = &mut self.0;
+        let surface = overlay::Element::new(Box::new(Surface {
+            content: &mut **content,
+            tree: &mut **tree,
+            on_close: on_close.clone(),
+            chrome: *chrome,
+        }));
+        Some(Group::with_children(vec![surface]).overlay())
     }
 }
 
