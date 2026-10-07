@@ -45,7 +45,10 @@ impl SurfaceKind {
     }
 }
 
+#[derive(fieldwork::Fieldwork)]
+#[fieldwork(opt_in)]
 pub(crate) struct PopoverState {
+    #[field(get, vis = "pub(crate)")]
     kind: SurfaceKind,
     anchor: Cell<Option<MasonryRect>>,
     open: Cell<bool>,
@@ -70,10 +73,6 @@ impl PopoverState {
 
     pub(crate) fn is_open(&self) -> bool {
         self.open.get()
-    }
-
-    pub(crate) const fn kind(&self) -> &SurfaceKind {
-        &self.kind
     }
 
     pub(crate) fn latch(&self, open: bool) {
@@ -113,12 +112,13 @@ impl PopoverState {
         self.open.get().then(|| self.anchor.get()).flatten()
     }
 
-    pub(crate) fn surface(&self) -> MasonryRect {
-        self.surface.get()
-    }
-
-    pub(crate) fn stand(&self, surface: MasonryRect) {
-        self.surface.set(surface);
+    delegate::delegate! {
+        to self.surface {
+            #[call(get)]
+            pub(crate) fn surface(&self) -> MasonryRect;
+            #[call(set)]
+            pub(crate) fn stand(&self, surface: MasonryRect);
+        }
     }
 }
 
