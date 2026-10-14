@@ -6399,6 +6399,7 @@ dependencies = [
  "unicode-segmentation",
  "velato",
  "vello",
+ "wgpu 26.0.1",
  "window_clipboard",
  "winit",
  "yaml_serde",
@@ -6462,6 +6463,7 @@ dependencies = [
  "ron",
  "serde",
  "vello",
+ "wgpu 26.0.1",
 ]
 
 [[package]]
@@ -6484,6 +6486,7 @@ name = "kithara-ui-lottie"
 version = "0.0.1-alpha5"
 dependencies = [
  "fieldwork",
+ "kithara-platform",
  "kithara-test-utils",
  "kithara-ui-draw",
  "num-traits",
