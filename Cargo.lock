@@ -5235,6 +5235,7 @@ dependencies = [
  "glob",
  "hex",
  "kithara-config",
+ "kithara-devtools-trace-format",
  "proc-macro2",
  "quote",
  "rayon",
@@ -5250,6 +5251,18 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+]
+
+[[package]]
+name = "kithara-devtools-trace-format"
+version = "0.0.1-alpha5"
+dependencies = [
+ "anyhow",
+ "fieldwork",
+ "kithara-test-utils",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -5767,7 +5780,7 @@ dependencies = [
  "kithara",
  "kithara-app",
  "kithara-app-library",
- "kithara-devtools",
+ "kithara-devtools-trace-format",
  "kithara-dsp",
  "kithara-encode",
  "kithara-events",
@@ -6032,13 +6045,14 @@ dependencies = [
  "delegate",
  "kithara",
  "kithara-app",
- "kithara-devtools",
+ "kithara-devtools-trace-format",
  "kithara-integration-tests",
  "kithara-test-dylib",
  "kithara-test-fixtures",
  "kithara-test-utils",
  "num-traits",
  "reqwest",
+ "serde_json",
  "serial_test",
  "tracing",
  "url",
