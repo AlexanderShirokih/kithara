@@ -6,11 +6,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::Stream;
-use kithara_platform::{
-    CancelToken,
-    maybe_send::{MaybeSend, MaybeSync},
-    time::Duration,
-};
+use kithara_platform::maybe_send::{MaybeSend, MaybeSync};
 use url::Url;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -20,9 +16,7 @@ mod kithara {
 
 use crate::{
     error::NetError,
-    retry::RetryNet,
-    timeout::TimeoutNet,
-    types::{Headers, RangeSpec, RetryPolicy},
+    types::{Headers, RangeSpec},
 };
 
 /// Inner stream type used inside [`ByteStream`].
@@ -121,17 +115,3 @@ pub trait Net: MaybeSend + MaybeSync {
     /// Stream bytes from a URL
     async fn stream(&self, url: Url, headers: Option<Headers>) -> Result<ByteStream, NetError>;
 }
-
-pub trait NetExt: Net + Sized {
-    /// Add retry layer
-    fn with_retry(self, policy: RetryPolicy, cancel: CancelToken) -> RetryNet<Self> {
-        RetryNet::new(self, policy, cancel, None)
-    }
-
-    /// Add timeout layer
-    fn with_timeout(self, timeout: Duration) -> TimeoutNet<Self> {
-        TimeoutNet::new(self, timeout)
-    }
-}
-
-impl<T: Net> NetExt for T {}

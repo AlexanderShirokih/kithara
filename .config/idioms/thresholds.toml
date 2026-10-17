@@ -83,7 +83,6 @@ exempt_files = [
   "**/tests/**",
   "**/benches/**",
   "crates/kithara-net/src/error.rs",
-  "crates/kithara-net/src/retry.rs",
   "crates/kithara-net/src/types.rs",
 ]
 

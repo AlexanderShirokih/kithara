@@ -51,7 +51,6 @@ impl fmt::Display for RedactedNetError<'_> {
                 "request failed after {max_retries} retries: {}",
                 Self::new(source)
             ),
-            NetError::Unimplemented => f.write_str("not implemented"),
             NetError::Cancelled => f.write_str("cancelled"),
             NetError::InvalidContentType(_) => f.write_str("invalid content type"),
             _ => f.write_str("network error"),

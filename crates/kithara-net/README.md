@@ -14,7 +14,7 @@
 
 # kithara-net
 
-HTTP client with retry, timeout, and streaming. Wraps the selected backend (`reqwest` by default, `wreq`, or Apple `NSURLSession`) behind the `Net` trait, with a `TimeoutNet` decorator and `NetMock` for tests.
+HTTP client with retry, timeout, and streaming. Wraps the selected backend (`reqwest` by default, `wreq`, or Apple `NSURLSession`) behind the `Net` trait, with `NetMock` for tests.
 
 ## Usage
 
@@ -38,7 +38,7 @@ let created = client.post_bytes(url, body, None).await?; // POST bytes, read the
 let stream = client.stream(url, None).await?;
 ```
 
-Decorators compose via the `NetExt` extension trait: `with_retry` adds exponential-backoff retry, `with_timeout` wraps every call in `TimeoutNet<N>`.
+Retry and the inactivity timeout come from `NetOptions`. `with_retry_policy` returns a handle with a different retry policy that shares the connection pool.
 
 ## Key Types
 
@@ -56,7 +56,7 @@ Decorators compose via the `NetExt` extension trait: `with_retry` adds exponenti
 
 <tr><td><code>RetryPolicy</code></td><td>Retry configuration: base delay, max delay, max retries</td></tr>
 
-<tr><td><code>NetError</code></td><td>Error variants: <code>Status</code>, <code>Timeout</code>, <code>Network</code>, <code>Decode</code>, <code>RetryExhausted</code>, <code>Unimplemented</code>, <code>Cancelled</code>, <code>InvalidContentType</code>. Retry decisioning via <code>retryability() -&gt; Retryability</code> (typed, no substring matching)</td></tr>
+<tr><td><code>NetError</code></td><td>Error variants: <code>Status</code>, <code>Timeout</code>, <code>Network</code>, <code>Decode</code>, <code>RetryExhausted</code>, <code>Cancelled</code>, <code>InvalidContentType</code>. Retry decisioning via <code>retryability() -&gt; Retryability</code> (typed, no substring matching)</td></tr>
 
 </table>
 

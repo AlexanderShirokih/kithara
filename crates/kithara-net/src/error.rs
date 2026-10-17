@@ -41,8 +41,6 @@ pub enum NetError {
     Decode(String),
     #[error("Request failed after {max_retries} retries: {source}")]
     RetryExhausted { max_retries: u32, source: Box<Self> },
-    #[error("not implemented")]
-    Unimplemented,
     #[error("Cancelled")]
     Cancelled,
     #[error("Invalid content-type: {0}")]
@@ -127,7 +125,6 @@ impl From<&NetError> for Retryability {
             NetError::Timeout | NetError::Network(_) => Self::Transient,
             NetError::Decode(_)
             | NetError::RetryExhausted { .. }
-            | NetError::Unimplemented
             | NetError::Cancelled
             | NetError::InvalidContentType(_)
             | NetError::Protocol(_)
