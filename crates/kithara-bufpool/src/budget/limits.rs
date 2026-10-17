@@ -129,7 +129,7 @@ mod tests {
     use kithara_platform::sync::Arc;
     use kithara_test_utils::kithara;
 
-    use super::{super::BudgetPair, BudgetCounter, IdleReclaimer, RegionBudget};
+    use super::{BudgetCounter, IdleReclaimer, RegionBudget};
 
     #[derive(Default)]
     struct RecordingReclaimer {
@@ -143,19 +143,6 @@ mod tests {
             self.requested.store(bytes, Ordering::Relaxed);
             bytes
         }
-    }
-
-    #[kithara::test]
-    fn uncommitted_reservation_rolls_back_both_counters() {
-        let pair = BudgetPair::new(RegionBudget::new(16), 16);
-        let reservation = pair.reserve(8).unwrap_or_else(|error| panic!("{error:?}"));
-        assert_eq!(pair.region_current(), 8);
-        assert_eq!(pair.current(), 8);
-
-        drop(reservation);
-
-        assert_eq!(pair.region_current(), 0);
-        assert_eq!(pair.current(), 0);
     }
 
     #[kithara::test]

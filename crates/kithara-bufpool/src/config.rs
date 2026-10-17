@@ -37,7 +37,7 @@ mod tests {
     fn a_patch_writes_only_the_field_it_names() {
         let mut config = PoolConfig::builder()
             .max_buffers(8)
-            .trim_capacity(4_096)
+            .max_retained_capacity(4_096)
             .build();
 
         let patch = PoolConfigPatch::deserialize(serde_yaml_ng::Deserializer::from_str(
@@ -48,7 +48,7 @@ mod tests {
 
         assert_eq!(config.max_buffers, 32, "the named field is written");
         assert_eq!(
-            config.trim_capacity, 4_096,
+            config.max_retained_capacity, 4_096,
             "a field the document does not name keeps the value it already had"
         );
     }
