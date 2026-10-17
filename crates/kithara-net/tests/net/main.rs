@@ -10,6 +10,3 @@
 use kithara_test_dylib as _;
 
 mod http_client;
-mod retry;
-mod support;
-mod timeout;

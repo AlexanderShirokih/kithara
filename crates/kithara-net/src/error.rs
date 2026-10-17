@@ -41,8 +41,6 @@ pub enum NetError {
     Decode(String),
     #[error("Request failed after {max_retries} retries: {source}")]
     RetryExhausted { max_retries: u32, source: Box<Self> },
-    #[error("not implemented")]
-    Unimplemented,
     #[error("Cancelled")]
     Cancelled,
     #[error("Invalid content-type: {0}")]
@@ -127,7 +125,6 @@ impl From<&NetError> for Retryability {
             NetError::Timeout | NetError::Network(_) => Self::Transient,
             NetError::Decode(_)
             | NetError::RetryExhausted { .. }
-            | NetError::Unimplemented
             | NetError::Cancelled
             | NetError::InvalidContentType(_)
             | NetError::Protocol(_)
@@ -196,7 +193,6 @@ mod tests {
     #[case::status_408(NetError::Status { status: nz(408), url: Some(test_url("http://example.com")), body: None }, Retryability::Transient)]
     #[case::status_404(NetError::Status { status: nz(404), url: Some(test_url("http://example.com")), body: None }, Retryability::Fatal)]
     #[case::decode(NetError::Decode("invalid body".to_string()), Retryability::Fatal)]
-    #[case::unimplemented(NetError::Unimplemented, Retryability::Fatal)]
     #[case::retry_exhausted(NetError::RetryExhausted { max_retries: 3, source: Box::new(NetError::Timeout) }, Retryability::Fatal)]
     #[case::invalid_content_type(NetError::InvalidContentType("text/html".to_string()), Retryability::Fatal)]
     #[case::protocol(NetError::Protocol("a second response".to_string()), Retryability::Fatal)]
@@ -227,7 +223,6 @@ mod tests {
 
     #[kithara::test(tokio)]
     #[case::timeout(NetError::Timeout, "Timeout")]
-    #[case::unimplemented(NetError::Unimplemented, "not implemented")]
     #[case::network(NetError::Network("dns failure".to_string()), "Network error: dns failure")]
     #[case::status_with_details(
         NetError::Status { status: nz(404), url: Some(test_url("http://example.com/test")), body: Some("Not found".to_string()) },
@@ -259,7 +254,6 @@ mod tests {
     #[case::timeout(NetError::Timeout)]
     #[case::status(NetError::Status { status: nz(500), url: Some(test_url("http://example.com")), body: None })]
     #[case::network(NetError::Network("reset".to_string()))]
-    #[case::unimplemented(NetError::Unimplemented)]
     #[case::retry_exhausted(NetError::RetryExhausted { max_retries: 3, source: Box::new(NetError::Timeout) })]
     async fn test_error_cloning(#[case] error: NetError) {
         let cloned = error.clone();

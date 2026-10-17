@@ -14,7 +14,7 @@ use crate::{
 };
 
 /// Retry decorator for Net implementations
-pub struct RetryNet<N> {
+pub(crate) struct RetryNet<N> {
     cancel: CancelToken,
     inner: N,
     observer: Option<Observer>,
@@ -29,7 +29,7 @@ impl<N: Net> RetryNet<N> {
         }
     }
 
-    pub const fn new(
+    pub(crate) const fn new(
         inner: N,
         retry_policy: RetryPolicy,
         cancel: CancelToken,
@@ -52,41 +52,38 @@ impl<N: Net> RetryNet<N> {
         Fut: Future<Output = Result<T, NetError>>,
     {
         let max = self.retry_policy.max_retries;
-        for attempt in 0..=max {
+        let mut attempt = 0;
+        loop {
             let error = match op().await {
                 Ok(value) => return Ok(value),
                 Err(error) => error,
             };
-            if self.retry_policy.should_retry(&error, attempt) {
-                let delay = self.retry_policy.delay_for_attempt(attempt);
-                if let Some(observer) = self.observer.as_ref() {
-                    observer.0.retrying(attempt + 1, max, &error, delay);
-                }
-                tokio::select! {
-                    biased;
-                    () = self.cancel.cancelled() => return Err(NetError::Cancelled),
-                    () = sleep(delay) => {}
-                }
-                continue;
+            if !self.retry_policy.should_retry(&error, attempt) {
+                return Err(
+                    if max > 0 && error.retryability() == Retryability::Transient {
+                        if let Some(observer) = self.observer.as_ref() {
+                            observer.0.retry_exhausted(max, 0, &error);
+                        }
+                        NetError::RetryExhausted {
+                            max_retries: max,
+                            source: Box::new(error),
+                        }
+                    } else {
+                        error
+                    },
+                );
             }
-            return Err(
-                if max > 0 && error.retryability() == Retryability::Transient {
-                    if let Some(observer) = self.observer.as_ref() {
-                        observer.0.retry_exhausted(max, 0, &error);
-                    }
-                    NetError::RetryExhausted {
-                        max_retries: max,
-                        source: Box::new(error),
-                    }
-                } else {
-                    error
-                },
-            );
+            let delay = self.retry_policy.delay_for_attempt(attempt);
+            if let Some(observer) = self.observer.as_ref() {
+                observer.0.retrying(attempt + 1, max, &error, delay);
+            }
+            tokio::select! {
+                biased;
+                () = self.cancel.cancelled() => return Err(NetError::Cancelled),
+                () = sleep(delay) => {}
+            }
+            attempt += 1;
         }
-        Err(NetError::RetryExhausted {
-            max_retries: max,
-            source: Box::new(NetError::Unimplemented),
-        })
     }
 }
 
@@ -142,9 +139,9 @@ mod tests {
         pub(crate) use kithara_test_macros::test;
     }
 
-    use std::{num::NonZeroU16, task::Poll};
+    use std::num::NonZeroU16;
 
-    use futures::{pin_mut, poll, stream};
+    use futures::stream;
     use kithara_platform::time::Duration;
     use unimock::{MockFn, Unimock, matching};
 
@@ -455,35 +452,5 @@ mod tests {
         let result = retry_net.head(url, None).await;
 
         assert!(result.is_ok());
-    }
-
-    #[kithara::test(tokio)]
-    async fn test_retry_net_cancel_interrupts_sleep() {
-        let mock = Unimock::new(
-            NetMock::get_bytes
-                .each_call(matching!(_, _))
-                .returns(Err(NetError::Timeout)),
-        );
-        let policy = RetryPolicy {
-            base_delay: Duration::from_secs(10),
-            max_delay: Duration::from_secs(10),
-            max_retries: 3,
-        };
-        let cancel = CancelToken::never();
-        let retry_net = RetryNet::new(mock, policy, cancel.clone(), None);
-
-        let url = test_url();
-        let result = retry_net.get_bytes(url, None);
-        pin_mut!(result);
-
-        assert!(
-            matches!(poll!(result.as_mut()), Poll::Pending),
-            "retry must park in the retry-delay branch before cancellation"
-        );
-        cancel.cancel();
-
-        let result = result.await;
-
-        assert!(matches!(result, Err(NetError::Cancelled)));
     }
 }

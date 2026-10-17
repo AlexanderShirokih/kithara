@@ -12,7 +12,6 @@ mod resumable;
 mod retry;
 #[cfg(test)]
 pub(crate) use kithara_test_utils::bufpool as test_pools;
-mod timeout;
 mod traits;
 mod types;
 
@@ -38,8 +37,7 @@ pub use crate::{
     backend::HttpClient,
     error::{NetError, NetResult, Retryability},
     observe::{NetObserver, Observer},
-    timeout::TimeoutNet,
-    traits::{ByteStream, Net, NetExt},
+    traits::{ByteStream, Net},
     types::{
         Compression, CompressionAlgorithm, Headers, ImpersonatePreset, NetOptions, NetOptionsPatch,
         RangeSpec, RetryPolicy, RetryPolicyPatch,

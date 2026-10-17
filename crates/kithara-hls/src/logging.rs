@@ -51,7 +51,6 @@ impl fmt::Display for RedactedNetError<'_> {
                 "request failed after {max_retries} retries: {}",
                 Self::new(source)
             ),
-            NetError::Unimplemented => f.write_str("not implemented"),
             NetError::Cancelled => f.write_str("cancelled"),
             NetError::InvalidContentType(_) => f.write_str("invalid content type"),
             _ => f.write_str("network error"),
@@ -89,14 +88,26 @@ mod tests {
             .expect("valid URL");
         let status = NetError::Status {
             status: NonZeroU16::new(403).expect("non-zero status"),
-            url: Some(url),
+            url: Some(url.clone()),
             body: Some("secret response".to_string()),
         };
         let network = NetError::Network(
             "request failed for https://keys.example/key?token=secret".to_string(),
         );
+        let exhausted = NetError::RetryExhausted {
+            max_retries: 3,
+            source: Box::new(NetError::Status {
+                status: NonZeroU16::new(503).expect("non-zero status"),
+                url: Some(url),
+                body: Some("secret response".to_string()),
+            }),
+        };
 
         assert_eq!(RedactedNetError::new(&status).to_string(), "HTTP 403");
         assert_eq!(RedactedNetError::new(&network).to_string(), "network error");
+        assert_eq!(
+            RedactedNetError::new(&exhausted).to_string(),
+            "request failed after 3 retries: HTTP 503"
+        );
     }
 }
