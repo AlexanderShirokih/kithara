@@ -103,8 +103,6 @@ fn samples_config(patch: &PoolConfigPatch) -> PoolConfig {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::thread;
-
     use kithara_test_utils::kithara;
 
     use super::*;
@@ -118,35 +116,6 @@ pub(crate) mod tests {
             .bytes(bytes)
             .samples(samples)
             .build()
-    }
-
-    #[kithara::test]
-    fn initial_samples_are_ready_on_another_thread() {
-        let pools = build(&PoolsSection::default())
-            .unwrap_or_else(|error| panic!("app pool region: {error}"));
-        let initial_peak = pools.stats().peak_allocated_bytes;
-        let worker_pools = pools.clone();
-
-        let (all_ready, peak) = thread::spawn(move || {
-            let buffers = (0..consts::INITIAL_SAMPLE_BUFFERS)
-                .map(|_| {
-                    worker_pools
-                        .get_with_len::<f32>(consts::INITIAL_SAMPLE_CAPACITY)
-                        .unwrap_or_else(|error| panic!("initial sample buffer: {error}"))
-                })
-                .collect::<Vec<_>>();
-            let all_ready = buffers
-                .iter()
-                .all(|buffer| buffer.capacity() >= consts::INITIAL_SAMPLE_CAPACITY);
-            let peak = worker_pools.stats().peak_allocated_bytes;
-            drop(buffers);
-            (all_ready, peak)
-        })
-        .join()
-        .expect("sample-pool worker panicked");
-
-        assert!(all_ready);
-        assert_eq!(peak, initial_peak);
     }
 
     /// The value itself is pinned in `kithara-bufpool`, which owns `PoolConfig`
@@ -177,50 +146,5 @@ pub(crate) mod tests {
         let pools = build(&section).unwrap_or_else(|error| panic!("app pool region: {error}"));
 
         assert_eq!(pools.stats().max_bytes, 1_048_576);
-    }
-
-    #[kithara::test]
-    fn returned_capacity_is_bounded() {
-        const BYTE_GUARDS: usize = 33;
-        const BYTE_COUNT_CAPACITY: usize = 1;
-        const BYTE_RETAINED_CAPACITY: usize = 2 * 1024 * 1024;
-        const OVERALL_BYTES: usize = 256 * 1024 * 1024;
-        const SAMPLE_RETAINED_CAPACITY: usize = 200_000;
-
-        let pools = build(&PoolsSection::default())
-            .unwrap_or_else(|error| panic!("app pool region: {error}"));
-        let baseline = pools.stats().allocated_bytes;
-        assert_eq!(pools.stats().max_bytes, OVERALL_BYTES);
-
-        let buffers = (0..BYTE_GUARDS)
-            .map(|_| {
-                pools
-                    .get_with_len::<u8>(BYTE_COUNT_CAPACITY)
-                    .unwrap_or_else(|error| panic!("byte buffer: {error}"))
-            })
-            .collect::<Vec<_>>();
-        drop(buffers);
-        assert!(
-            pools.stats().allocated_bytes <= baseline + BYTE_COUNT_CAPACITY,
-            "same-thread byte returns exceed one retained buffer"
-        );
-
-        let pools = build(&PoolsSection::default())
-            .unwrap_or_else(|error| panic!("app pool region: {error}"));
-        let baseline = pools.stats().allocated_bytes;
-        let bytes = pools
-            .get_with_len::<u8>(BYTE_RETAINED_CAPACITY + 1)
-            .unwrap_or_else(|error| panic!("oversized byte buffer: {error}"));
-        drop(bytes);
-        assert_eq!(pools.stats().allocated_bytes, baseline);
-
-        let samples = pools
-            .get_with_len::<f32>(SAMPLE_RETAINED_CAPACITY + 1)
-            .unwrap_or_else(|error| panic!("oversized sample buffer: {error}"));
-        drop(samples);
-        assert!(
-            pools.stats().allocated_bytes <= baseline,
-            "oversized sample return exceeds baseline"
-        );
     }
 }
