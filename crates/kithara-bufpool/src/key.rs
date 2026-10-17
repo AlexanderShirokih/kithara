@@ -132,10 +132,7 @@ where
         config: PoolConfig,
         _access: PoolAccess,
     ) -> Result<Self::Core, PoolError> {
-        let limit = context.pool_limit(config.max_share);
-        context
-            .core::<SHARDS, Vec<T>, true>(config, limit)
-            .map(VecCore)
+        context.core::<SHARDS, Vec<T>, true>(config).map(VecCore)
     }
 
     fn __get(core: &Self::Core, _access: PoolAccess) -> Self::Buffer {
@@ -181,10 +178,7 @@ impl<const SHARDS: usize> PoolKey for StringKey<SHARDS> {
         config: PoolConfig,
         _access: PoolAccess,
     ) -> Result<Self::Core, PoolError> {
-        let limit = context.pool_limit(config.max_share);
-        context
-            .core::<SHARDS, String, true>(config, limit)
-            .map(StringCore)
+        context.core::<SHARDS, String, true>(config).map(StringCore)
     }
 
     fn __get(core: &Self::Core, _access: PoolAccess) -> Self::Buffer {
@@ -216,10 +210,7 @@ impl PoolKey for u8 {
         config: PoolConfig,
         _access: PoolAccess,
     ) -> Result<Self::Core, PoolError> {
-        let limit = context.pool_limit(config.max_share);
-        context
-            .core::<32, Vec<Self>, false>(config, limit)
-            .map(ByteCore)
+        context.core::<32, Vec<Self>, false>(config).map(ByteCore)
     }
 
     fn __get(core: &Self::Core, _access: PoolAccess) -> Self::Buffer {
@@ -255,10 +246,7 @@ impl PoolKey for f32 {
         config: PoolConfig,
         _access: PoolAccess,
     ) -> Result<Self::Core, PoolError> {
-        let limit = context.pool_limit(config.max_share);
-        context
-            .core::<8, Vec<Self>, false>(config, limit)
-            .map(SampleCore)
+        context.core::<8, Vec<Self>, false>(config).map(SampleCore)
     }
 
     fn __get(core: &Self::Core, _access: PoolAccess) -> Self::Buffer {

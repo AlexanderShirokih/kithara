@@ -12,11 +12,11 @@ impl<T, const SHARDS: usize> PooledVec<T, SHARDS> {
         Self(inner)
     }
 
-    /// Append elements under both hard budgets.
+    /// Append elements under the region budget.
     ///
     /// # Errors
     ///
-    /// Returns an error when capacity overflows, exceeds either hard budget,
+    /// Returns an error when capacity overflows, exceeds the region budget,
     /// or cannot be allocated.
     pub fn try_extend<I>(&mut self, values: I) -> Result<(), PoolError>
     where
@@ -32,18 +32,18 @@ impl<T, const SHARDS: usize> PooledVec<T, SHARDS> {
             pub fn capacity(&self) -> usize;
             /// Remove every element while retaining capacity.
             pub fn clear(&mut self);
-            /// Append one element under both hard budgets.
+            /// Append one element under the region budget.
             ///
             /// # Errors
             ///
-            /// Returns an error when capacity overflows, exceeds either hard budget,
+            /// Returns an error when capacity overflows, exceeds the region budget,
             /// or cannot be allocated.
             pub fn try_push(&mut self, value: T) -> Result<(), PoolError>;
-            /// Grow to at least `min_len` default elements under both hard budgets.
+            /// Grow to at least `min_len` default elements under the region budget.
             ///
             /// # Errors
             ///
-            /// Returns an error when capacity overflows, exceeds either hard budget,
+            /// Returns an error when capacity overflows, exceeds the region budget,
             /// or cannot be allocated.
             pub fn ensure_len(&mut self, min_len: usize) -> Result<(), PoolError>
             where

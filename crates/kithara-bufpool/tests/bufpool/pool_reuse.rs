@@ -5,28 +5,6 @@ use kithara_test_utils::{
 };
 
 #[kithara::test]
-fn oversized_sample_buffer_is_trimmed_on_return() {
-    let pools = pools_with(
-        1024 * 1024,
-        PoolConfig::builder().max_buffers(32).build(),
-        PoolConfig::builder()
-            .max_buffers(8)
-            .trim_capacity(4_096)
-            .build(),
-    );
-    let oversized_capacity = {
-        let buffer = pools
-            .get_with_len::<f32>(100_000)
-            .expect("test samples fit the region budget");
-        buffer.capacity()
-    };
-
-    let reused = pools.get::<f32>();
-    assert!(reused.capacity() < oversized_capacity);
-    assert!(reused.capacity() >= 4_096);
-}
-
-#[kithara::test]
 fn ensure_len_within_capacity_does_not_change_accounting() {
     let pools = pools();
     let mut buffer = pools

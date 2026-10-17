@@ -3,7 +3,6 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use kithara_derive::Ranged;
 use kithara_platform::sync::{Arc, OnceLock, Weak};
 
 use super::counter::BudgetCounter;
@@ -23,15 +22,10 @@ struct IdleReclaimers {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OverallBudget(pub usize);
 
-/// Percentage of the overall budget available to one physical pool.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Ranged)]
-#[ranged(min = 0, max = 100, default = 100)]
-pub struct Percent(u8);
-
 #[derive(Clone)]
 pub(crate) struct RegionBudget {
     reclaimers: Arc<IdleReclaimers>,
-    pub(super) counter: BudgetCounter,
+    counter: BudgetCounter,
 }
 
 impl RegionBudget {
@@ -50,6 +44,22 @@ impl RegionBudget {
         reclaimers: ReclaimerSlots,
     ) -> Result<(), ReclaimerSlots> {
         self.reclaimers.slots.set(reclaimers)
+    }
+
+    pub(crate) fn release(&self, amount: usize) {
+        if amount > 0 {
+            let _ = self.counter.release(amount, "buffer region");
+        }
+    }
+
+    pub(crate) fn reserve(&self, amount: usize) -> Result<Reservation<'_>, BudgetSnapshot> {
+        if amount > 0 {
+            self.counter.try_acquire(amount)?;
+        }
+        Ok(Reservation {
+            amount,
+            budget: self,
+        })
     }
 
     pub(crate) fn reclaim(&self, target: usize) -> usize {
@@ -100,19 +110,27 @@ impl fmt::Debug for RegionBudget {
     }
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct PoolBudget(pub(super) BudgetCounter);
+#[must_use = "dropping an uncommitted reservation rolls it back"]
+pub(crate) struct Reservation<'a> {
+    budget: &'a RegionBudget,
+    amount: usize,
+}
 
-impl PoolBudget {
-    pub(crate) fn new(limit: usize) -> Self {
-        Self(BudgetCounter::new(limit))
+impl Reservation<'_> {
+    pub(crate) fn commit(mut self) {
+        self.amount = 0;
     }
 
-    delegate::delegate! {
-        to self.0 {
-            pub(crate) fn current(&self) -> usize;
-            pub(crate) fn limit(&self) -> usize;
-        }
+    pub(crate) fn reduce(&mut self, amount: usize) {
+        debug_assert!(amount <= self.amount);
+        self.budget.release(amount);
+        self.amount -= amount;
+    }
+}
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        self.budget.release(self.amount);
     }
 }
 
@@ -129,7 +147,7 @@ mod tests {
     use kithara_platform::sync::Arc;
     use kithara_test_utils::kithara;
 
-    use super::{super::BudgetPair, BudgetCounter, IdleReclaimer, RegionBudget};
+    use super::{BudgetCounter, IdleReclaimer, RegionBudget};
 
     #[derive(Default)]
     struct RecordingReclaimer {
@@ -143,19 +161,6 @@ mod tests {
             self.requested.store(bytes, Ordering::Relaxed);
             bytes
         }
-    }
-
-    #[kithara::test]
-    fn uncommitted_reservation_rolls_back_both_counters() {
-        let pair = BudgetPair::new(RegionBudget::new(16), 16);
-        let reservation = pair.reserve(8).unwrap_or_else(|error| panic!("{error:?}"));
-        assert_eq!(pair.region_current(), 8);
-        assert_eq!(pair.current(), 8);
-
-        drop(reservation);
-
-        assert_eq!(pair.region_current(), 0);
-        assert_eq!(pair.current(), 0);
     }
 
     #[kithara::test]

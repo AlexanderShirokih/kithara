@@ -10,10 +10,7 @@ fn benchmark_pools() -> Pools {
     pools_with(
         256 * 1024 * 1024,
         PoolConfig::builder().max_buffers(1_024).build(),
-        PoolConfig::builder()
-            .max_buffers(128)
-            .trim_capacity(200_000)
-            .build(),
+        PoolConfig::builder().max_buffers(128).build(),
     )
 }
 

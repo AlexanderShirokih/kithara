@@ -17,10 +17,10 @@ for packet in packets { buf.clear(); buf.try_extend_from_slice(packet)?; decode(
 
 - The region is injected from the composition root; a component never builds one.
   `PoolConfig::initial_buffers` and `initial_capacity` size the inventory there,
-  and `PoolConfig::trim_capacity` trims oversized returns at the lifecycle
-  boundary. There is no separate warm-up path.
+  and `PoolConfig::max_retained_capacity` drops oversized returns at the
+  lifecycle boundary. There is no separate warm-up path.
 - `clear()` keeps the guard's capacity for the next pass; `ensure_len()` and
-  `try_extend_from_slice()` grow only after checking both budgets.
+  `try_extend_from_slice()` grow only after checking the region budget.
 - Never escape a budget rejection into a raw `Vec`: that hides a broken budget
   contract. See [realtime.md](realtime.md).
 - Parse-and-discard scratch that never leaves one thread may live in a

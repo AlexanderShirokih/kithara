@@ -10,7 +10,7 @@ use kithara_test_macros as kithara;
 use super::{shard::PoolShard, stats::PoolStats, storage::Storage};
 use crate::{
     PoolConfig, PoolError,
-    budget::{BudgetPair, IdleReclaimer, RegionBudget, ReserveFailure},
+    budget::{IdleReclaimer, RegionBudget, Reservation},
     buffer::OwnedBuffer,
 };
 
@@ -22,7 +22,7 @@ where
     stat_home_hits: AtomicU64,
     stat_put_drops: AtomicU64,
     stat_steal_hits: AtomicU64,
-    budgets: BudgetPair,
+    budget: RegionBudget,
     cold: Option<ArrayQueue<B>>,
     config: PoolConfig,
     shards: [PoolShard<B>; SHARDS],
@@ -34,11 +34,7 @@ where
 {
     const MAX_PROBE: usize = 4;
 
-    pub(crate) fn new(
-        config: PoolConfig,
-        region_budget: RegionBudget,
-        pool_limit: usize,
-    ) -> Result<Self, PoolError> {
+    pub(crate) fn new(config: PoolConfig, budget: RegionBudget) -> Result<Self, PoolError> {
         if SHARDS == 0 {
             return Err(PoolError::InvalidConfig {
                 field: "shards",
@@ -76,7 +72,7 @@ where
         let core = Self {
             cold,
             config,
-            budgets: BudgetPair::new(region_budget, pool_limit),
+            budget,
             shards: array::from_fn(|_| PoolShard::new(buffers_per_shard)),
             stat_alloc_misses: AtomicU64::new(0),
             stat_home_hits: AtomicU64::new(0),
@@ -90,7 +86,7 @@ where
                 if let Err(value) = cold.push(value) {
                     let bytes = Self::byte_size(&value)?;
                     drop(value);
-                    core.budgets.release(bytes);
+                    core.budget.release(bytes);
                     return Err(PoolError::InvalidConfig {
                         field: "initial_buffers",
                         reason: "cold-start queue rejected a validated payload",
@@ -142,8 +138,8 @@ where
         let mut reservation = self.reserve(requested_delta)?;
         let grown = B::try_with_capacity(capacity).map_err(|()| PoolError::AllocationFailed {
             additional_bytes: requested_delta,
-            allocated_bytes: self.budgets.region_current(),
-            max_bytes: self.budgets.region_limit(),
+            allocated_bytes: self.budget.current(),
+            max_bytes: self.budget.limit(),
         })?;
         let actual_bytes = Self::byte_size(&grown)?;
         let actual_delta = actual_bytes
@@ -191,53 +187,28 @@ where
         if element_bytes == 0 {
             return Ok(());
         }
-        let region_available = self
-            .budgets
-            .region_limit()
-            .saturating_sub(self.budgets.region_current());
-        let pool_available = self.budgets.limit().saturating_sub(self.budgets.current());
-        let affordable_capacity =
-            old_bytes.saturating_add(region_available.min(pool_available)) / element_bytes;
+        let available = self.budget.limit().saturating_sub(self.budget.current());
+        let affordable_capacity = old_bytes.saturating_add(available) / element_bytes;
         let amortized_capacity = new_len.max(old_capacity.saturating_mul(2));
         let target_capacity = if affordable_capacity >= new_len {
             amortized_capacity.min(affordable_capacity)
         } else {
             new_len
         };
-        let mut region_reclaimed = false;
-        let mut pool_reclaimed = false;
-        let mut first_attempt = true;
-        let mut grown = loop {
-            match self.allocate(target_capacity, old_bytes) {
-                Ok(grown) => break grown,
-                Err(error) => {
-                    if first_attempt
-                        && matches!(
-                            &error,
-                            PoolError::OverallBudgetExceeded { .. }
-                                | PoolError::PoolBudgetExceeded { .. }
-                                | PoolError::AllocationFailed { .. }
-                        )
-                        && self.reuse_for_growth(current, new_len, shard_idx)
-                    {
-                        return Ok(());
-                    }
-                    first_attempt = false;
-                    let may_reclaim = match &error {
-                        PoolError::OverallBudgetExceeded { .. } if !region_reclaimed => {
-                            region_reclaimed = true;
-                            true
-                        }
-                        PoolError::PoolBudgetExceeded { .. } if !pool_reclaimed => {
-                            pool_reclaimed = true;
-                            true
-                        }
-                        _ => false,
-                    };
-                    if !may_reclaim || !self.reclaim_for(&error) {
-                        return Err(error);
-                    }
+        let mut grown = match self.allocate(target_capacity, old_bytes) {
+            Ok(grown) => grown,
+            Err(error) => {
+                if matches!(
+                    &error,
+                    PoolError::OverallBudgetExceeded { .. } | PoolError::AllocationFailed { .. }
+                ) && self.reuse_for_growth(current, new_len, shard_idx)
+                {
+                    return Ok(());
                 }
+                if !self.reclaim_for(&error) {
+                    return Err(error);
+                }
+                self.allocate(target_capacity, old_bytes)?
             }
         };
         grown.move_from(current);
@@ -252,52 +223,31 @@ where
     }
 
     pub(crate) fn normalize(&self, current: &mut B) {
-        let before = Self::byte_size(current).unwrap_or(usize::MAX);
-        if let Some(kept) = PoolShard::<B>::normalize(current, &self.config) {
-            self.budgets.release(before.saturating_sub(kept));
-        } else {
-            drop(std::mem::take(current));
-            self.budgets.release(before);
+        if !PoolShard::<B>::normalize(current, &self.config) {
+            self.release_value(std::mem::take(current));
             Self::increment(&self.stat_put_drops);
         }
     }
 
     pub(crate) fn put(&self, value: B, shard_idx: usize) {
-        let before = Self::byte_size(&value).unwrap_or(usize::MAX);
-        match self.shards[shard_idx].try_put(value, &self.config) {
-            Ok(kept) => self.budgets.release(before.saturating_sub(kept)),
-            Err(value) => {
-                drop(value);
-                self.budgets.release(before);
-                Self::increment(&self.stat_put_drops);
-            }
+        if let Err(value) = self.shards[shard_idx].try_put(value, &self.config) {
+            self.release_value(value);
+            Self::increment(&self.stat_put_drops);
         }
     }
 
     fn reclaim_for(&self, error: &PoolError) -> bool {
-        match error {
-            PoolError::OverallBudgetExceeded {
-                additional_bytes,
-                allocated_bytes,
-                max_bytes,
-            } => {
-                let target =
-                    additional_bytes.saturating_sub(max_bytes.saturating_sub(*allocated_bytes));
-                self.budgets.reclaim_region(target);
-                true
-            }
-            PoolError::PoolBudgetExceeded {
-                additional_bytes,
-                allocated_bytes,
-                max_bytes,
-            } => {
-                let target =
-                    additional_bytes.saturating_sub(max_bytes.saturating_sub(*allocated_bytes));
-                self.release_idle(target);
-                true
-            }
-            _ => false,
-        }
+        let PoolError::OverallBudgetExceeded {
+            additional_bytes,
+            allocated_bytes,
+            max_bytes,
+        } = error
+        else {
+            return false;
+        };
+        let target = additional_bytes.saturating_sub(max_bytes.saturating_sub(*allocated_bytes));
+        self.budget.reclaim(target);
+        true
     }
 
     fn release_idle(&self, target: usize) -> usize {
@@ -335,24 +285,17 @@ where
     fn release_value(&self, value: B) -> usize {
         let bytes = Self::byte_size(&value).unwrap_or(usize::MAX);
         drop(value);
-        self.budgets.release(bytes);
+        self.budget.release(bytes);
         bytes
     }
 
-    fn reserve(&self, amount: usize) -> Result<crate::budget::Reservation<'_>, PoolError> {
-        self.budgets
+    fn reserve(&self, amount: usize) -> Result<Reservation<'_>, PoolError> {
+        self.budget
             .reserve(amount)
-            .map_err(|failure| match failure {
-                ReserveFailure::Overall { amount, snapshot } => PoolError::OverallBudgetExceeded {
-                    additional_bytes: amount,
-                    allocated_bytes: snapshot.current,
-                    max_bytes: snapshot.limit,
-                },
-                ReserveFailure::Pool { amount, snapshot } => PoolError::PoolBudgetExceeded {
-                    additional_bytes: amount,
-                    allocated_bytes: snapshot.current,
-                    max_bytes: snapshot.limit,
-                },
+            .map_err(|snapshot| PoolError::OverallBudgetExceeded {
+                additional_bytes: amount,
+                allocated_bytes: snapshot.current,
+                max_bytes: snapshot.limit,
             })
     }
 
@@ -400,7 +343,7 @@ where
         let before = Self::byte_size(current).unwrap_or(usize::MAX);
         current.shrink_to(min_capacity);
         let after = Self::byte_size(current).unwrap_or(usize::MAX);
-        self.budgets.release(before.saturating_sub(after));
+        self.budget.release(before.saturating_sub(after));
     }
 
     pub(crate) fn stats(&self) -> PoolStats {
@@ -436,14 +379,14 @@ where
             while let Some(value) = cold.pop() {
                 let bytes = Self::byte_size(&value).unwrap_or(usize::MAX);
                 drop(value);
-                self.budgets.release(bytes);
+                self.budget.release(bytes);
             }
         }
         for shard in &self.shards {
             shard.drain(|value| {
                 let bytes = Self::byte_size(&value).unwrap_or(usize::MAX);
                 drop(value);
-                self.budgets.release(bytes);
+                self.budget.release(bytes);
             });
         }
     }
@@ -563,35 +506,6 @@ mod tests {
     }
 
     #[kithara::test]
-    fn retained_pool_config_controls_returned_buffer_trimming() {
-        let budget = RegionBudget::new(32);
-        let core = Core::<1, OverallocStorage, true>::new(
-            PoolConfig::builder()
-                .max_buffers(1)
-                .max_retained_capacity(16)
-                .trim_capacity(4)
-                .build(),
-            budget.clone(),
-            32,
-        )
-        .unwrap_or_else(|error| panic!("test core: {error}"));
-        let values = kithara_config::Config::values(&core.config);
-        assert_eq!(values.max_retained_capacity, 16);
-        assert_eq!(values.trim_capacity, 4);
-
-        let value = core
-            .allocate(8, 0)
-            .unwrap_or_else(|error| panic!("test buffer: {error}"));
-        assert_eq!(value.capacity(), 16);
-        core.put(value, 0);
-
-        assert_eq!(core.shards[0].len(), 1);
-        assert_eq!(budget.current(), 4);
-        drop(core);
-        assert_eq!(budget.current(), 0);
-    }
-
-    #[kithara::test]
     fn failed_growth_reuses_suitable_buffer_beyond_fast_probe() {
         const CAPACITY: usize = 8;
         const CURRENT_CAPACITY: usize = 4;
@@ -602,7 +516,6 @@ mod tests {
         let core = Core::<SHARDS, Vec<u8>, true>::new(
             PoolConfig::builder().max_buffers(SHARDS).build(),
             region_budget.clone(),
-            LIMIT,
         )
         .unwrap_or_else(|error| panic!("test core: {error}"));
         let home = Core::<SHARDS, Vec<u8>, true>::shard_index();
@@ -643,7 +556,6 @@ mod tests {
                 .max_buffers(1)
                 .build(),
             region_budget.clone(),
-            LIMIT,
         )
         .unwrap_or_else(|error| panic!("test core: {error}"));
         let mut current = core
@@ -670,7 +582,6 @@ mod tests {
             Core::<1, Vec<u8>, true>::new(
                 PoolConfig::builder().max_buffers(1).build(),
                 region_budget.clone(),
-                10,
             )
             .unwrap_or_else(|error| panic!("donor core: {error}")),
         );
@@ -678,7 +589,6 @@ mod tests {
             Core::<1, OverallocStorage, true>::new(
                 PoolConfig::builder().max_buffers(1).build(),
                 region_budget.clone(),
-                10,
             )
             .unwrap_or_else(|error| panic!("requester core: {error}")),
         );
@@ -713,72 +623,12 @@ mod tests {
     }
 
     #[kithara::test]
-    fn growth_reclaims_both_region_and_slot_deficits() {
-        const REGION_LIMIT: usize = 16;
-        const REQUESTER_LIMIT: usize = 8;
-
-        let region_budget = RegionBudget::new(REGION_LIMIT);
-        let donor = Arc::new(
-            Core::<1, Vec<u8>, true>::new(
-                PoolConfig::builder().max_buffers(1).build(),
-                region_budget.clone(),
-                REGION_LIMIT,
-            )
-            .unwrap_or_else(|error| panic!("donor core: {error}")),
-        );
-        let requester = Arc::new(
-            Core::<1, Vec<u8>, true>::new(
-                PoolConfig::builder().max_buffers(1).build(),
-                region_budget.clone(),
-                REQUESTER_LIMIT,
-            )
-            .unwrap_or_else(|error| panic!("requester core: {error}")),
-        );
-        let donor_slot: Arc<dyn IdleReclaimer> = donor.clone();
-        let requester_slot: Arc<dyn IdleReclaimer> = requester.clone();
-        region_budget
-            .install_reclaimers(
-                [Arc::downgrade(&donor_slot), Arc::downgrade(&requester_slot)].into(),
-            )
-            .unwrap_or_else(|_| panic!("reclaimer inventory installs once"));
-
-        let donor_idle = donor
-            .allocate(8, 0)
-            .unwrap_or_else(|error| panic!("donor allocation: {error}"));
-        donor.put(donor_idle, 0);
-        let requester_idle = requester
-            .allocate(4, 0)
-            .unwrap_or_else(|error| panic!("requester idle allocation: {error}"));
-        requester.put(requester_idle, 0);
-        let mut current = requester
-            .allocate(4, 0)
-            .unwrap_or_else(|error| panic!("requester active allocation: {error}"));
-        current.extend_from_slice(&[1, 2, 3, 4]);
-        assert_eq!(region_budget.current(), REGION_LIMIT);
-
-        requester
-            .grow(&mut current, REQUESTER_LIMIT, 0)
-            .unwrap_or_else(|error| panic!("growth after both reclaims: {error}"));
-
-        assert!(current.capacity() >= REQUESTER_LIMIT);
-        assert_eq!(current, [1, 2, 3, 4]);
-        assert_eq!(region_budget.current(), REQUESTER_LIMIT);
-        requester.put(current, 0);
-        drop(requester_slot);
-        drop(donor_slot);
-        drop(requester);
-        drop(donor);
-        assert_eq!(region_budget.current(), 0);
-    }
-
-    #[kithara::test]
     fn pressure_reclaim_scans_only_the_idle_snapshot() {
         let region_budget = RegionBudget::new(8);
         let core = Arc::new(
             RefillCore::new(
                 PoolConfig::builder().max_buffers(1).build(),
                 region_budget.clone(),
-                8,
             )
             .unwrap_or_else(|error| panic!("test core: {error}")),
         );
