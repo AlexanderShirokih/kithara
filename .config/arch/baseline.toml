@@ -54,7 +54,6 @@ schema_version = 1
 "crates/kithara-audio/src/pipeline/source.rs::StreamAudioSource::route_build_completions" = 2
 "crates/kithara-beat/src/nn/inference.rs::BeatPredictor::predict" = 3
 "crates/kithara-broadcast/src/service/task.rs::BroadcastTask::process" = 3
-"crates/kithara-bufpool/src/pool/core.rs::Core::grow" = 2
 "crates/kithara-decode/src/android/codec.rs::AndroidCodec::read_output" = 4
 "crates/kithara-decode/src/ape.rs::ApeDecoder::prepare_chunk" = 1
 "crates/kithara-decode/src/apple/demuxer.rs::AppleAudioFileDemuxer::open" = 14

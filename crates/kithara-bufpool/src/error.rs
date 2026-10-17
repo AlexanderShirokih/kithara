@@ -15,19 +15,6 @@ pub enum PoolError {
         /// Region-wide hard byte limit.
         max_bytes: usize,
     },
-    /// The selected pool's hard byte limit would be exceeded.
-    #[error(
-        "typed pool budget exceeded: requested {additional_bytes} additional bytes with \
-         {allocated_bytes} of {max_bytes} already tracked"
-    )]
-    PoolBudgetExceeded {
-        /// Additional bytes requested by the operation.
-        additional_bytes: usize,
-        /// Bytes tracked by the selected pool when rejected.
-        allocated_bytes: usize,
-        /// Selected pool's hard byte limit.
-        max_bytes: usize,
-    },
     /// The allocator rejected the requested capacity.
     #[error(
         "buffer allocation failed: requested {additional_bytes} additional bytes with \

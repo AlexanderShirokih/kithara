@@ -25,29 +25,18 @@ where
         }
     }
 
-    pub(super) fn normalize(value: &mut B, config: &PoolConfig) -> Option<usize> {
-        const TRIM_HYSTERESIS: usize = 2;
-
+    pub(super) fn normalize(value: &mut B, config: &PoolConfig) -> bool {
         value.clear();
-        if config.max_retained_capacity > 0 && value.capacity() > config.max_retained_capacity {
-            return None;
-        }
-        if config.trim_capacity > 0
-            && value.capacity() > config.trim_capacity.saturating_mul(TRIM_HYSTERESIS)
-        {
-            value.shrink_to(config.trim_capacity);
-        }
-        if value.capacity() == 0 {
-            return None;
-        }
-        Some(B::bytes_for_capacity(value.capacity()).unwrap_or(usize::MAX))
+        value.capacity() > 0
+            && (config.max_retained_capacity == 0
+                || value.capacity() <= config.max_retained_capacity)
     }
 
-    pub(super) fn try_put(&self, mut value: B, config: &PoolConfig) -> Result<usize, B> {
-        let Some(kept) = Self::normalize(&mut value, config) else {
+    pub(super) fn try_put(&self, mut value: B, config: &PoolConfig) -> Result<(), B> {
+        if !Self::normalize(&mut value, config) {
             return Err(value);
-        };
-        self.free.push(value).map(|()| kept)
+        }
+        self.free.push(value)
     }
 
     delegate::delegate! {

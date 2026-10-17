@@ -1,4 +1,4 @@
-use kithara_bufpool::{Percent, PoolConfig};
+use kithara_bufpool::PoolConfig;
 
 use crate::consts;
 
@@ -81,7 +81,6 @@ fn byte_config() -> PoolConfig {
     PoolConfig::builder()
         .max_buffers(consts::BYTE_MAX_BUFFERS)
         .max_retained_capacity(consts::BYTE_MAX_RETAINED_CAPACITY)
-        .max_share(Percent::MAX)
         .build()
 }
 
@@ -89,7 +88,6 @@ fn sample_config() -> PoolConfig {
     PoolConfig::builder()
         .max_buffers(consts::SAMPLE_MAX_BUFFERS)
         .max_retained_capacity(consts::SAMPLE_MAX_RETAINED_CAPACITY)
-        .max_share(Percent::MAX)
         .build()
 }
 

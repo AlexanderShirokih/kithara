@@ -71,7 +71,7 @@ fn build() -> Result<(), PoolError> {
 
 <tr><td><code>pool_schema!</code></td><td>Declares the registered keys and their typestate builder</td></tr>
 
-<tr><td><code>PoolConfig</code></td><td>Retention, initial allocation, trim, and per-pool share policy</td></tr>
+<tr><td><code>PoolConfig</code></td><td>Retention and initial allocation policy</td></tr>
 
 <tr><td><code>ByteBuffer</code> / <code>SampleBuffer</code></td><td>Checked RAII guards returned to their typed pool on drop</td></tr>
 
@@ -81,7 +81,7 @@ fn build() -> Result<(), PoolError> {
 
 <tr><td><code>PooledVec</code> / <code>PooledString</code></td><td>Checked guards for registered vector and UTF-8 storage</td></tr>
 
-<tr><td><code>OverallBudget</code> / <code>Percent</code></td><td>Region hard cap and an optional per-pool hard ceiling</td></tr>
+<tr><td><code>OverallBudget</code></td><td>Region hard cap shared by every pool</td></tr>
 
 <tr><td><code>PoolError</code></td><td>Typed construction, capacity, allocation, and budget failure</td></tr>
 
@@ -96,6 +96,6 @@ fn build() -> Result<(), PoolError> {
 The app and FFI composition roots own concrete schemas. Lower layers are
 generic over only the `HasPool<u8>` and `HasPool<f32>` capabilities they use.
 Acquisition and return stay lock-free; every capacity increase is checked
-against both the region and selected-pool limits.
+against the region limit.
 
 See [crate contracts](https://github.com/zvuk/kithara/wiki/kithara-bufpool) for detailed contracts, invariants, and internals.

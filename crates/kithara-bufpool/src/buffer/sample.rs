@@ -52,23 +52,23 @@ impl SampleBuffer {
             pub fn clear(&mut self);
             /// Remove consecutive duplicate samples without growing the buffer.
             pub fn dedup(&mut self);
-            /// Grow to at least `min_len` zeroed samples under both hard budgets.
+            /// Grow to at least `min_len` zeroed samples under the region budget.
             ///
             /// # Errors
             ///
-            /// Returns an error when the requested capacity overflows, exceeds either
-            /// hard budget, or cannot be allocated.
+            /// Returns an error when the requested capacity overflows, exceeds the
+            /// region budget, or cannot be allocated.
             pub fn ensure_len(&mut self, min_len: usize) -> Result<(), PoolError>;
             /// Reduce retained capacity to the current length and release its pool charge.
             pub fn shrink_to_fit(&mut self);
             /// Shorten the buffer without changing its capacity.
             pub fn truncate(&mut self, len: usize);
-            /// Append samples under both hard budgets.
+            /// Append samples under the region budget.
             ///
             /// # Errors
             ///
-            /// Returns an error when the resulting capacity overflows, exceeds either
-            /// hard budget, or cannot be allocated.
+            /// Returns an error when the resulting capacity overflows, exceeds the
+            /// region budget, or cannot be allocated.
             pub fn try_extend_from_slice(&mut self, values: &[f32]) -> Result<(), PoolError>;
         }
     }

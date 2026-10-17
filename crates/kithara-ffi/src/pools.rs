@@ -1,6 +1,6 @@
 use kithara::{
     assets::AssetStore,
-    bufpool::{OverallBudget, Percent, PoolConfig, PoolError, PoolRegion, pool_schema},
+    bufpool::{OverallBudget, PoolConfig, PoolError, PoolRegion, pool_schema},
     play::{PlayWorker, PlaybackResamplerBackend, ResourceConfig},
     queue::{Queue, QueueControl, TrackSource},
 };
@@ -40,7 +40,6 @@ pub fn build() -> Result<Pools, PoolError> {
                 .initial_buffers(0)
                 .max_buffers(consts::BYTE_MAX_BUFFERS)
                 .max_retained_capacity(consts::BYTE_MAX_RETAINED_CAPACITY)
-                .max_share(Percent::MAX)
                 .build(),
         )
         .samples(
@@ -49,7 +48,6 @@ pub fn build() -> Result<Pools, PoolError> {
                 .initial_capacity(consts::INITIAL_SAMPLE_CAPACITY)
                 .max_buffers(consts::SAMPLE_MAX_BUFFERS)
                 .max_retained_capacity(consts::SAMPLE_MAX_RETAINED_CAPACITY)
-                .max_share(Percent::MAX)
                 .build(),
         )
         .build()

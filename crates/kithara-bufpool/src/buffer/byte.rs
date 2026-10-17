@@ -34,12 +34,12 @@ impl ByteBuffer {
             pub fn capacity(&self) -> usize;
             /// Remove every byte while retaining capacity.
             pub fn clear(&mut self);
-            /// Grow to at least `min_len` zeroed bytes under both hard budgets.
+            /// Grow to at least `min_len` zeroed bytes under the region budget.
             ///
             /// # Errors
             ///
-            /// Returns an error when the requested capacity overflows, exceeds either
-            /// hard budget, or cannot be allocated.
+            /// Returns an error when the requested capacity overflows, exceeds the
+            /// region budget, or cannot be allocated.
             pub fn ensure_len(&mut self, min_len: usize) -> Result<(), PoolError>;
             /// Return the held allocation and continue with another empty guard.
             pub fn renew(&mut self);
@@ -47,12 +47,12 @@ impl ByteBuffer {
             pub fn normalize(&mut self);
             /// Shorten the buffer without changing its capacity.
             pub fn truncate(&mut self, len: usize);
-            /// Append bytes under both hard budgets.
+            /// Append bytes under the region budget.
             ///
             /// # Errors
             ///
-            /// Returns an error when the resulting capacity overflows, exceeds either
-            /// hard budget, or cannot be allocated.
+            /// Returns an error when the resulting capacity overflows, exceeds the
+            /// region budget, or cannot be allocated.
             pub fn try_extend_from_slice(&mut self, values: &[u8]) -> Result<(), PoolError>;
         }
     }
@@ -60,7 +60,7 @@ impl ByteBuffer {
 
 #[cfg(doctest)]
 mod contracts {
-    /// Raw resizing cannot bypass the pool's hard budgets.
+    /// Raw resizing cannot bypass the region budget.
     ///
     /// ```compile_fail
     /// use kithara_bufpool::ByteBuffer;

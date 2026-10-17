@@ -1,8 +1,8 @@
 use std::{mem::size_of, sync::Barrier, thread};
 
 use kithara_bufpool::{
-    HasPool, OverallBudget, Percent, PoolAlias, PoolConfig, PoolError, PoolRegion, StringKey,
-    VecKey, pool_schema,
+    HasPool, OverallBudget, PoolAlias, PoolConfig, PoolError, PoolRegion, StringKey, VecKey,
+    pool_schema,
 };
 use kithara_platform::{sync::Arc, time::Duration};
 #[cfg(all(test, target_os = "android"))]
@@ -73,25 +73,6 @@ fn byte_growth_exhausts_the_shared_budget_for_samples() {
         pools.get_with_len::<f32>(1),
         Err(PoolError::OverallBudgetExceeded { .. })
     ));
-}
-
-#[kithara::test]
-fn a_slot_cap_rejects_growth_while_global_capacity_remains() {
-    let pools = TestPools::region(
-        OverallBudget(100),
-        PoolConfig::builder()
-            .max_buffers(32)
-            .max_share(Percent::checked(50).expect("50 percent is inside the range"))
-            .build(),
-        config(32),
-    )
-    .unwrap_or_else(|error| panic!("test region: {error}"));
-
-    assert!(matches!(
-        pools.get_with_len::<u8>(51),
-        Err(PoolError::PoolBudgetExceeded { .. })
-    ));
-    assert_eq!(pools.stats().allocated_bytes, 0);
 }
 
 #[kithara::test]
@@ -441,27 +422,6 @@ fn racing_typed_slots_never_admit_past_the_global_limit() {
 
     assert_eq!(usize::from(bytes.is_ok()) + usize::from(samples.is_ok()), 1);
     assert!(pools.stats().allocated_bytes <= pools.stats().max_bytes);
-}
-
-#[kithara::test]
-fn trimmed_returns_release_both_pool_and_region_charges() {
-    let pools = TestPools::region(
-        OverallBudget(4096),
-        config(32),
-        PoolConfig::builder()
-            .max_buffers(128)
-            .trim_capacity(4)
-            .build(),
-    )
-    .unwrap_or_else(|error| panic!("test region: {error}"));
-    let samples = pools
-        .get_with_len::<f32>(32)
-        .unwrap_or_else(|error| panic!("samples: {error}"));
-    let charged = pools.stats().allocated_bytes;
-
-    drop(samples);
-
-    assert!(pools.stats().allocated_bytes < charged);
 }
 
 #[kithara::test]

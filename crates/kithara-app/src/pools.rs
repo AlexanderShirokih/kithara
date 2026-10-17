@@ -1,8 +1,6 @@
 use kithara::{
     assets::AssetStore,
-    bufpool::{
-        OverallBudget, Percent, PoolConfig, PoolConfigPatch, PoolError, PoolRegion, pool_schema,
-    },
+    bufpool::{OverallBudget, PoolConfig, PoolConfigPatch, PoolError, PoolRegion, pool_schema},
     host::Host,
     play::{PlayWorker, ResourceConfig},
     prelude::PlaybackResamplerBackend,
@@ -83,7 +81,6 @@ fn bytes_config(patch: &PoolConfigPatch) -> PoolConfig {
         .initial_buffers(0)
         .max_buffers(consts::BYTE_MAX_BUFFERS)
         .max_retained_capacity(consts::BYTE_MAX_RETAINED_CAPACITY)
-        .max_share(Percent::MAX)
         .build();
     config.apply(patch.clone());
     config
@@ -95,7 +92,6 @@ fn samples_config(patch: &PoolConfigPatch) -> PoolConfig {
         .initial_capacity(consts::INITIAL_SAMPLE_CAPACITY)
         .max_buffers(consts::SAMPLE_MAX_BUFFERS)
         .max_retained_capacity(consts::SAMPLE_MAX_RETAINED_CAPACITY)
-        .max_share(Percent::MAX)
         .build();
     config.apply(patch.clone());
     config

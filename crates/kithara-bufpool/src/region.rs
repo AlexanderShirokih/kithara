@@ -4,7 +4,7 @@ use kithara_platform::sync::{Arc, Weak};
 use kithara_ring::RingHalves;
 
 use crate::{
-    HasPool, OverallBudget, Percent, PoolConfig, PoolError, PoolKey, PoolKeyWithLen, PoolStats,
+    HasPool, OverallBudget, PoolConfig, PoolError, PoolKey, PoolKeyWithLen, PoolStats,
     budget::{IdleReclaimer, RegionBudget},
     key::PoolAccess,
     pool::{Core, storage::Storage},
@@ -74,8 +74,8 @@ impl<S> PoolRegion<S> {
     ///
     /// # Errors
     ///
-    /// Returns an error when the requested capacity overflows, exceeds either
-    /// hard budget, or cannot be allocated.
+    /// Returns an error when the requested capacity overflows, exceeds the
+    /// region budget, or cannot be allocated.
     #[inline]
     pub fn get_with_len<K>(&self, len: usize) -> Result<K::Buffer, PoolError>
     where
@@ -90,12 +90,12 @@ impl<S> PoolRegion<S> {
     /// single-producer single-consumer ring.
     ///
     /// The buffer returns to its pool once both halves are dropped, and its
-    /// slots count against both hard budgets for the ring's lifetime.
+    /// slots count against the region budget for the ring's lifetime.
     ///
     /// # Errors
     ///
     /// Returns an error when `capacity` is zero, or when the buffer cannot be
-    /// acquired under either hard budget.
+    /// acquired under the region budget.
     pub fn ring<K>(&self, capacity: usize) -> Result<RingHalves<K::Buffer>, PoolError>
     where
         K: PoolKeyWithLen,
@@ -160,12 +160,11 @@ impl BuildContext {
     pub(crate) fn core<const SHARDS: usize, B, const OBSERVE: bool>(
         &self,
         config: PoolConfig,
-        pool_limit: usize,
     ) -> Result<Arc<Core<SHARDS, B, OBSERVE>>, PoolError>
     where
         B: Storage + Send + 'static,
     {
-        let core = Arc::new(Core::new(config, self.region_budget(), pool_limit)?);
+        let core = Arc::new(Core::new(config, self.region_budget())?);
         self.reclaimers
             .borrow_mut()
             .push(Arc::downgrade(&core) as Weak<dyn IdleReclaimer>);
@@ -180,13 +179,6 @@ impl BuildContext {
                 field: "schema",
                 reason: "idle reclaimer inventory was already installed",
             })
-    }
-
-    pub(crate) fn pool_limit(&self, share: Percent) -> usize {
-        let percent = usize::from(u8::from(share));
-        let quotient = self.budget.limit() / 100;
-        let remainder = self.budget.limit() % 100;
-        quotient * percent + remainder * percent / 100
     }
 
     pub(crate) fn region_budget(&self) -> RegionBudget {

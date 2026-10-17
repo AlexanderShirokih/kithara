@@ -13,7 +13,7 @@ mod pool;
 mod region;
 mod schema;
 
-pub use budget::{OverallBudget, Percent};
+pub use budget::OverallBudget;
 pub use buffer::{ByteBuffer, PooledString, PooledVec, SampleBuffer};
 pub use config::{PoolConfig, PoolConfigPatch};
 pub use error::PoolError;

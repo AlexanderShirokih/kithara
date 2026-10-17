@@ -18,11 +18,11 @@ impl<const SHARDS: usize> PooledString<SHARDS> {
             pub fn capacity(&self) -> usize;
             /// Remove all text while retaining capacity.
             pub fn clear(&mut self);
-            /// Append UTF-8 text under both hard budgets.
+            /// Append UTF-8 text under the region budget.
             ///
             /// # Errors
             ///
-            /// Returns an error when capacity overflows, exceeds either hard budget,
+            /// Returns an error when capacity overflows, exceeds the region budget,
             /// or cannot be allocated.
             pub fn try_push_str(&mut self, content: &str) -> Result<(), PoolError>;
         }
