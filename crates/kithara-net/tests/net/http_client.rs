@@ -9,7 +9,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        RwLock,
+        Mutex, RwLock,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -23,13 +23,13 @@ use axum::{
     routing::{get, head},
 };
 use bytes::Bytes;
-use futures::{StreamExt, stream};
+use futures::{StreamExt, join, stream};
 use kithara_net::{
-    Headers, HttpClient, Net, NetError, NetExt, NetOptions, RangeSpec, RetryPolicy, TimeoutNet,
+    Headers, HttpClient, NetError, NetObserver, NetOptions, Observer, RangeSpec, RetryPolicy,
 };
 use kithara_platform::{
     CancelToken,
-    sync::Arc,
+    sync::{Arc, Notify},
     time::{Duration, sleep},
 };
 use kithara_test_utils::{TestHttpServer, bufpool::pools, kithara};
@@ -186,11 +186,6 @@ async fn retry_test_endpoint(State(counter): State<RequestCounter>) -> impl Into
     }
 }
 
-async fn timeout_test_endpoint() -> impl IntoResponse {
-    sleep(Duration::from_secs(2)).await;
-    "Should timeout"
-}
-
 const KEY_BYTES: &[u8] = &[
     0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,
 ];
@@ -301,7 +296,6 @@ fn test_router() -> Router {
         .route("/ignore-range", get(ignore_range_endpoint))
         .route("/retry-test", get(retry_test_endpoint))
         .with_state(counter)
-        .route("/timeout-test", get(timeout_test_endpoint))
 }
 
 fn key_test_router() -> Router {
@@ -499,36 +493,6 @@ async fn test_head_success_case(#[future] test_server: TestServer, http_client: 
     assert_eq!(headers.get("content-type"), Some("text/plain"));
 }
 
-#[kithara::test(tokio, timeout(Duration::from_secs(10)), hang_timeout_secs(1))]
-#[case("/slow-headers", Duration::from_millis(1000), true)]
-#[case("/slow-body", Duration::from_millis(1000), true)]
-#[case("/timeout-test", Duration::from_millis(300), false)]
-async fn test_timeout_variants(
-    #[future] test_server: TestServer,
-    http_client: HttpClient,
-    #[case] path: &str,
-    #[case] timeout: Duration,
-    #[case] should_succeed: bool,
-) {
-    let test_server = test_server.await;
-    let url = test_server.url(path);
-    let client = http_client.with_timeout(timeout);
-
-    let result = client.get_bytes(url, None).await;
-
-    if should_succeed {
-        assert!(result.is_ok(), "Should succeed for path: {}", path);
-    } else {
-        assert!(result.is_err(), "Should fail for path: {}", path);
-        let error = result.err().unwrap();
-        assert!(
-            matches!(error, NetError::Timeout),
-            "Expected timeout error, got {:?}",
-            error
-        );
-    }
-}
-
 #[kithara::test(tokio, timeout(Duration::from_secs(5)), hang_timeout_secs(1))]
 async fn test_retry_variants(#[future] test_server: TestServer, http_client: HttpClient) {
     let test_server = test_server.await;
@@ -539,7 +503,7 @@ async fn test_retry_variants(#[future] test_server: TestServer, http_client: Htt
         .base_delay(Duration::from_millis(10))
         .max_delay(Duration::from_secs(5))
         .build();
-    let client = http_client.with_retry(retry_policy, CancelToken::never());
+    let client = http_client.with_retry_policy(retry_policy);
 
     let result = client.get_bytes(url, None).await;
 
@@ -571,10 +535,17 @@ async fn test_range_on_non_range_supporting_server(
 }
 
 #[kithara::test(tokio, timeout(Duration::from_secs(1)), hang_timeout_secs(1))]
-async fn test_invalid_url(http_client: HttpClient) {
+async fn test_invalid_url() {
     let url = Url::parse("http://192.0.2.1:9999/invalid").unwrap();
 
-    let client = http_client.with_timeout(Duration::from_millis(100));
+    let client = HttpClient::new(
+        NetOptions::builder()
+            .inactivity_timeout(Duration::from_millis(100))
+            .retry_policy(RetryPolicy::builder().max_retries(0).build())
+            .build(),
+        pools(),
+        CancelToken::never(),
+    );
 
     let result = client.get_bytes(url, None).await;
 
@@ -717,32 +688,165 @@ enum TimeoutOp {
     GetRange { start: u64, end: Option<u64> },
 }
 
-#[kithara::test(tokio)]
-#[case::get_bytes_times_out_on_body("/slow-body", Duration::from_millis(50), TimeoutOp::GetBytes)]
-#[case::stream_times_out_on_headers("/slow-headers", Duration::from_millis(100), TimeoutOp::Stream)]
-#[case::get_range_times_out_on_headers(
+#[kithara::test(tokio, timeout(Duration::from_secs(2)), hang_timeout_secs(1))]
+#[case::slow_alive_stream_completes(
+    "/slow-body",
+    Duration::from_millis(400),
+    TimeoutOp::Stream,
+    Ok(&b"Hello, World!"[..])
+)]
+#[case::body_silence_times_out_on_get_bytes(
+    "/slow-body",
+    Duration::from_millis(50),
+    TimeoutOp::GetBytes,
+    Err(NetError::Timeout)
+)]
+#[case::header_silence_times_out_on_stream(
     "/slow-headers",
     Duration::from_millis(100),
-    TimeoutOp::GetRange { start: 0, end: Some(10) }
+    TimeoutOp::Stream,
+    Err(NetError::Timeout)
 )]
-async fn test_timeout_matrix(#[case] path: &str, #[case] timeout: Duration, #[case] op: TimeoutOp) {
+#[case::header_silence_times_out_on_range(
+    "/slow-headers",
+    Duration::from_millis(100),
+    TimeoutOp::GetRange { start: 0, end: Some(10) },
+    Err(NetError::Timeout)
+)]
+async fn inactivity_timeout_bounds_silence_not_total_time(
+    #[case] path: &str,
+    #[case] inactivity: Duration,
+    #[case] op: TimeoutOp,
+    #[case] expected: Result<&'static [u8], NetError>,
+) {
     let server = TestServer::new(test_router()).await;
-    let base = HttpClient::new(NetOptions::default(), pools(), CancelToken::never());
-    let timeout_client = TimeoutNet::new(base, timeout);
+    let client = HttpClient::new(
+        NetOptions::builder()
+            .inactivity_timeout(inactivity)
+            .retry_policy(RetryPolicy::builder().max_retries(0).build())
+            .build(),
+        pools(),
+        CancelToken::never(),
+    );
     let url = server.url(path);
 
     let result = match op {
-        TimeoutOp::GetBytes => timeout_client.get_bytes(url, None).await.map(|_| ()),
-        TimeoutOp::Stream => timeout_client.stream(url, None).await.map(|_| ()),
-        TimeoutOp::GetRange { start, end } => timeout_client
-            .get_range(url, RangeSpec::new(start, end), None)
+        TimeoutOp::GetBytes => client
+            .get_bytes(url, None)
             .await
-            .map(|_| ()),
+            .map(|bytes| bytes.to_vec()),
+        TimeoutOp::Stream => test_stream_success(&client, url).await,
+        TimeoutOp::GetRange { start, end } => {
+            test_get_range_success(&client, url, start, end).await
+        }
     };
 
+    match (&result, &expected) {
+        (Ok(body), Ok(expected_body)) => assert_eq!(body.as_slice(), *expected_body),
+        (Err(NetError::Timeout), Err(NetError::Timeout)) => {}
+        _ => panic!("expected {expected:?}, got {result:?}"),
+    }
+}
+
+#[derive(Default)]
+struct BackoffStarted(Notify);
+
+impl NetObserver for BackoffStarted {
+    fn retrying(&self, _attempt: u32, _max_retries: u32, _error: &NetError, backoff: Duration) {
+        if !backoff.is_zero() {
+            self.0.notify_one();
+        }
+    }
+}
+
+#[kithara::test(
+    tokio,
+    flash(false),
+    timeout(Duration::from_secs(2)),
+    hang_timeout_secs(1)
+)]
+async fn cancel_during_backoff_ends_the_call_without_the_delay() {
+    let server = TestServer::new(test_router()).await;
+    let cancel = CancelToken::root();
+    let backoff_started = Arc::new(BackoffStarted::default());
+    let options = NetOptions::builder()
+        .retry_policy(
+            RetryPolicy::builder()
+                .max_retries(3)
+                .base_delay(Duration::from_secs(10))
+                .max_delay(Duration::from_secs(10))
+                .build(),
+        )
+        .build()
+        .with_observer(Some(Observer(backoff_started.clone())));
+    let client = HttpClient::new(options, pools(), cancel.clone());
+    let cancel_in_backoff = async {
+        backoff_started.0.notified().await;
+        sleep(Duration::from_millis(50)).await;
+        cancel.cancel();
+    };
+
+    let (result, ()) = join!(
+        client.get_bytes(server.url("/error500"), None),
+        cancel_in_backoff
+    );
+
     match result {
-        Err(NetError::Timeout) => (),
-        Ok(()) => panic!("Expected Timeout error, got Ok"),
-        Err(e) => panic!("Expected Timeout error, got {:?}", e),
+        Err(NetError::Cancelled) => {}
+        other => panic!("expected Cancelled, got {other:?}"),
+    }
+}
+
+#[derive(Default)]
+struct ExhaustionLog(Mutex<Vec<(u32, u64, NetError)>>);
+
+impl NetObserver for ExhaustionLog {
+    fn retry_exhausted(&self, max_retries: u32, consumed: u64, error: &NetError) {
+        self.0
+            .lock()
+            .unwrap()
+            .push((max_retries, consumed, error.clone()));
+    }
+}
+
+#[kithara::test(tokio, timeout(Duration::from_secs(2)), hang_timeout_secs(1))]
+#[case::budget_spent(2, "/error500", true)]
+#[case::no_budget(0, "/error500", false)]
+#[case::fatal_cause(2, "/error404", false)]
+async fn establish_exhaustion_is_reported_once_with_its_cause(
+    #[case] max_retries: u32,
+    #[case] path: &str,
+    #[case] reported: bool,
+) {
+    let server = TestServer::new(test_router()).await;
+    let log = Arc::new(ExhaustionLog::default());
+    let options = NetOptions::builder()
+        .retry_policy(
+            RetryPolicy::builder()
+                .max_retries(max_retries)
+                .base_delay(Duration::from_millis(1))
+                .max_delay(Duration::from_millis(5))
+                .build(),
+        )
+        .build()
+        .with_observer(Some(Observer(log.clone())));
+    let client = HttpClient::new(options, pools(), CancelToken::never());
+
+    let _ = client.get_bytes(server.url(path), None).await;
+
+    let reports = std::mem::take(&mut *log.0.lock().unwrap());
+    if reported {
+        assert!(
+            matches!(
+                reports.as_slice(),
+                [(2, 0, NetError::Status { status, .. })] if status.get() == 500
+            ),
+            "expected one exhaustion report (2, 0, HTTP 500), got {reports:?}"
+        );
+    } else {
+        assert!(
+            reports.is_empty(),
+            "expected no exhaustion report, got {reports:?}"
+        );
     }
 }

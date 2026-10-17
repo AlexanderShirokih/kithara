@@ -142,9 +142,9 @@ mod tests {
         pub(crate) use kithara_test_macros::test;
     }
 
-    use std::{num::NonZeroU16, task::Poll};
+    use std::num::NonZeroU16;
 
-    use futures::{pin_mut, poll, stream};
+    use futures::stream;
     use kithara_platform::time::Duration;
     use unimock::{MockFn, Unimock, matching};
 
@@ -455,35 +455,5 @@ mod tests {
         let result = retry_net.head(url, None).await;
 
         assert!(result.is_ok());
-    }
-
-    #[kithara::test(tokio)]
-    async fn test_retry_net_cancel_interrupts_sleep() {
-        let mock = Unimock::new(
-            NetMock::get_bytes
-                .each_call(matching!(_, _))
-                .returns(Err(NetError::Timeout)),
-        );
-        let policy = RetryPolicy {
-            base_delay: Duration::from_secs(10),
-            max_delay: Duration::from_secs(10),
-            max_retries: 3,
-        };
-        let cancel = CancelToken::never();
-        let retry_net = RetryNet::new(mock, policy, cancel.clone(), None);
-
-        let url = test_url();
-        let result = retry_net.get_bytes(url, None);
-        pin_mut!(result);
-
-        assert!(
-            matches!(poll!(result.as_mut()), Poll::Pending),
-            "retry must park in the retry-delay branch before cancellation"
-        );
-        cancel.cancel();
-
-        let result = result.await;
-
-        assert!(matches!(result, Err(NetError::Cancelled)));
     }
 }
