@@ -1,6 +1,6 @@
 use std::io::ErrorKind;
 
-use kithara_stream::{NotReadyCause, PendingReason, StreamPending, StreamSeekPastEof};
+use kithara_stream::{PendingReason, StreamSeekPastEof};
 use symphonia_core::errors::{Error as SymphoniaError, SeekErrorKind};
 
 use crate::DecodeError;
@@ -30,10 +30,7 @@ pub(super) fn classify_seek_err(err: &SymphoniaError) -> DecodeError {
             if matches!(
                 io_err.kind(),
                 ErrorKind::Interrupted | ErrorKind::WouldBlock
-            ) || io_err.get_ref().is_some_and(|src| {
-                src.downcast_ref::<PendingReason>()
-                    .is_some_and(|reason| matches!(reason, PendingReason::SeekPending))
-            }) =>
+            ) || crate::error::pending_input(io_err) == Some(PendingReason::SessionRetired) =>
         {
             tracing::debug!(error = ?io_err, "demuxer seek interrupted");
             DecodeError::Interrupted
@@ -62,36 +59,40 @@ pub(super) fn classify_seek_err(err: &SymphoniaError) -> DecodeError {
     }
 }
 
-/// Whether a failed resume re-seek means the source has nothing left to read.
-///
-/// `resume_ts` is the end of the last cleanly emitted packet, and a
-/// packet-quantised reader reports a full packet duration even for a
-/// truncated final packet — so once the last frame is out, the resume point
-/// can sit past the end of the source. A reader publishes a length only once
-/// every segment size is exact, so "past the published end" is a final
-/// answer rather than a not-ready boundary: there is no stranded packet to
-/// re-read and the stream ends, the way [`Demuxer::seek`] reports
-/// `PastEof` instead of failing.
-pub(super) const fn resume_point_is_past_the_end(failure: &DecodeError) -> bool {
-    matches!(failure, DecodeError::SeekOutOfRange { .. })
-}
-
 pub(super) fn pending_reason(error: &SymphoniaError) -> Option<PendingReason> {
     let SymphoniaError::IoError(error) = error else {
         return None;
     };
-    if !matches!(error.kind(), ErrorKind::Interrupted | ErrorKind::WouldBlock) {
-        return None;
+    crate::error::pending_input(error)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use kithara_test_utils::kithara;
+
+    use super::*;
+
+    #[kithara::test]
+    fn a_retired_input_keeps_its_typed_reason_without_an_interrupted_io_kind() {
+        let error = SymphoniaError::IoError(io::Error::new(
+            ErrorKind::ConnectionAborted,
+            PendingReason::SessionRetired,
+        ));
+        assert_eq!(pending_reason(&error), Some(PendingReason::SessionRetired));
+        assert!(matches!(
+            classify_seek_err(&error),
+            DecodeError::Interrupted
+        ));
+        let unrelated = SymphoniaError::IoError(io::Error::new(
+            ErrorKind::ConnectionAborted,
+            "connection failed",
+        ));
+        assert_eq!(pending_reason(&unrelated), None);
+        assert!(matches!(
+            classify_seek_err(&unrelated),
+            DecodeError::SeekFailed { .. }
+        ));
     }
-    Some(
-        error
-            .get_ref()
-            .and_then(|source| {
-                source
-                    .downcast_ref::<StreamPending>()
-                    .map(StreamPending::reason)
-                    .or_else(|| source.downcast_ref::<PendingReason>().copied())
-            })
-            .unwrap_or(PendingReason::NotReady(NotReadyCause::SourcePending)),
-    )
 }

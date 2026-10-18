@@ -2,9 +2,9 @@ use std::{error::Error as StdError, io, io::ErrorKind, num::TryFromIntError};
 
 use kithara_bufpool::PoolError;
 use kithara_signal::SignalError;
-use kithara_stream::{AudioCodec, ContainerFormat, PendingReason, VariantChangeError};
-#[cfg(any(apple_backend, android_backend))]
-use kithara_stream::{NotReadyCause, StreamPending};
+use kithara_stream::{
+    AudioCodec, ContainerFormat, NotReadyCause, PendingReason, StreamPending, VariantChangeError,
+};
 
 /// Errors that can occur during audio decoding.
 ///
@@ -98,9 +98,8 @@ pub enum DecodeError {
     #[error("decoder backend status {code} ({op})")]
     BackendStatus { code: i32, op: &'static str },
 
-    /// A seek interrupted the decode operation. Not a real error —
-    /// the caller should check for pending seeks and retry.
-    #[error("Interrupted by seek")]
+    /// Source I/O interrupted the decode operation or data is not ready yet.
+    #[error("Decode operation interrupted")]
     Interrupted,
 
     /// `frames * channels` does not fit a `usize`. Carries both operands so
@@ -135,14 +134,6 @@ pub enum DecodeError {
     },
 }
 
-fn is_seek_pending_io(err: &io::Error) -> bool {
-    err.kind() == ErrorKind::Interrupted
-        || err
-            .get_ref()
-            .and_then(|src| src.downcast_ref::<PendingReason>())
-            .is_some_and(|reason| matches!(reason, PendingReason::SeekPending))
-}
-
 fn is_variant_change_io(err: &io::Error) -> bool {
     err.get_ref()
         .and_then(|source| source.downcast_ref::<VariantChangeError>())
@@ -169,11 +160,31 @@ where
     }
 }
 
+pub(crate) fn pending_input(error: &io::Error) -> Option<PendingReason> {
+    let reason = error.get_ref().and_then(|source| {
+        source
+            .downcast_ref::<StreamPending>()
+            .map(StreamPending::reason)
+            .or_else(|| source.downcast_ref::<PendingReason>().copied())
+    });
+    match (error.kind(), reason) {
+        (_, Some(PendingReason::SessionRetired)) => Some(PendingReason::SessionRetired),
+        (ErrorKind::Interrupted | ErrorKind::WouldBlock, reason) => {
+            Some(reason.unwrap_or(PendingReason::NotReady(NotReadyCause::SourcePending)))
+        }
+        _ => None,
+    }
+}
+
 fn error_chain_is_interrupted(err: &(dyn StdError + 'static)) -> bool {
-    walk_error_chain(err, &is_seek_pending_io, &|leaf| {
-        leaf.downcast_ref::<PendingReason>()
-            .is_some_and(|reason| matches!(reason, PendingReason::SeekPending))
-    })
+    walk_error_chain(
+        err,
+        &|io_err| {
+            io_err.kind() == ErrorKind::Interrupted
+                || pending_input(io_err) == Some(PendingReason::SessionRetired)
+        },
+        &|_| false,
+    )
 }
 
 fn error_chain_is_variant_change(err: &(dyn StdError + 'static)) -> bool {
@@ -191,7 +202,7 @@ fn error_chain_is_variant_change(err: &(dyn StdError + 'static)) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ErrorClass {
-    /// Interrupted by seek / cooperative pending — caller should retry.
+    /// Transient source interruption or cooperative pending.
     Interrupted,
     /// Cross-variant boundary — caller must recreate the decoder.
     VariantChange,
@@ -236,7 +247,9 @@ impl DecodeError {
             Self::Io { source } => {
                 if is_variant_change_io(source) {
                     ErrorClass::VariantChange
-                } else if is_seek_pending_io(source) {
+                } else if source.kind() == ErrorKind::Interrupted
+                    || pending_input(source) == Some(PendingReason::SessionRetired)
+                {
                     ErrorClass::Interrupted
                 } else {
                     ErrorClass::Other
@@ -256,12 +269,6 @@ impl DecodeError {
         }
     }
 
-    /// Returns `true` if the error is an [`Interrupted`](Self::Interrupted) variant.
-    #[must_use]
-    pub fn is_interrupted(&self) -> bool {
-        matches!(self.classify(), ErrorClass::Interrupted)
-    }
-
     /// Wrap an upstream parser / io error as a [`DecodeError::Parse`] with a
     /// `&'static str` site tag. For off-RT init-segment / box parsing only —
     /// preserves the typed source chain without stringifying it.
@@ -276,13 +283,8 @@ impl DecodeError {
         }
     }
 
-    /// Typed [`PendingReason`] carried by a transient source-read error
-    /// (`Interrupted`/`WouldBlock` `io::Error` with a `StreamPending` /
-    /// `PendingReason` payload). Demuxers use this to honour the
-    /// [`Demuxer::next_frame`](crate::demuxer::Demuxer::next_frame)
-    /// contract — "data not ready" returns `Ok(DemuxOutcome::Pending)`,
-    /// never `Err`. Mirrors the Symphonia demuxer's not-ready guard
-    /// (including the bare-`Interrupted` → `SourcePending` default).
+    /// Typed source-read condition, including permanent retirement of this reader generation.
+    /// Untyped transient interruptions retain the ordinary source-pending classification.
     #[must_use]
     #[cfg(any(apple_backend, android_backend))]
     pub(crate) fn pending_reason(&self) -> Option<PendingReason> {
@@ -291,18 +293,7 @@ impl DecodeError {
             Self::Backend { source } => source.as_ref().downcast_ref::<io::Error>()?,
             _ => return None,
         };
-        if io_err.kind() != ErrorKind::Interrupted && io_err.kind() != ErrorKind::WouldBlock {
-            return None;
-        }
-        let reason = io_err
-            .get_ref()
-            .and_then(|src| {
-                src.downcast_ref::<StreamPending>()
-                    .map(StreamPending::reason)
-                    .or_else(|| src.downcast_ref::<PendingReason>().copied())
-            })
-            .unwrap_or(PendingReason::NotReady(NotReadyCause::SourcePending));
-        Some(reason)
+        pending_input(io_err)
     }
 }
 
@@ -416,15 +407,29 @@ mod tests {
 
     #[kithara::test]
     #[case::seek_pending_counts_as_interrupted(
-        DecodeError::backend(IoError::other(PendingReason::SeekPending)),
+        DecodeError::backend(IoError::new(std::io::ErrorKind::Interrupted, "interrupted")),
         true
+    )]
+    #[case::retired_input_is_interrupted(
+        DecodeError::backend(IoError::new(
+            ErrorKind::ConnectionAborted,
+            PendingReason::SessionRetired
+        )),
+        true
+    )]
+    #[case::unrelated_aborted_input_is_not_interrupted(
+        DecodeError::backend(IoError::new(ErrorKind::ConnectionAborted, "connection failed")),
+        false
     )]
     #[case::other_io_is_not_interrupted(
         DecodeError::backend(IoError::other("other backend error")),
         false
     )]
     fn test_backend_is_interrupted(#[case] decode_err: DecodeError, #[case] expected: bool) {
-        assert_eq!(decode_err.is_interrupted(), expected);
+        assert_eq!(
+            matches!(decode_err.classify(), ErrorClass::Interrupted),
+            expected
+        );
     }
 
     #[kithara::test]
@@ -433,7 +438,7 @@ mod tests {
             source: IoError::other(VariantChangeError),
         };
         assert_eq!(decode_err.classify(), ErrorClass::VariantChange);
-        assert!(!decode_err.is_interrupted());
+        assert_ne!(decode_err.classify(), ErrorClass::Interrupted);
     }
 }
 
@@ -441,8 +446,6 @@ mod tests {
 mod symphonia {
     use std::{error::Error as StdError, io};
 
-    #[cfg(test)]
-    use kithara_stream::PendingReason::SeekPending;
     use symphonia_core::errors::Error;
 
     pub(crate) type SymphoniaError = Error;
@@ -477,14 +480,15 @@ mod symphonia {
 
         use kithara_test_utils::kithara;
 
-        use crate::error::DecodeError;
+        use crate::error::{DecodeError, ErrorClass};
 
         #[kithara::test]
         fn test_backend_symphonia_seek_pending_counts_as_interrupted() {
-            let decode_err = DecodeError::backend(super::SymphoniaError::IoError(IoError::other(
-                super::SeekPending,
+            let decode_err = DecodeError::backend(super::SymphoniaError::IoError(IoError::new(
+                std::io::ErrorKind::Interrupted,
+                "interrupted",
             )));
-            assert!(decode_err.is_interrupted());
+            assert_eq!(decode_err.classify(), ErrorClass::Interrupted);
         }
     }
 }

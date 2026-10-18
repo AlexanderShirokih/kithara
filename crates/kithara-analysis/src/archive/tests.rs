@@ -60,6 +60,7 @@ fn analysis_with(
         coverage.insert(start..start + frames);
     }
     TrackAnalysis::builder()
+        .media_origin(Duration::ZERO)
         .token("archive:test".into())
         .revision(revision)
         .source_sample_rate(source_sample_rate)
@@ -87,6 +88,7 @@ fn progress(analysis: TrackAnalysis, chunk_frames: NonZeroU64) -> AnalysisProgre
         let beat = || {
             let mut out = Vec::new();
             let mut writer = Writer::new(&mut out);
+            writer.write_bool(false);
             for _ in 0..4 {
                 writer.write_len(0);
             }

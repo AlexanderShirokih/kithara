@@ -1,6 +1,10 @@
 use std::{
     collections::VecDeque,
     io::{self, Cursor, ErrorKind, Read, Seek, SeekFrom},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use kithara_mpa::MpaReader;
@@ -20,6 +24,7 @@ mod consts {
     /// Frames the duration estimate inspects before extrapolating.
     pub(super) const ESTIMATE_WINDOW: usize = 17;
     pub(super) const FRAME_DUR: i64 = 1_152;
+    pub(super) const DECODER_DELAY: i64 = 529;
     pub(super) const RATE: i64 = 44_100;
     pub(super) const SEEK_SECS: i64 = 10;
     pub(super) const SEEK_FRAME: usize = 300;
@@ -59,7 +64,18 @@ fn open(source: impl MediaSource + 'static) -> MpaReader<'static> {
 struct SeekGap {
     cursor: Cursor<Vec<u8>>,
     gaps: VecDeque<(u64, ErrorKind)>,
+    release: Arc<AtomicBool>,
     seekable: bool,
+}
+
+struct GapControl {
+    release: Arc<AtomicBool>,
+}
+
+impl GapControl {
+    fn release(&self) {
+        self.release.store(true, Ordering::Relaxed);
+    }
 }
 
 impl SeekGap {
@@ -74,19 +90,30 @@ impl SeekGap {
                     (u64::try_from(at).expect("gap position fits u64"), kind)
                 })
                 .collect(),
+            release: Arc::new(AtomicBool::new(false)),
             seekable: true,
+        }
+    }
+
+    fn control(&self) -> GapControl {
+        GapControl {
+            release: Arc::clone(&self.release),
         }
     }
 }
 
 impl Read for SeekGap {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.release.swap(false, Ordering::Relaxed) {
+            self.gaps
+                .pop_front()
+                .expect("release follows a reached input gate");
+        }
         if !buffer.is_empty()
             && let Some(&(at, kind)) = self.gaps.front()
         {
             let remaining = at.saturating_sub(self.cursor.position());
             if remaining == 0 {
-                self.gaps.pop_front();
                 return Err(io::Error::from(kind));
             }
             let count = buffer
@@ -121,18 +148,21 @@ impl MediaSource for SeekGap {
 /// The reader must hand out the leading frame first: estimating the duration
 /// reads ahead and has to rewind whatever it decided.
 fn assert_starts_at_the_first_frame(reader: &mut MpaReader<'_>, first: &[u8]) {
+    assert_eq!(reader.tracks()[0].delay, Some(529));
+    assert_eq!(reader.tracks()[0].padding, None);
     let packet = match reader.next_packet() {
         Ok(Some(packet)) => packet,
         Ok(None) => panic!("synthetic MPEG stream ended before its first frame"),
         Err(error) => panic!("synthetic MPEG packet failed: {error}"),
     };
-    assert_eq!(packet.pts.get(), 0);
+    assert_eq!(packet.pts.get(), -consts::DECODER_DELAY);
+    assert_eq!(packet.pts.get() + consts::DECODER_DELAY, 0);
     assert_eq!(packet.data.as_ref(), first);
 }
 
 /// Seeks past a point every stream here holds and reads the frame it lands on.
 fn assert_seeks_to_ten_seconds(reader: &mut MpaReader<'_>) {
-    let required = consts::SEEK_SECS * consts::RATE;
+    let required = consts::SEEK_SECS * consts::RATE - consts::DECODER_DELAY;
     let seek = reader.seek(
         SeekMode::Accurate,
         SeekTo::Timestamp {
@@ -152,7 +182,8 @@ fn assert_seeks_to_ten_seconds(reader: &mut MpaReader<'_>) {
     };
     assert_eq!(
         seeked.actual_ts.get(),
-        required / consts::FRAME_DUR * consts::FRAME_DUR,
+        (required + consts::DECODER_DELAY) / consts::FRAME_DUR * consts::FRAME_DUR
+            - consts::DECODER_DELAY,
         "the seek lands on the frame holding the target"
     );
     match reader.next_packet() {
@@ -198,7 +229,13 @@ fn a_headerless_constant_bitrate_stream_keeps_its_estimated_duration() {
 
     let expected = u64::try_from(consts::FRAMES).expect("frame count fits u64")
         * u64::try_from(consts::FRAME_DUR).expect("frame duration fits u64");
-    assert_eq!(reader.tracks()[0].num_frames, Some(expected));
+    assert_eq!(reader.tracks()[0].num_frames, Some(expected - 529));
+    assert_eq!(reader.tracks()[0].delay, Some(529));
+    assert_eq!(reader.tracks()[0].padding, None);
+    assert_eq!(
+        reader.tracks()[0].num_frames.map(|frames| frames + 529),
+        Some(expected)
+    );
     assert_starts_at_the_first_frame(&mut reader, &frames[0]);
     assert_seeks_to_ten_seconds(&mut reader);
 }
@@ -216,16 +253,11 @@ fn an_accurate_seek_resumes_across_transient_side_info_reads() {
     let target = || SeekTo::Timestamp {
         ts: Timestamp::new(
             i64::try_from(consts::SEEK_FRAME).expect("frame index fits i64") * consts::FRAME_DUR
-                + consts::FRAME_DUR / 2,
+                + consts::FRAME_DUR / 2
+                - consts::DECODER_DELAY,
         ),
         track_id: 0,
     };
-    let gap_at = frames[..consts::SEEK_FRAME]
-        .iter()
-        .map(Vec::len)
-        .sum::<usize>()
-        + consts::GAP_IN_SIDE_INFO;
-
     for kind in [ErrorKind::WouldBlock, ErrorKind::Interrupted] {
         let mut uninterrupted = open(Cursor::new(bytes.clone()));
         let expected = uninterrupted
@@ -235,16 +267,16 @@ fn an_accurate_seek_resumes_across_transient_side_info_reads() {
             expected.actual_ts.get(),
             i64::try_from(consts::SEEK_FRAME - consts::REFERENCE_FRAMES)
                 .expect("frame index fits i64")
-                * consts::FRAME_DUR,
+                * consts::FRAME_DUR
+                - consts::DECODER_DELAY,
             "the target needs earlier frames for its reservoir"
         );
-        let mut resumed = open(SeekGap {
-            cursor: Cursor::new(bytes.clone()),
-            gaps: [(u64::try_from(gap_at).expect("gap position fits u64"), kind)].into(),
-            seekable: true,
-        });
+        let source = SeekGap::new(&frames, &[(consts::SEEK_FRAME, kind)]);
+        let gate = source.control();
+        let mut resumed = open(source);
         let pending = resumed.seek(SeekMode::Accurate, target());
         assert!(matches!(pending, Err(Error::IoError(error)) if error.kind() == kind));
+        gate.release();
         let actual = resumed
             .seek(SeekMode::Accurate, target())
             .expect("the same seek resumes once its input is available");
@@ -288,7 +320,8 @@ fn target(index: usize) -> SeekTo {
     SeekTo::Timestamp {
         ts: Timestamp::new(
             i64::try_from(index).expect("frame index fits i64") * consts::FRAME_DUR
-                + consts::FRAME_DUR / 2,
+                + consts::FRAME_DUR / 2
+                - consts::DECODER_DELAY,
         ),
         track_id: 0,
     }
@@ -330,14 +363,14 @@ fn retargeting_or_changing_mode_starts_a_new_seek() {
         (SeekMode::Accurate, earlier),
         (SeekMode::Coarse, consts::SEEK_FRAME),
     ] {
-        let mut resumed = open(SeekGap::new(
-            &frames,
-            &[(consts::SEEK_FRAME, ErrorKind::WouldBlock)],
-        ));
+        let source = SeekGap::new(&frames, &[(consts::SEEK_FRAME, ErrorKind::WouldBlock)]);
+        let gate = source.control();
+        let mut resumed = open(source);
         assert!(matches!(
             resumed.seek(SeekMode::Accurate, target(consts::SEEK_FRAME)),
             Err(Error::IoError(error)) if error.kind() == ErrorKind::WouldBlock
         ));
+        gate.release();
         let mut control = open(Cursor::new(frames.concat()));
         assert_same_seek(
             &mut resumed,
@@ -354,11 +387,13 @@ fn a_non_seekable_source_rejects_backward_retargeting() {
     let frames = reservoir_frames(consts::KBPS_128);
     let mut source = SeekGap::new(&frames, &[(consts::SEEK_FRAME, ErrorKind::WouldBlock)]);
     source.seekable = false;
+    let gate = source.control();
     let mut resumed = open(source);
     assert!(matches!(
         resumed.seek(SeekMode::Accurate, target(consts::SEEK_FRAME)),
         Err(Error::IoError(error)) if error.kind() == ErrorKind::WouldBlock
     ));
+    gate.release();
     assert!(matches!(
         resumed.seek(SeekMode::Accurate, target(consts::SEEK_FRAME - 1)),
         Err(Error::SeekError(SeekErrorKind::ForwardOnly))
@@ -370,6 +405,7 @@ fn a_non_seekable_source_rejects_backward_retargeting() {
     assert_eq!(
         actual.actual_ts.get(),
         i64::try_from(consts::SEEK_FRAME).expect("frame index fits i64") * consts::FRAME_DUR
+            - consts::DECODER_DELAY
     );
     let packet = resumed
         .next_packet()
@@ -384,11 +420,14 @@ fn a_coarse_preseek_failure_repeats_preseek_before_scanning() {
     let frames = reservoir_frames(consts::KBPS_128);
     let first_coarse_frame = consts::SEEK_FRAME - 6;
     for kind in [ErrorKind::WouldBlock, ErrorKind::Interrupted] {
-        let mut resumed = open(SeekGap::new(&frames, &[(first_coarse_frame, kind)]));
+        let source = SeekGap::new(&frames, &[(first_coarse_frame, kind)]);
+        let gate = source.control();
+        let mut resumed = open(source);
         assert!(matches!(
             resumed.seek(SeekMode::Coarse, target(consts::SEEK_FRAME)),
             Err(Error::IoError(error)) if error.kind() == kind
         ));
+        gate.release();
         let mut control = open(Cursor::new(frames.concat()));
         assert_same_seek(
             &mut resumed,
@@ -403,19 +442,23 @@ fn a_coarse_preseek_failure_repeats_preseek_before_scanning() {
 #[kithara::test]
 fn a_transient_packet_attempt_preserves_the_pending_seek() {
     let frames = reservoir_frames(consts::KBPS_128);
-    let mut resumed = open(SeekGap::new(
+    let source = SeekGap::new(
         &frames,
         &[
             (consts::SEEK_FRAME, ErrorKind::WouldBlock),
             (consts::SEEK_FRAME, ErrorKind::Interrupted),
         ],
-    ));
+    );
+    let gate = source.control();
+    let mut resumed = open(source);
     assert!(matches!(
         resumed.seek(SeekMode::Accurate, target(consts::SEEK_FRAME)),
         Err(Error::IoError(error)) if error.kind() == ErrorKind::WouldBlock
     ));
+    gate.release();
     assert!(matches!(resumed.next_packet(),
         Err(Error::IoError(error)) if error.kind() == ErrorKind::Interrupted));
+    gate.release();
     let mut control = open(Cursor::new(frames.concat()));
     assert_same_seek(
         &mut resumed,
@@ -429,14 +472,14 @@ fn a_transient_packet_attempt_preserves_the_pending_seek() {
 #[kithara::test]
 fn consuming_a_packet_retires_the_pending_seek() {
     let frames = reservoir_frames(consts::KBPS_128);
-    let mut resumed = open(SeekGap::new(
-        &frames,
-        &[(consts::SEEK_FRAME, ErrorKind::WouldBlock)],
-    ));
+    let source = SeekGap::new(&frames, &[(consts::SEEK_FRAME, ErrorKind::WouldBlock)]);
+    let gate = source.control();
+    let mut resumed = open(source);
     assert!(matches!(
         resumed.seek(SeekMode::Accurate, target(consts::SEEK_FRAME)),
         Err(Error::IoError(error)) if error.kind() == ErrorKind::WouldBlock
     ));
+    gate.release();
     let packet = resumed
         .next_packet()
         .expect("complete target packet")
@@ -444,6 +487,7 @@ fn consuming_a_packet_retires_the_pending_seek() {
     assert_eq!(
         packet.pts.get(),
         i64::try_from(consts::SEEK_FRAME).expect("frame index fits i64") * consts::FRAME_DUR
+            - consts::DECODER_DELAY
     );
     assert_eq!(packet.data.as_ref(), frames[consts::SEEK_FRAME].as_slice());
     let mut control = open(Cursor::new(frames.concat()));
@@ -462,24 +506,27 @@ fn discarded_metadata_retires_seek_before_a_transient_packet_read() {
     frames[consts::SEEK_FRAME][4..36].fill(0);
     frames[consts::SEEK_FRAME][36..40].copy_from_slice(b"Info");
     set_reservoir(&mut frames[consts::SEEK_FRAME + 1]);
-    let mut resumed = open(SeekGap::new(
+    let source = SeekGap::new(
         &frames,
         &[
             (consts::SEEK_FRAME, ErrorKind::WouldBlock),
             (consts::SEEK_FRAME + 1, ErrorKind::Interrupted),
         ],
-    ));
+    );
+    let gate = source.control();
+    let mut resumed = open(source);
     assert!(matches!(
         resumed.seek(SeekMode::Accurate, target(consts::SEEK_FRAME)),
         Err(Error::IoError(error)) if error.kind() == ErrorKind::WouldBlock
     ));
+    gate.release();
     assert!(matches!(resumed.next_packet(),
         Err(Error::IoError(error)) if error.kind() == ErrorKind::Interrupted));
+    gate.release();
 
-    let mut control = open(SeekGap::new(
-        &frames,
-        &[(consts::SEEK_FRAME + 1, ErrorKind::Interrupted)],
-    ));
+    let source = SeekGap::new(&frames, &[(consts::SEEK_FRAME + 1, ErrorKind::Interrupted)]);
+    let control_gate = source.control();
+    let mut control = open(source);
     for expected in &frames[..consts::SEEK_FRAME] {
         let packet = control
             .next_packet()
@@ -489,6 +536,7 @@ fn discarded_metadata_retires_seek_before_a_transient_packet_read() {
     }
     assert!(matches!(control.next_packet(),
         Err(Error::IoError(error)) if error.kind() == ErrorKind::Interrupted));
+    control_gate.release();
     assert_same_seek(
         &mut resumed,
         &mut control,
@@ -502,18 +550,21 @@ fn discarded_metadata_retires_seek_before_a_transient_packet_read() {
 fn transient_frames_do_not_evict_the_four_frame_seek_history() {
     let frames = reservoir_frames(consts::KBPS_32);
     for gap_frame in [consts::SEEK_FRAME - 1, consts::SEEK_FRAME] {
-        let mut resumed = open(SeekGap::new(
+        let source = SeekGap::new(
             &frames,
             &[
                 (gap_frame, ErrorKind::WouldBlock),
                 (gap_frame, ErrorKind::Interrupted),
             ],
-        ));
+        );
+        let gate = source.control();
+        let mut resumed = open(source);
         for kind in [ErrorKind::WouldBlock, ErrorKind::Interrupted] {
             assert!(matches!(
                 resumed.seek(SeekMode::Accurate, target(consts::SEEK_FRAME)),
                 Err(Error::IoError(error)) if error.kind() == kind
             ));
+            gate.release();
         }
         let mut control = open(Cursor::new(frames.concat()));
         let expected = control
@@ -523,6 +574,7 @@ fn transient_frames_do_not_evict_the_four_frame_seek_history() {
             expected.actual_ts.get(),
             i64::try_from(consts::SEEK_FRAME - 3).expect("frame index fits i64")
                 * consts::FRAME_DUR
+                - consts::DECODER_DELAY
         );
         let actual = resumed
             .seek(SeekMode::Accurate, target(consts::SEEK_FRAME))
