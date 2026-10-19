@@ -175,10 +175,6 @@ a commit that stops being the head is still watched until its pipeline finishes.
 Each status links to its pipeline. Once the default branch moves, the next attempt
 reserves against the new base with a new ref.
 
-A pull request changing a CI control path is rejected before a pipeline exists;
-port it through a GitLab merge request: the code judging pull requests changes
-under GitLab review.
-
 A pipeline is judged on the child the dispatch stage triggers, never its parent,
 which reports `success` over a cancelled child. Divergence is fail-closed and
 opens one deduplicated GitLab incident. A rejection is recorded for the exact
