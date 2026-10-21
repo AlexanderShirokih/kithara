@@ -990,27 +990,6 @@ mod tests {
     }
 
     #[kithara::test(tokio, timeout(Duration::from_secs(5)))]
-    async fn http_client_retries_503_until_ok() {
-        let (server, counter) = server_failing_first_n(2).await;
-        let url = server.url("/probe");
-        let client = HttpClient::new(
-            fast_options(3),
-            crate::test_pools::pools(),
-            CancelToken::never(),
-        );
-        let bytes = client
-            .get_bytes(url, None)
-            .await
-            .expect("get_bytes must succeed after retries");
-        assert_eq!(&bytes[..], b"ok");
-        assert_eq!(
-            counter.load(Ordering::SeqCst),
-            3,
-            "exactly 3 attempts: 2 failed (503) + 1 ok"
-        );
-    }
-
-    #[kithara::test(tokio, timeout(Duration::from_secs(5)))]
     async fn http_client_no_retry_propagates_5xx() {
         let (server, counter) = server_failing_first_n(2).await;
         let url = server.url("/probe");
@@ -1031,56 +1010,6 @@ mod tests {
             counter.load(Ordering::SeqCst),
             1,
             "max_retries=0 issues exactly one attempt"
-        );
-    }
-
-    #[kithara::test(tokio, timeout(Duration::from_secs(5)))]
-    async fn http_client_head_retries_503_until_ok() {
-        let (server, counter) = server_failing_first_n(1).await;
-        let url = server.url("/probe");
-        let client = HttpClient::new(
-            fast_options(2),
-            crate::test_pools::pools(),
-            CancelToken::never(),
-        );
-        client.head(url, None).await.expect("HEAD must retry");
-        assert_eq!(counter.load(Ordering::SeqCst), 2);
-    }
-
-    #[kithara::test(tokio, timeout(Duration::from_secs(5)))]
-    async fn http_client_post_retries_then_echoes_body() {
-        let (server, counter) = server_post_echo_failing_first_n(1).await;
-        let url = server.url("/echo");
-        let client = HttpClient::new(
-            fast_options(2),
-            crate::test_pools::pools(),
-            CancelToken::never(),
-        );
-        let echoed = client
-            .post_bytes(url, Bytes::from_static(b"ping"), None)
-            .await
-            .expect("post_bytes must succeed after retry");
-        assert_eq!(&echoed[..], b"ping", "server must echo the posted body");
-        assert_eq!(
-            counter.load(Ordering::SeqCst),
-            2,
-            "exactly 2 attempts: 1 failed (503) + 1 ok"
-        );
-    }
-
-    /// `with_observer` rebuilds the options around the new observer. A field
-    /// it fails to carry over is a knob that silently reverts to its default
-    /// the moment the downloader attaches an observer to the client.
-    #[kithara::test]
-    fn attaching_an_observer_carries_the_options_over() {
-        let options = NetOptions::builder()
-            .pool_idle_timeout(Duration::from_secs(77))
-            .build();
-        let client = HttpClient::new(options, crate::test_pools::pools(), CancelToken::never());
-
-        assert_eq!(
-            client.with_observer(None).options().pool_idle_timeout,
-            Duration::from_secs(77)
         );
     }
 

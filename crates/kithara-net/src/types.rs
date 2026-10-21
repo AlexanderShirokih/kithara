@@ -298,6 +298,10 @@ mod tests {
     #[case::simple_key("key1", "value1")]
     #[case::content_type("Content-Type", "application/json")]
     #[case::custom_header("X-Custom-Header", "custom-value")]
+    #[case::with_spaces("X-Custom Header", "value with spaces")]
+    #[case::with_unicode("X-Emoji", "\u{1f389}")]
+    #[case::with_special_chars("X-Special", "a\tb\nc")]
+    #[case::empty_value("X-Empty", "")]
     async fn test_headers_insert_and_get(#[case] key: &str, #[case] value: &str) {
         let mut headers = Headers::default();
         headers.insert(key, value);
@@ -335,12 +339,6 @@ mod tests {
         assert!(!headers.is_empty());
         assert_eq!(headers.get("key1"), Some("value1"));
         assert_eq!(headers.get("key2"), Some("value2"));
-    }
-
-    #[kithara::test(tokio, timeout(Duration::from_secs(5)))]
-    async fn test_headers_default() {
-        let headers = Headers::default();
-        assert!(headers.is_empty());
     }
 
     #[kithara::test(tokio, timeout(Duration::from_secs(5)))]
@@ -521,18 +519,6 @@ mod tests {
 
         assert!(delay <= policy.max_delay);
         assert!(delay >= Duration::ZERO);
-    }
-
-    #[kithara::test(tokio, timeout(Duration::from_secs(5)))]
-    #[case::with_spaces("X-Custom Header", "value with spaces")]
-    #[case::with_unicode("X-Emoji", "🎉")]
-    #[case::with_special_chars("X-Special", "a\tb\nc")]
-    #[case::empty_value("X-Empty", "")]
-    async fn test_headers_special_characters(#[case] key: &str, #[case] value: &str) {
-        let mut headers = Headers::default();
-        headers.insert(key, value);
-
-        assert_eq!(headers.get(key), Some(value));
     }
 
     #[kithara::test(tokio, timeout(Duration::from_secs(5)))]

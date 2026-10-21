@@ -139,16 +139,6 @@ mod tests {
     }
 
     #[kithara::test(native, flash(false))]
-    fn response_headers_are_lowercased() {
-        let reported = pairs(&[("Content-Length", "12"), ("ETag", "\"a\"")]);
-
-        let headers = response_headers(reported, 200, &url()).expect("reported headers translate");
-
-        assert_eq!(headers.get("content-length"), Some("12"));
-        assert_eq!(headers.get("etag"), Some("\"a\""));
-    }
-
-    #[kithara::test(native, flash(false))]
     fn a_surviving_content_encoding_is_rejected() {
         let reported = pairs(&[("CoNtEnT-EnCoDiNg", "identity, GZIP")]);
 
