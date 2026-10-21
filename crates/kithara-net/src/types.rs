@@ -329,19 +329,6 @@ mod tests {
     }
 
     #[kithara::test(tokio, timeout(Duration::from_secs(5)))]
-    async fn test_headers_from_hashmap() {
-        let mut map = HashMap::new();
-        map.insert("key1".to_string(), "value1".to_string());
-        map.insert("key2".to_string(), "value2".to_string());
-
-        let headers: Headers = map.into();
-
-        assert!(!headers.is_empty());
-        assert_eq!(headers.get("key1"), Some("value1"));
-        assert_eq!(headers.get("key2"), Some("value2"));
-    }
-
-    #[kithara::test(tokio, timeout(Duration::from_secs(5)))]
     #[case::full_range(0, Some(100), "bytes=0-100")]
     #[case::open_ended(50, None, "bytes=50-")]
     #[case::single_byte(10, Some(10), "bytes=10-10")]
@@ -521,15 +508,32 @@ mod tests {
         assert!(delay >= Duration::ZERO);
     }
 
-    #[kithara::test(tokio, timeout(Duration::from_secs(5)))]
-    async fn test_headers_case_sensitive() {
-        let mut headers = Headers::default();
-        headers.insert("Content-Type", "application/json");
-        headers.insert("content-type", "text/plain");
-
-        assert_eq!(headers.get("Content-Type"), Some("application/json"));
-        assert_eq!(headers.get("content-type"), Some("text/plain"));
-        assert_ne!(headers.get("Content-Type"), headers.get("content-type"));
+    #[kithara::test(tokio, timeout(Duration::from_secs(2)))]
+    #[case::insert_then_lookup({
+        let mut h = Headers::default();
+        h.insert("content-length", "13");
+        h
+    }, "Content-Length", "13", &[("content-length", "13")])]
+    #[case::two_spellings_one_entry({
+        let mut h = Headers::default();
+        h.insert("content-type", "a");
+        h.insert("Content-Type", "b");
+        h
+    }, "CONTENT-TYPE", "b", &[("Content-Type", "b")])]
+    #[case::from_map(
+        Headers::from(HashMap::from([("Content-Length".to_owned(), "5".to_owned())])),
+        "content-length",
+        "5",
+        &[("Content-Length", "5")]
+    )]
+    async fn a_header_name_matches_in_any_case(
+        #[case] headers: Headers,
+        #[case] lookup: &str,
+        #[case] value: &str,
+        #[case] entries: &[(&str, &str)],
+    ) {
+        assert_eq!(headers.get(lookup), Some(value));
+        assert_eq!(headers.iter().collect::<Vec<_>>(), entries);
     }
 }
 
