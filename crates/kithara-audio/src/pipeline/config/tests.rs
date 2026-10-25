@@ -22,7 +22,6 @@ mod native {
                 .backend(StorageBackend::Memory)
                 .build(),
         )
-        .pools(pools)
         .build()
     }
 
