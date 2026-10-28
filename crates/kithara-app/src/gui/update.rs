@@ -183,6 +183,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        analysis::fixtures::long_wav,
         deck::EqMode,
         engine::Envelope,
         gui::{rig::Rig, ui::cache::DeckLayout},
@@ -304,6 +305,43 @@ mod tests {
             assert_eq!(
                 update(&mut rig.ui, Message::WindowCloseRequested).units(),
                 1
+            );
+        })
+        .await;
+        rig.close().await;
+    }
+
+    #[kithara::test(native, tokio, flash(false))]
+    async fn a_play_press_follows_the_queue(long_wav: String) {
+        let rig = OffThread::spawn("app-host", || Ok::<_, Infallible>(Rig::offline()))
+            .await
+            .expect("rig fixture is infallible");
+        rig.call(move |rig| {
+            let queue = rig.queues[0].clone();
+            queue
+                .append(long_wav.as_str())
+                .expect("deck A takes the track");
+            queue.play();
+            rig.until(
+                "the queue plays",
+                Rig::DEADLINE,
+                |_| {},
+                |_| queue.is_playing(),
+            );
+            rig.shows(DeckId(0), |deck| deck.playing = false);
+            assert!(!rig.flag("deck.playback.playing@deck=a"));
+
+            rig.send("deck-a/play", ControlAction::Activate);
+            assert!(
+                !rig.flag("deck.playback.playing@deck=a"),
+                "the play control draws the published playback state"
+            );
+            rig.pump();
+            rig.until(
+                "the press pauses the playing queue",
+                Rig::DEADLINE,
+                |_| {},
+                |_| !queue.is_playing(),
             );
         })
         .await;
