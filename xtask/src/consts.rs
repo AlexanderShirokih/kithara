@@ -627,6 +627,13 @@ pub(crate) const SCCACHE_MISSING_UDS_CODE: Option<&str> = if cfg!(unix) {
 
 pub(crate) const SCCACHE_STOP_MESSAGE: &str = "Stopping sccache server...";
 
+pub(crate) const CACHE_EVIDENCE_INPUT_LIMIT: usize = 8 * 1024 * 1024;
+
+pub(crate) const CACHE_EVIDENCE_RECORD_LIMIT: usize = 128;
+
+pub(crate) const CACHE_EVIDENCE_KEY_GROUPS: &str =
+    "compiler args sources env_deps externs link env_cfg remap crate";
+
 /// How `simctl delete` refuses a device that does not exist.
 pub(crate) const SIMCTL_INVALID_DEVICE: &str = "Invalid device";
 

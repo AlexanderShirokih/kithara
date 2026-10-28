@@ -27,8 +27,12 @@ fn dependency_audit_publishes_raw_evidence_on_every_job_outcome() {
         .get("paths")
         .and_then(Value::as_sequence)
         .expect("dependency evidence paths are a sequence");
-    assert_eq!(paths.len(), 1);
+    assert_eq!(paths.len(), 2);
     assert_eq!(paths[0].as_str(), Some(".ci-artifacts/deps-deny/"));
+    assert_eq!(
+        paths[1].as_str(),
+        Some(".ci-artifacts/cache/gitlab-$CI_JOB_ID.json")
+    );
 }
 
 #[cfg(unix)]
