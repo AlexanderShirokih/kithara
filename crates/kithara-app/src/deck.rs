@@ -472,10 +472,13 @@ pub(crate) mod mock {
 
 #[cfg(test)]
 mod tests {
+    use std::convert::Infallible;
+
     use kithara::{
         host::HostConfig,
         platform::sync::{Arc, Mutex},
     };
+    use kithara_test_utils::off_thread::OffThread;
 
     use super::*;
     use crate::{
@@ -483,7 +486,13 @@ mod tests {
         state::{UiState, test_fixture::controller_on},
     };
 
-    fn deck_set() -> DeckSet {
+    async fn deck_set() -> OffThread<DeckSet> {
+        OffThread::spawn("app-host", || Ok::<_, Infallible>(open_deck_set()))
+            .await
+            .expect("deck set fixture is infallible")
+    }
+
+    fn open_deck_set() -> DeckSet {
         let config = fixtures::app_config(&CancelToken::root(), fixtures::memory_store());
         let host = AppHost::new(HostConfig::offline(config.worker.pools().clone()).build())
             .expect("test host");
@@ -544,67 +553,87 @@ mod tests {
 
     #[kithara::test(native, tokio, flash(false))]
     async fn decks_own_independent_players_and_share_one_session() {
-        let mut set = deck_set();
-        assert_eq!(set.records().len(), DeckSet::LETTERS.len());
+        let set = deck_set().await;
+        set.call(|set| {
+            assert_eq!(set.records().len(), DeckSet::LETTERS.len());
 
-        for (i, a) in set.records().iter().enumerate() {
-            for b in set.records().iter().skip(i + 1) {
-                assert_ne!(a.id(), b.id());
+            for (i, a) in set.records().iter().enumerate() {
+                for b in set.records().iter().skip(i + 1) {
+                    assert_ne!(a.id(), b.id());
+                }
             }
-        }
 
-        // Only accepted if they share one session (a foreign one is rejected).
-        set.send_levels().expect("all decks share one session");
+            // Only accepted if they share one session (a foreign one is rejected).
+            set.send_levels().expect("all decks share one session");
+        })
+        .await;
+        set.close().await;
     }
 
     #[kithara::test(native, tokio, flash(false))]
     async fn crossfader_commit_reaches_every_deck() {
-        let mut set = deck_set();
-        set.set_crossfader(0.0).expect("crossfader to A");
-        assert_eq!(levels(&set), vec![1.0, 0.0]);
+        let set = deck_set().await;
+        set.call(|set| {
+            set.set_crossfader(0.0).expect("crossfader to A");
+            assert_eq!(levels(set), vec![1.0, 0.0]);
 
-        set.set_crossfader(1.0).expect("crossfader to B");
-        assert_eq!(levels(&set), vec![0.0, 1.0]);
+            set.set_crossfader(1.0).expect("crossfader to B");
+            assert_eq!(levels(set), vec![0.0, 1.0]);
+        })
+        .await;
+        set.close().await;
     }
 
     #[kithara::test(native, tokio, flash(false))]
     async fn per_deck_trim_is_independent() {
-        let mut set = deck_set();
-        let before = levels(&set);
+        let set = deck_set().await;
+        set.call(|set| {
+            let before = levels(set);
 
-        set.set_trim(id(&set, "b"), 0.25).expect("trim deck b");
+            set.set_trim(id(set, "b"), 0.25).expect("trim deck b");
 
-        let levels = levels(&set);
-        assert_eq!(levels[1], before[1] * 0.25);
-        assert_eq!(levels[0], before[0]);
+            let levels = levels(set);
+            assert_eq!(levels[1], before[1] * 0.25);
+            assert_eq!(levels[0], before[0]);
+        })
+        .await;
+        set.close().await;
     }
 
     #[kithara::test(native, tokio, flash(false))]
     async fn failed_apply_rolls_the_app_mix_back() {
-        let mut set = deck_set();
-        set.set_crossfader(0.25).expect("valid crossfader");
-        let before = *set.mix();
+        let set = deck_set().await;
+        set.call(|set| {
+            set.set_crossfader(0.25).expect("valid crossfader");
+            let before = *set.mix();
 
-        let err = set.set_crossfader(1.5).expect_err("invalid position");
-        assert!(matches!(
-            err,
-            QueueError::Play(PlayError::MixPosition { .. })
-        ));
-        assert_eq!(set.mix(), &before);
+            let err = set.set_crossfader(1.5).expect_err("invalid position");
+            assert!(matches!(
+                err,
+                QueueError::Play(PlayError::MixPosition { .. })
+            ));
+            assert_eq!(set.mix(), &before);
 
-        let deck = id(&set, "b");
-        let strip = set.record(deck).map(|record| record.strip);
-        let err = set
-            .set_trim(deck, f32::NAN)
-            .expect_err("a trim that is not a number");
-        assert!(matches!(err, QueueError::Play(PlayError::MixLevel { .. })));
-        assert_eq!(set.record(deck).map(|record| record.strip), strip);
+            let deck = id(set, "b");
+            let strip = set.record(deck).map(|record| record.strip);
+            let err = set
+                .set_trim(deck, f32::NAN)
+                .expect_err("a trim that is not a number");
+            assert!(matches!(err, QueueError::Play(PlayError::MixLevel { .. })));
+            assert_eq!(set.record(deck).map(|record| record.strip), strip);
+        })
+        .await;
+        set.close().await;
     }
 
     #[kithara::test(native, tokio, flash(false))]
     async fn session_mix_never_writes_player_content_volume() {
-        let mut set = deck_set();
-        set.set_trim(id(&set, "a"), 0.5).expect("trim deck a");
-        assert_eq!(set.records()[0].queue().volume(), 1.0);
+        let set = deck_set().await;
+        set.call(|set| {
+            set.set_trim(id(set, "a"), 0.5).expect("trim deck a");
+            assert_eq!(set.records()[0].queue().volume(), 1.0);
+        })
+        .await;
+        set.close().await;
     }
 }
