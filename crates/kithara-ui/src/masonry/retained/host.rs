@@ -55,14 +55,11 @@ use crate::{
 type Windows = BTreeMap<String, Rc<RefCell<Window>>>;
 
 /// Mounts the toolkit-neutral document fold into a retained Masonry widget tree.
-#[derive(fieldwork::Fieldwork)]
-#[fieldwork(opt_in, with)]
 pub struct MasonryHost<'a, Action = Published> {
     pub(crate) skin: &'a Skin,
     pub(crate) ctx: Ctx<'a, 'a>,
     pub(crate) map_event: Rc<dyn Fn(Published) -> HostAction>,
     custom: BTreeMap<String, Box<dyn CustomWidget<Action = HostAction>>>,
-    #[field(with)]
     state: MasonryState,
     action: std::marker::PhantomData<fn() -> Action>,
 }
@@ -70,17 +67,13 @@ pub struct MasonryHost<'a, Action = Published> {
 /// Retained host state shared across Masonry document rebuilds.
 #[derive(Clone, Default)]
 pub struct MasonryState {
-    paths: Rc<RefCell<BTreeMap<String, WidgetId>>>,
+    paths: Rc<RefCell<BTreeMap<String, Vec<WidgetId>>>>,
     popovers: Rc<RefCell<BTreeMap<String, Rc<PopoverState>>>>,
     windows: Rc<RefCell<Windows>>,
     pointer: Rc<Cell<Option<crate::draw::Pt>>>,
 }
 
 impl MasonryState {
-    pub(crate) fn clear_paths(&self) {
-        self.paths.borrow_mut().clear();
-    }
-
     fn popover(&self, path: &str, open: bool, kind: SurfaceKind) -> Rc<PopoverState> {
         let mut popovers = self.popovers.borrow_mut();
         let state = Rc::clone(
@@ -93,11 +86,27 @@ impl MasonryState {
     }
 
     pub(crate) fn tag_path(&self, path: &str, id: WidgetId) {
-        self.paths.borrow_mut().insert(path.to_owned(), id);
+        self.paths
+            .borrow_mut()
+            .entry(path.to_owned())
+            .or_default()
+            .push(id);
     }
 
-    pub(crate) fn widget_id(&self, path: &str) -> Option<WidgetId> {
-        self.paths.borrow().get(path).copied()
+    delegate::delegate! {
+        to self.paths.borrow() {
+            #[expr($?.last().copied())]
+            #[call(get)]
+            pub(crate) fn widget_id(&self, path: &str) -> Option<WidgetId>;
+            /// Every widget the document tagged with one path, in mount order.
+            ///
+            /// The branches of an adaptive block repeat the paths of the controls
+            /// they share, and only the branch the room reaches is laid out, so one
+            /// path can name several widgets at once.
+            #[expr($.cloned().unwrap_or_default())]
+            #[call(get)]
+            pub(crate) fn widget_ids(&self, path: &str) -> Vec<WidgetId>;
+        }
     }
 
     /// The window one scroll of the document looks through.
@@ -114,6 +123,16 @@ impl MasonryState {
                 .entry(path.to_owned())
                 .or_insert_with(|| Rc::new(RefCell::new(Window::new()))),
         )
+    }
+}
+
+impl<Action> MasonryHost<'_, Action> {
+    /// Reuses retained state, replacing the previous tree's path registrations.
+    #[must_use]
+    pub fn with_state(mut self, state: MasonryState) -> Self {
+        state.paths.borrow_mut().clear();
+        self.state = state;
+        self
     }
 }
 
