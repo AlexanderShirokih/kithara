@@ -10,7 +10,13 @@ message: |
 severity: warning
 language: Rust
 files:
-  - "**/*.rs"
+  - "crates/**/src/**/*.rs"
+ignores:
+  - "**/tests/**"
+  - "**/test_*.rs"
+  - "**/*_test.rs"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
 rule:
   any:
     - pattern: dbg!($$$)

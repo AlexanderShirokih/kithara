@@ -1,15 +1,23 @@
-//! Packaged AST rules retain consumer policy after relocation.
+//! Caller-owned AST configurations retain their policy after relocation.
 
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use kithara_devtools::{CoreCommand, Ctx, ast_grep::AstGrepArgs, run};
-use tempfile::{TempDir, tempdir};
+use tempfile::{TempDir, tempdir, tempdir_in};
 
 fn fixture(rule: &str, path: &str, source: &str) -> (TempDir, Ctx) {
     let root = tempdir().expect("workspace");
+    let library = if path == "lib.rs" {
+        path
+    } else {
+        "custom/lib.rs"
+    };
     fs::write(
         root.path().join("Cargo.toml"),
-        "[package]\nname='lsq-fixture'\nversion='0.1.0'\nedition='2024'\n[lib]\npath='custom/lib.rs'\n",
+        format!("[package]\nname='lsq-fixture'\nversion='0.1.0'\nedition='2024'\n[lib]\npath='{library}'\n"),
     )
     .expect("manifest");
     fs::create_dir_all(root.path().join("custom")).expect("sources");
@@ -20,9 +28,29 @@ fn fixture(rule: &str, path: &str, source: &str) -> (TempDir, Ctx) {
     fs::create_dir(root.path().join(".config")).expect("config directory");
     fs::write(
         root.path().join(".config/xtask.toml"),
-        format!("[project]\nname='lsq'\n[ast-grep]\nshared_rules=['{rule}']\n"),
+        "[project]\nname='lsq'\n",
     )
     .expect("policy");
+    fs::create_dir(root.path().join("fixture-rules")).expect("caller rule directory");
+    let canonical = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.config/ast-grep")
+        .join(format!("{rule}.yml"));
+    let text = fs::read_to_string(canonical).expect("canonical source");
+    let mut definition: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&text).expect("canonical rule");
+    definition["files"] = serde_yaml_ng::to_value(["**/*.rs"]).expect("caller source scope");
+    fs::write(
+        root.path()
+            .join("fixture-rules")
+            .join(format!("{rule}.yml")),
+        serde_yaml_ng::to_string(&definition).expect("derived caller rule"),
+    )
+    .expect("export canonical rule with caller-owned source scope");
+    fs::write(
+        root.path().join("sgconfig.yml"),
+        "ruleDirs: [fixture-rules]\n",
+    )
+    .expect("caller scan configuration");
     let ctx = Ctx::load_from_manifest(&root.path().join("Cargo.toml")).expect("context");
     (root, ctx)
 }
@@ -41,7 +69,7 @@ fn scan(ctx: &Ctx, paths: &[&str], strict: bool) -> anyhow::Result<()> {
 }
 
 #[test]
-fn selected_pack_detects_each_rule_in_custom_sources_without_local_assets() {
+fn caller_rules_detect_each_violation_in_root_and_custom_sources() {
     for (rule, source) in [
         (
             "rust.no-debug-prints",
@@ -56,15 +84,47 @@ fn selected_pack_detects_each_rule_in_custom_sources_without_local_assets() {
             "fn production() { let _ = (0..3).collect::<Vec<_>>().into_iter(); }",
         ),
     ] {
-        let (root, ctx) = fixture(rule, "custom/lib.rs", source);
-        let cwd = std::env::current_dir().expect("caller cwd");
-        assert_ne!(cwd, root.path());
-        assert!(scan(&ctx, &[], true).is_err(), "{rule} violation");
-        fs::write(root.path().join("custom/lib.rs"), "pub struct Value;").expect("corrected");
-        scan(&ctx, &[], true).expect("corrected source");
-        assert_eq!(std::env::current_dir().expect("caller cwd"), cwd);
-        assert!(!root.path().join("sgconfig.yml").exists());
+        for path in ["lib.rs", "custom/lib.rs"] {
+            let (root, ctx) = fixture(rule, path, source);
+            let cwd = std::env::current_dir().expect("caller cwd");
+            assert_ne!(cwd, root.path());
+            assert!(scan(&ctx, &[], true).is_err(), "{rule} violation in {path}");
+            fs::write(root.path().join(path), "pub struct Value;").expect("corrected");
+            scan(&ctx, &[], true).expect("corrected source");
+            assert_eq!(std::env::current_dir().expect("caller cwd"), cwd);
+            assert!(root.path().join("sgconfig.yml").is_file());
+        }
     }
+}
+
+#[test]
+fn standalone_relative_root_resolves_its_native_configuration_once() {
+    let cwd = std::env::current_dir().expect("caller cwd");
+    let root = tempdir_in(&cwd).expect("relative-root workspace");
+    fs::create_dir(root.path().join("rules")).expect("caller rules");
+    fs::write(root.path().join("sgconfig.yml"), "ruleDirs: [rules]\n")
+        .expect("native configuration");
+    fs::write(
+        root.path().join("rules/value.yml"),
+        "id: caller.value\nlanguage: Rust\nseverity: error\nmessage: value\nrule: {kind: integer_literal, regex: '^42$'}\n",
+    )
+    .expect("caller rule");
+    let source = root.path().join("value.rs");
+    fs::write(&source, "fn value() -> u32 { 42 }").expect("violation");
+    let relative = PathBuf::from(root.path().file_name().expect("relative component"));
+    let ctx = Ctx::new(
+        relative,
+        kithara_devtools::common::project::ProjectConfig::default(),
+    );
+    let error = scan(&ctx, &[], true).expect_err("relative-root finding");
+    assert!(
+        error
+            .downcast_ref::<kithara_devtools::verdict::NotClean>()
+            .is_some(),
+        "{error:#}"
+    );
+    fs::write(source, "pub struct Value;").expect("corrected source");
+    scan(&ctx, &[], true).expect("relative root keeps its native configuration");
 }
 
 #[test]
@@ -85,21 +145,26 @@ fn warning_promotion_and_unselected_project_policy_remain_explicit() {
 }
 
 #[test]
-fn malformed_shared_selection_is_rejected() {
-    for selection in [
-        "['unknown.rule']",
-        "['rust.no-debug-prints', 'rust.no-debug-prints']",
-    ] {
-        let (root, _) = fixture("rust.no-debug-prints", "custom/lib.rs", "");
-        fs::write(
-            root.path().join(".config/xtask.toml"),
-            format!("[ast-grep]\nshared_rules={selection}\n"),
-        )
-        .expect("invalid selection");
-        let result = Ctx::load_from_manifest(&root.path().join("Cargo.toml"))
-            .and_then(|ctx| scan(&ctx, &[], true));
-        assert!(result.is_err(), "{selection}");
-    }
+fn malformed_caller_rule_catalog_is_rejected() {
+    let (root, ctx) = fixture("rust.no-debug-prints", "custom/lib.rs", "");
+    fs::write(
+        root.path().join("sgconfig.yml"),
+        "ruleDirs: [missing-rules]\n",
+    )
+    .expect("missing caller directory");
+    assert!(scan(&ctx, &[], true).is_err(), "missing rule directory");
+    fs::write(
+        root.path().join("sgconfig.yml"),
+        "ruleDirs: [fixture-rules]\n",
+    )
+    .expect("caller directory");
+    fs::copy(
+        root.path().join("fixture-rules/rust.no-debug-prints.yml"),
+        root.path().join("fixture-rules/duplicate.yml"),
+    )
+    .expect("duplicate caller identity");
+    let error = scan(&ctx, &[], true).expect_err("duplicate identity");
+    assert!(error.to_string().contains("duplicate ast-grep rule"));
 }
 
 #[test]
@@ -117,7 +182,7 @@ fn explicit_paths_override_declared_sources() {
 }
 
 #[test]
-fn scan_all_uses_the_packaged_rule_and_retains_test_exclusions_for_others() {
+fn scan_all_bypasses_caller_exclusions_and_preserves_rule_ignores() {
     let (root, mut ctx) = fixture(
         "rust.no-debug-prints",
         "custom/lib.rs",
@@ -126,26 +191,36 @@ fn scan_all_uses_the_packaged_rule_and_retains_test_exclusions_for_others() {
     scan(&ctx, &[], true).expect("inline test is excluded");
     ctx.config.lint_exclude.scan_all_rules = vec!["rust.no-debug-prints".to_owned()];
     assert!(scan(&ctx, &[], true).is_err());
-    fs::write(root.path().join("custom/lib.rs"), "mod fixture_tests;").expect("external source");
+    fs::write(root.path().join("custom/lib.rs"), "mod fixture;").expect("external source");
     fs::write(
-        root.path().join("custom/fixture_tests.rs"),
+        root.path().join("custom/fixture.rs"),
         "fn fixture() { println!(\"debug\"); }",
     )
     .expect("external test source");
     ctx.config.lint_exclude.scan_all_rules.clear();
-    ctx.config.lint_exclude.paths = vec!["**/*_tests.rs".to_owned()];
+    ctx.config.lint_exclude.paths = vec!["**/fixture.rs".to_owned()];
     scan(&ctx, &[], true).expect("test path is excluded");
     ctx.config.lint_exclude.scan_all_rules = vec!["rust.no-debug-prints".to_owned()];
     assert!(scan(&ctx, &[], true).is_err());
+    fs::write(root.path().join("custom/fixture.rs"), "pub struct Value;")
+        .expect("corrected external source");
+    fs::write(root.path().join("custom/lib.rs"), "mod fixture_tests;")
+        .expect("native ignored source");
+    fs::write(
+        root.path().join("custom/fixture_tests.rs"),
+        "fn fixture() { println!(\"debug\"); }",
+    )
+    .expect("native ignored test source");
+    scan(&ctx, &[], true).expect("scan-all preserves the canonical rule's native ignores");
 }
 
 #[test]
-fn local_rules_compose_without_duplicate_shared_identities() {
+fn caller_rule_directories_compose_without_duplicate_identities() {
     let (root, _) = fixture("rust.no-debug-prints", "custom/lib.rs", "pub struct Value;");
     fs::create_dir(root.path().join("local-rules")).expect("local directory");
     fs::write(
         root.path().join("sgconfig.yml"),
-        "ruleDirs: [local-rules]\n",
+        "ruleDirs: [fixture-rules, local-rules]\n",
     )
     .expect("local config");
     let rule = root.path().join("local-rules/value.yml");
@@ -163,7 +238,7 @@ fn local_rules_compose_without_duplicate_shared_identities() {
         "id: rust.no-debug-prints\nlanguage: Rust\nseverity: error\nmessage: duplicate\nrule:\n  kind: type_identifier\n",
     )
     .expect("duplicate identity");
-    let error = scan(&ctx, &[], true).expect_err("shared identity is ambiguous");
+    let error = scan(&ctx, &[], true).expect_err("caller identity is ambiguous");
     assert!(error.to_string().contains("duplicate ast-grep rule"));
 }
 
@@ -172,7 +247,7 @@ fn executable_failure_and_foreign_fix_root_are_errors() {
     let (root, mut ctx) = fixture("rust.no-debug-prints", "custom/lib.rs", "pub struct Value;");
     let tool = root.path().join("missing-ast-grep");
     let policy = format!(
-        "[ast-grep]\nshared_rules=['rust.no-debug-prints']\n[tools.ast-grep]\nprogram={}\n",
+        "[tools.ast-grep]\nprogram={}\n",
         serde_json::to_string(&tool).expect("tool path"),
     );
     fs::write(root.path().join(".config/xtask.toml"), policy).expect("tool role");
@@ -203,7 +278,7 @@ fn scan_all_keeps_other_production_rules_in_the_same_report_category() {
     fs::create_dir(root.path().join("local-rules")).expect("local directory");
     fs::write(
         root.path().join("sgconfig.yml"),
-        "ruleDirs: [local-rules]\n",
+        "ruleDirs: [fixture-rules, local-rules]\n",
     )
     .expect("local config");
     fs::write(
@@ -264,13 +339,13 @@ fn project_ast_scope_keeps_workspace_manifest_and_scan_all_tests() {
     fs::create_dir(root.path().join("crates")).expect("Rust default domain");
     fs::write(
         root.path().join(".config/xtask.toml"),
-        "[ast-grep]\nshared_rules=['rust.no-debug-prints']\ndefault_roots=['.']\n[workspace-scan]\ndefault_roots=['crates']\n[lint_exclude]\npaths=['tests/**']\nscan_all_rules=['local.value']\n",
+        "[ast-grep]\ndefault_roots=['.']\n[workspace-scan]\ndefault_roots=['crates']\n[lint_exclude]\npaths=['tests/**']\nscan_all_rules=['local.value']\n",
     )
     .expect("separate AST source domain");
     fs::create_dir(root.path().join("local-rules")).expect("local rules");
     fs::write(
         root.path().join("sgconfig.yml"),
-        "ruleDirs: [local-rules]\nlanguageGlobs:\n  Yaml: ['**/*.toml']\n",
+        "ruleDirs: [fixture-rules, local-rules]\nlanguageGlobs:\n  Yaml: ['**/*.toml']\n",
     )
     .expect("local config");
     fs::write(
@@ -317,7 +392,7 @@ fn local_utility_directories_work_in_the_scan_all_catalog() {
     .expect("test source");
     fs::write(
         root.path().join("sgconfig.yml"),
-        "ruleDirs: [local-rules]\nutilDirs: [local-utils]\n",
+        "ruleDirs: [fixture-rules, local-rules]\nutilDirs: [local-utils]\n",
     )
     .expect("local utility configuration");
     fs::write(
@@ -353,7 +428,7 @@ fn non_diagnostic_tool_exit_is_not_a_clean_scan() {
     let (root, _) = fixture("rust.no-debug-prints", "custom/lib.rs", "pub struct Voice;");
     fs::write(
         root.path().join(".config/xtask.toml"),
-        "[ast-grep]\nshared_rules=['rust.no-debug-prints']\n[tools.ast-grep]\nprogram='rustc'\n",
+        "[tools.ast-grep]\nprogram='rustc'\n",
     )
     .expect("non-scanner tool role");
     let ctx = Ctx::load_from_manifest(&root.path().join("Cargo.toml")).expect("context");
@@ -371,7 +446,7 @@ fn path_arguments_keep_their_literal_scope() {
     fs::create_dir(root.path().join("local-rules")).expect("local rules");
     fs::write(
         root.path().join("sgconfig.yml"),
-        "ruleDirs: [local-rules]\n",
+        "ruleDirs: [fixture-rules, local-rules]\n",
     )
     .expect("local configuration");
     fs::write(

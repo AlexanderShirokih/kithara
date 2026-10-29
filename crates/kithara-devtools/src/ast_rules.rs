@@ -1,4 +1,4 @@
-//! Resolve one catalog of packaged and workspace-local ast-grep rules.
+//! Resolve the caller's native ast-grep configuration and source scope.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -9,8 +9,7 @@ use std::{
 use anyhow::{Context as _, Result, ensure};
 use glob::Pattern;
 use serde::Deserialize;
-use serde_yaml_ng::{Deserializer, Mapping, Value};
-use tempfile::{TempDir, tempdir};
+use serde_yaml_ng::{Deserializer, Value};
 
 use crate::{
     Ctx,
@@ -21,122 +20,44 @@ use crate::{
     },
 };
 
-const SHARED_RULES: [(&str, &str); 3] = [
-    (
-        "rust.no-debug-prints",
-        include_str!("../rules/rust.no-debug-prints.yml"),
-    ),
-    (
-        "rust.no-inherent-to-string",
-        include_str!("../rules/rust.no-inherent-to-string.yml"),
-    ),
-    (
-        "perf.no-collect-iter-roundtrip",
-        include_str!("../rules/perf.no-collect-iter-roundtrip.yml"),
-    ),
-];
-
+#[derive(fieldwork::Fieldwork)]
+#[fieldwork(opt_in, get, deref = false)]
 pub(crate) struct Rules {
     catalog: BTreeMap<String, BTreeSet<String>>,
-    directory: TempDir,
+    #[field(get(deref = Path), vis = "pub(crate)")]
+    config: PathBuf,
 }
 
 impl Rules {
-    pub(crate) fn config(&self) -> PathBuf {
-        self.directory.path().join("sgconfig.yml")
-    }
-
     pub(crate) fn load(ctx: &Ctx) -> Result<Self> {
-        let directory = tempdir().context("create ast-grep rule directory")?;
         let mut catalog = BTreeMap::new();
         let mut identities = BTreeSet::new();
-        let mut config = Mapping::new();
-        let local_config = ctx.root.join("sgconfig.yml");
-        let mut dirs = Vec::new();
-        if local_config.exists() {
-            config = serde_yaml_ng::from_str(&fs::read_to_string(&local_config)?)
-                .with_context(|| format!("parse {}", local_config.display()))?;
-            for key in ["ruleDirs", "utilDirs"] {
-                if let Some(value) = config.get_mut(Value::String(key.to_owned())) {
-                    let entries = value
-                        .as_sequence_mut()
-                        .with_context(|| format!("ast-grep {key} must be a list"))?;
-                    for entry in entries {
-                        let relative = entry
-                            .as_str()
-                            .with_context(|| format!("ast-grep {key} must contain paths"))?;
-                        let path =
-                            ctx.root.join(relative).canonicalize().with_context(|| {
-                                format!("resolve ast-grep {key} path {relative}")
-                            })?;
-                        *entry = Value::String(path.to_string_lossy().into_owned());
-                        if key == "ruleDirs" {
-                            dirs.push(path);
-                        }
-                    }
-                }
-            }
-            for dir in &dirs {
-                index_directory(dir, &mut catalog, &mut identities)?;
-            }
+        let config = ctx
+            .root
+            .join("sgconfig.yml")
+            .canonicalize()
+            .context("resolve caller ast-grep configuration")?;
+        let text = fs::read_to_string(&config)
+            .with_context(|| format!("read ast-grep configuration {}", config.display()))?;
+        let value: Value = serde_yaml_ng::from_str(&text)
+            .with_context(|| format!("parse {}", config.display()))?;
+        let dirs = value
+            .get("ruleDirs")
+            .and_then(Value::as_sequence)
+            .context("ast-grep ruleDirs must be a list")?;
+        for entry in dirs {
+            let relative = entry
+                .as_str()
+                .context("ast-grep ruleDirs must contain paths")?;
+            index_directory(&ctx.root.join(relative), &mut catalog, &mut identities)?;
         }
-        let shared_dir = directory.path().join("shared");
-        fs::create_dir(&shared_dir)?;
-        let mut selected = BTreeSet::new();
-        for id in &ctx.config.ast_grep.shared_rules {
-            ensure!(selected.insert(id), "duplicate shared ast-grep rule `{id}`");
-            let (_, source) = SHARED_RULES
-                .iter()
-                .find(|(known, _)| *known == id)
-                .with_context(|| format!("unknown shared ast-grep rule `{id}`"))?;
-            let path = shared_dir.join(format!("{id}.yml"));
-            let mut rule: Value = serde_yaml_ng::from_str(source)?;
-            if let Some(paths) = ctx.config.ast_grep.shared_rule_paths.get(id) {
-                ensure!(
-                    !paths.is_empty(),
-                    "shared ast-grep scope `{id}` must not be empty"
-                );
-                for pattern in paths {
-                    ensure!(
-                        !pattern.is_empty(),
-                        "shared ast-grep scope `{id}` has an empty pattern"
-                    );
-                    Pattern::new(pattern)
-                        .with_context(|| format!("invalid shared ast-grep scope `{id}`"))?;
-                }
-                rule["files"] = serde_yaml_ng::to_value(paths)?;
-            }
-            fs::write(&path, serde_yaml_ng::to_string(&rule)?)?;
-            index_file(&path, &mut catalog, &mut identities)?;
-        }
-        for id in ctx.config.ast_grep.shared_rule_paths.keys() {
-            ensure!(
-                selected.contains(id),
-                "scope names unselected shared ast-grep rule `{id}`"
-            );
-        }
-        ensure!(
-            local_config.exists() || !selected.is_empty(),
-            "ast-grep requires sgconfig.yml or selected packaged rules",
-        );
-        if !selected.is_empty() {
-            dirs.push(shared_dir);
-        }
-        config.insert(
-            Value::String("ruleDirs".to_owned()),
-            serde_yaml_ng::to_value(dirs)?,
-        );
-        fs::write(
-            directory.path().join("sgconfig.yml"),
-            serde_yaml_ng::to_string(&config)?,
-        )?;
         for id in &ctx.config.lint_exclude.scan_all_rules {
             ensure!(
                 catalog.contains_key(id),
                 "unknown scan-all ast-grep rule `{id}`"
             );
         }
-        Ok(Self { catalog, directory })
+        Ok(Self { catalog, config })
     }
 
     pub(crate) fn rule(&self, id: &str) -> Result<&BTreeSet<String>> {

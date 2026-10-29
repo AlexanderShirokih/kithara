@@ -86,46 +86,27 @@ Quality Lab intentionally keeps a separate, **required**
 path. The ownership rules, the schema's strictness, and what each section is
 allowed to declare are in [crate contracts](https://github.com/zvuk/kithara/wiki/kithara-devtools).
 
-### Packaged AST rules
+### AST configuration
 
-Select the finite shared pack in the consumer's `.config/xtask.toml`:
-
-```toml
-[ast-grep]
-shared_rules = [
-  "rust.no-debug-prints",
-  "rust.no-inherent-to-string",
-  "perf.no-collect-iter-roundtrip",
-]
-
-[tools.ast-grep]
-pin = "ast-grep"
-```
-
-The pinned devtools revision contains the rules. Preparation installs the
-executable pinned under `cargo_tools.ast-grep` in `.config/ci-pins.toml`; scanning
-does not download anything. `ast-grep --strict` promotes warning findings.
-The wrapper materializes package-owned YAML in an owned temporary directory,
-composes it with the workspace's optional `sgconfig.yml`, and removes it after
-the run. Local rule and utility directories remain relative to the workspace.
-Unknown shared IDs, duplicate shared/local IDs and unavailable scan-all IDs
-fail explicitly. No shared rule supplies an automatic semantic rewrite.
+AST rule definitions belong to the caller's ordinary `sgconfig.yml` and its
+native `ruleDirs` / `utilDirs`. This crate supplies execution and diagnostic
+handling; it contains no embedded rule collection. Kithara keeps every maintained
+rule source in root `.config/ast-grep`.
 
 The default source scope follows Cargo targets and their modules; a standalone
-`Ctx::new` scans its root without requiring Cargo metadata. Explicit paths override
-that scope. A project's `[ast-grep].default_roots` owns its AST domain
-independently of Rust-only scan roots. Kithara selects `.` to keep root manifests
-and top-level scan-all tests covered. `[lint_exclude]` owns test/tooling exclusions, and
-`scan_all_rules` resolves both shared and local identities. Optional
-`[ast-grep.shared_rule_paths]` maps a selected shared ID to its local `files`
-globs, preserving a workspace's narrower policy without changing the rule.
-Kithara selects the same package implementation and retains its existing
-per-rule source globs. Its other rules stay local.
+`Ctx::new` scans its root without Cargo metadata. Explicit paths override that
+scope. `[ast-grep].default_roots` owns the caller's AST domain independently of
+Rust-only scan roots. `[lint_exclude]` owns test/tooling exclusions, while
+`scan_all_rules` resolves identities and report categories from the same native
+configuration. Unknown or duplicate identities fail explicitly. Strict mode
+promotes warning diagnostics; execution errors and existing fix safeguards stay
+in force.
 
-The [rule inventory](rules/README.md) records every current identity and owner.
-Exchange validation results with the exact dependency commit, selected IDs,
-executable pin and consumer source scope. Copying a built consumer to another
-directory does not require the dependency source tree at runtime.
+An external consumer prepares any selected canonical rule exports explicitly
+and supplies its own ordinary scan configuration. Generated exports retain the
+source revision and content provenance; they are build artifacts, not another
+maintained rule library. Exchange results with the exact source revision,
+selected IDs, executable pin and consumer scope.
 
 ## Key Types
 

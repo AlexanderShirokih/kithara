@@ -1,12 +1,8 @@
-//! Rule ownership and the finite packaged delivery boundary.
+//! Every maintained AST rule belongs to the repository rule library.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs,
-    path::Path,
-};
+use std::{collections::BTreeMap, fs, path::Path};
 
-const SHARED_RULES: [&str; 3] = [
+const CONSUMER_RULES: [&str; 3] = [
     "perf.no-collect-iter-roundtrip",
     "rust.no-debug-prints",
     "rust.no-inherent-to-string",
@@ -42,62 +38,18 @@ fn rule_sources(directory: &Path) -> BTreeMap<String, String> {
 }
 
 #[test]
-fn every_rule_has_one_ownership_and_delivery_classification() {
+fn every_rule_has_one_canonical_repository_owner() {
     let package = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let local = rule_sources(&package.join("../../.config/ast-grep"));
-    let shared = rule_sources(&package.join("rules"));
-    let inventory =
-        fs::read_to_string(package.join("rules/README.md")).expect("read rule ownership inventory");
-    let mut classified = BTreeMap::new();
-    for row in inventory.lines() {
-        let columns: Vec<_> = row.split('|').map(str::trim).collect();
-        let Some(id) = columns
-            .get(1)
-            .and_then(|id| id.strip_prefix('`'))
-            .and_then(|id| id.strip_suffix('`'))
-        else {
-            continue;
-        };
-        assert_eq!(columns.len(), 5, "invalid inventory row: {row}");
-        assert!(
-            matches!(
-                columns[2],
-                "generic candidate" | "optional primitive contract" | "Kithara project policy"
-            ),
-            "unknown ownership for {id}: {}",
-            columns[2]
-        );
-        assert!(
-            matches!(columns[3], "local" | "shared"),
-            "unknown delivery for {id}: {}",
-            columns[3]
-        );
-        assert!(
-            classified.insert(id, columns[3]).is_none(),
-            "rule has multiple classifications: {id}"
-        );
-    }
     assert!(
-        local.keys().all(|id| !shared.contains_key(id)),
-        "a shared rule retains a local maintained copy"
+        !package.join("rules").exists(),
+        "devtools must not own a second rule library"
     );
-    let sources: BTreeMap<_, _> = local
-        .keys()
-        .map(|id| (id.as_str(), "local"))
-        .chain(shared.keys().map(|id| (id.as_str(), "shared")))
-        .collect();
-    assert_eq!(classified, sources);
-}
-
-#[test]
-fn the_package_ships_only_the_three_selected_rule_sources() {
-    let package = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let rules = rule_sources(&package.join("rules"));
-    let expected: BTreeSet<_> = SHARED_RULES.into_iter().collect();
-    assert_eq!(
-        rules.keys().map(String::as_str).collect::<BTreeSet<_>>(),
-        expected
+    let rules = rule_sources(&package.join("../../.config/ast-grep"));
+    assert!(
+        !rules.is_empty(),
+        "canonical rule library must not be empty"
     );
-    let sources: BTreeSet<_> = rules.values().collect();
-    assert_eq!(sources.len(), SHARED_RULES.len());
+    for id in CONSUMER_RULES {
+        assert!(rules.contains_key(id), "missing canonical rule {id}");
+    }
 }
