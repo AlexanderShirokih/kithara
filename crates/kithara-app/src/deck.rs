@@ -476,24 +476,32 @@ mod tests {
 
     use kithara::{
         host::HostConfig,
-        platform::sync::{Arc, Mutex},
+        platform::{
+            sync::{Arc, Mutex},
+            thread,
+            time::{Duration, WallInstant},
+        },
     };
     use kithara_test_utils::off_thread::OffThread;
 
     use super::*;
     use crate::{
-        analysis::fixtures,
+        analysis::fixtures::{self, constant_fifth_wav, constant_tenth_wav},
+        gui::rig::Rig,
+        mock::Capture,
         state::{UiState, test_fixture::controller_on},
     };
 
     async fn deck_set() -> OffThread<DeckSet> {
-        OffThread::spawn("app-host", || Ok::<_, Infallible>(open_deck_set()))
-            .await
-            .expect("deck set fixture is infallible")
+        OffThread::spawn("app-host", || {
+            Ok::<_, Infallible>(open_deck_set(&CancelToken::root()))
+        })
+        .await
+        .expect("deck set fixture is infallible")
     }
 
-    fn open_deck_set() -> DeckSet {
-        let config = fixtures::app_config(&CancelToken::root(), fixtures::memory_store());
+    fn open_deck_set(shutdown: &CancelToken) -> DeckSet {
+        let config = fixtures::app_config(shutdown, fixtures::memory_store());
         let host = AppHost::new(HostConfig::offline(config.worker.pools().clone()).build())
             .expect("test host");
 
@@ -510,12 +518,6 @@ mod tests {
             .find(|record| record.letter == letter)
             .map(DeckRecord::id)
             .expect("the set holds the deck")
-    }
-
-    fn levels(set: &DeckSet) -> Vec<f32> {
-        set.mix()
-            .levels(set.records().iter().map(|record| &record.strip))
-            .unwrap()
     }
 
     #[kithara::test]
@@ -571,36 +573,6 @@ mod tests {
     }
 
     #[kithara::test(native, tokio, flash(false))]
-    async fn crossfader_commit_reaches_every_deck() {
-        let set = deck_set().await;
-        set.call(|set| {
-            set.set_crossfader(0.0).expect("crossfader to A");
-            assert_eq!(levels(set), vec![1.0, 0.0]);
-
-            set.set_crossfader(1.0).expect("crossfader to B");
-            assert_eq!(levels(set), vec![0.0, 1.0]);
-        })
-        .await;
-        set.close().await;
-    }
-
-    #[kithara::test(native, tokio, flash(false))]
-    async fn per_deck_trim_is_independent() {
-        let set = deck_set().await;
-        set.call(|set| {
-            let before = levels(set);
-
-            set.set_trim(id(set, "b"), 0.25).expect("trim deck b");
-
-            let levels = levels(set);
-            assert_eq!(levels[1], before[1] * 0.25);
-            assert_eq!(levels[0], before[0]);
-        })
-        .await;
-        set.close().await;
-    }
-
-    #[kithara::test(native, tokio, flash(false))]
     async fn failed_apply_rolls_the_app_mix_back() {
         let set = deck_set().await;
         set.call(|set| {
@@ -626,14 +598,143 @@ mod tests {
         set.close().await;
     }
 
-    #[kithara::test(native, tokio, flash(false))]
-    async fn session_mix_never_writes_player_content_volume() {
-        let set = deck_set().await;
-        set.call(|set| {
-            set.set_trim(id(set, "a"), 0.5).expect("trim deck a");
-            assert_eq!(set.records()[0].queue().volume(), 1.0);
+    const DECK_A: f32 = 0.2;
+    const DECK_B: f32 = 0.1;
+    /// The share of a bus the crossfader centre passes: -3 dB.
+    const CENTRE: f32 = std::f32::consts::FRAC_1_SQRT_2;
+    const TOL: f32 = 1e-3;
+
+    /// The value every sample of `block` holds, if they hold one.
+    fn plateau(block: &[f32]) -> Option<f32> {
+        let (first, rest) = block.split_first()?;
+        rest.iter()
+            .all(|sample| (sample - first).abs() < TOL)
+            .then_some(*first)
+    }
+
+    struct Playing {
+        set: DeckSet,
+        shutdown: CancelToken,
+        rendered: u64,
+    }
+
+    impl Playing {
+        const BLOCK: u64 = 1024;
+
+        fn open(a: &str, b: &str) -> Self {
+            let shutdown = CancelToken::root();
+            let set = open_deck_set(&shutdown);
+
+            for (record, url) in set.records().iter().zip([a, b]) {
+                let queue = record.queue();
+                let track = queue.append(url).expect("the deck takes the track");
+                queue
+                    .select(track, Transition::None)
+                    .expect("the deck selects the track");
+                queue.play();
+            }
+
+            Self {
+                set,
+                shutdown,
+                rendered: 0,
+            }
+        }
+
+        fn block(&mut self) -> Capture {
+            let end = self.rendered + Self::BLOCK;
+            let mut block = Capture::default();
+            crate::mock::render_into(
+                mock::host(&mut self.set),
+                self.rendered..end,
+                &self.shutdown,
+                &mut block,
+            )
+            .expect("the offline mix renders");
+            self.rendered = end;
+            block
+        }
+
+        /// Renders until a block holds `expected`; a block holding one of
+        /// `wrong` fails.
+        fn sounds(&mut self, what: &str, expected: f32, wrong: &[f32]) {
+            let deadline = WallInstant::now() + Rig::DEADLINE;
+
+            loop {
+                if let Some(level) = plateau(self.block().samples()) {
+                    assert!(
+                        wrong.iter().all(|value| (level - value).abs() >= TOL),
+                        "{what}: a block holds {level}, the mix of a wrong level"
+                    );
+                    if (level - expected).abs() < TOL {
+                        return;
+                    }
+                }
+
+                assert!(
+                    WallInstant::now() < deadline,
+                    "{what}: no block holds {expected} within {:?}",
+                    Rig::DEADLINE
+                );
+                thread::paced_backoff(Duration::from_millis(5));
+            }
+        }
+    }
+
+    async fn playing(a: String, b: String) -> OffThread<Playing> {
+        OffThread::spawn("app-host", move || {
+            Ok::<_, Infallible>(Playing::open(&a, &b))
         })
-        .await;
-        set.close().await;
+        .await
+        .expect("playing deck set fixture is infallible")
+    }
+
+    #[kithara::test(native, tokio, flash(false))]
+    async fn a_crossfader_move_sounds_the_deck_on_its_side(
+        constant_fifth_wav: String,
+        constant_tenth_wav: String,
+    ) {
+        let decks = playing(constant_fifth_wav, constant_tenth_wav).await;
+        decks
+            .call(|decks| {
+                decks.set.set_crossfader(0.0).expect("crossfader to A");
+                decks.sounds("crossfader at A", DECK_A, &[DECK_B, DECK_A + DECK_B]);
+
+                decks.set.set_crossfader(1.0).expect("crossfader to B");
+                decks.sounds("crossfader at B", DECK_B, &[DECK_A, DECK_A + DECK_B]);
+            })
+            .await;
+        decks.close().await;
+    }
+
+    #[kithara::test(native, tokio, flash(false))]
+    async fn a_trim_scales_its_deck_alone_and_leaves_its_content_volume(
+        constant_fifth_wav: String,
+        constant_tenth_wav: String,
+    ) {
+        let decks = playing(constant_fifth_wav, constant_tenth_wav).await;
+        decks
+            .call(|decks| {
+                decks
+                    .set
+                    .set_trim(id(&decks.set, "b"), 0.25)
+                    .expect("trim deck b");
+                decks.sounds(
+                    "deck b trimmed at the crossfader centre",
+                    CENTRE * (DECK_A + 0.25 * DECK_B),
+                    &[
+                        DECK_A + DECK_B,
+                        CENTRE * (DECK_A + DECK_B),
+                        CENTRE * (0.25 * DECK_A + DECK_B),
+                        CENTRE * 0.25 * (DECK_A + DECK_B),
+                    ],
+                );
+
+                for record in decks.set.records() {
+                    assert_eq!(record.queue().volume(), 1.0);
+                }
+            })
+            .await;
+        decks.close().await;
     }
 }
