@@ -24,6 +24,7 @@ use crate::{
         build_cache,
         config::CiConfig,
         environment::{CacheTrust, scratch_root},
+        kache,
         process::Process,
     },
     consts,
@@ -229,12 +230,7 @@ impl<'a> HostStorage<'a> {
         self.prune_host_files("logs", 14 * Self::DAY)?;
         self.rotate_logs()?;
         self.prune_retired_caches(7 * Self::DAY)?;
-
-        let build_roots = build_cache::budget_roots(
-            &self.build_root.join("workspaces/gitlab"),
-            &self.host_root.join("cache"),
-        )?;
-        build_cache::enforce_budget(&build_roots, self.config.host.build_cache_budget_bytes()?)?;
+        let build_roots = self.prune_build_caches()?;
 
         // Cargo targets are the largest reproducible caches and already have a
         // bounded owner. Re-read pressure after enforcing that budget so a
@@ -328,6 +324,18 @@ impl<'a> HostStorage<'a> {
             );
         }
         Ok(())
+    }
+
+    fn prune_build_caches(&self) -> Result<Vec<PathBuf>> {
+        if let Err(error) = kache::reclaim_local_stores(self.config, self.process) {
+            warn!(%error, "local compiler stores could not be collected");
+        }
+        let roots = build_cache::budget_roots(
+            &self.build_root.join("workspaces/gitlab"),
+            &self.host_root.join("cache"),
+        )?;
+        build_cache::enforce_budget(&roots, self.config.host.build_cache_budget_bytes()?)?;
+        Ok(roots)
     }
 
     pub(super) fn health(&self) -> Result<()> {
@@ -1189,6 +1197,54 @@ mod tests {
         config.host.aggressive_cleanup_bytes = 270;
         config.host.soft_cleanup_bytes = 240;
         config
+    }
+
+    #[test]
+    fn cleanup_collects_local_compiler_stores_before_budgeting_builds() {
+        let directory = tempfile::tempdir().unwrap();
+        let cfg = config(directory.path());
+        let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+        let stores = [
+            format!("cache/trusted/{platform}/kache"),
+            format!("cache/quarantine/{platform}/kache"),
+            "cache/kache/store".to_owned(),
+            "cache/trusted/another-platform/kache".to_owned(),
+        ];
+        for relative in &stores {
+            let store = directory.path().join(relative);
+            fs::create_dir_all(&store).unwrap();
+            fs::write(store.join("index.db"), "owned by kache").unwrap();
+        }
+        let process = Process::recording(
+            directory.path(),
+            Recording::default().with_reply(
+                &["kache", "gc"],
+                r#"{"success":true,"skipped":false,"disk":{"store_bytes":3600000000,"store_limit_bytes":4000000000}}"#,
+            ),
+        );
+        let mut storage = HostStorage::for_test(&cfg, &process).unwrap();
+        storage.set_available_sequence([consts::FREE_NORMAL; 3]);
+
+        storage.cleanup().unwrap();
+
+        let recorded = process.recorded().unwrap();
+        let collections = recorded
+            .steps()
+            .iter()
+            .filter(|step| step.args == ["gc", "--json"])
+            .collect::<Vec<_>>();
+        assert_eq!(collections.len(), 2);
+        assert!(
+            collections
+                .iter()
+                .all(|step| { step.env.get("KACHE_LOCAL_ONLY").map(String::as_str) == Some("1") })
+        );
+        for relative in &stores {
+            assert_eq!(
+                fs::read_to_string(directory.path().join(relative).join("index.db")).unwrap(),
+                "owned by kache"
+            );
+        }
     }
 
     #[test]
