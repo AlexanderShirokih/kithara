@@ -330,9 +330,15 @@ are never deleted in place; sccache keeps its own LRU limit. No `diskutil apfs`
 verb accepts `-quota` after creation, so the quota cannot be raised and cleanup
 is the whole answer.
 
-`build_cache_size` caps one cache and cannot see whether the volume has room:
-two checkouts each under a 100 GB cap held 183 GB between them while every pass
-reported nothing freed and jobs were already refused. Warm builds are the last
+`build_cache_size` caps the build directories visible to one kernel together.
+Every CI lane enforces it before admission, even when free space is above the
+rejection floor. Mac cleanup owns native builds; containers own the separate
+Colima tree because advisory locks do not cross that boundary. Bootstrap xtask
+also collects superseded Cargo units under its build and Cargo profile locks,
+retaining the newest units, their reachable dependencies and a one-day window.
+RustFS holds reusable compiler entries; Cargo still materializes the binaries,
+linker inputs and build-script output a job executes in its local target.
+Warm builds are the last
 rung: when stale trees, the Docker build cache and the guest trim still leave
 the volume at `Aggressive` or worse, the pass reclaims what it is short of the
 soft floor, evicting past the cap. What its sweeps cannot show:
@@ -368,6 +374,18 @@ Automatic cleanup preserves the shared Colima VM, its Docker data disk and the
 services running inside it. If safe cache reclamation cannot restore the free-space
 floor, cleanup reports failure and preflight refuses new jobs. Runtime deletion
 is an explicit maintenance operation, never a disk-pressure cleanup step.
+
+Each pass also runs kache's requested collector against native-platform stores,
+using the host's size limit and an isolated local-only maintenance runtime.
+Automatic kache collection protects remote imports for six hours even above
+that limit; host maintenance must enforce the budget without that import pin.
+The collector retains its locks and protection for restores in flight. RustFS
+bucket eviction bounds remote objects separately and cannot reclaim local copies.
+Remote prediction hints expire after one day through bucket lifecycle; they are
+re-derived when absent. Compiler manifests and packs remain under the evictor's
+last-use policy, so reading an old result does not make it expire by write age.
+Stores mounted into the Linux guest stay with its owner: guest locks do not
+exclude host writers, so host collection cannot use those locks as a safety fence.
 
 Health and cleanup run through launchd, and directly as `ci host mac health` /
 `ci host mac cleanup`. A `KeepAlive` agent that dies on startup stays loaded

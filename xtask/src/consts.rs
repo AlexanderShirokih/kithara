@@ -957,7 +957,5 @@ pub(crate) const SERVICE_RENEWAL_TIMER: &str = "kithara-ci-windows-renewal.timer
 pub(crate) const PROBE_MANIFEST: &str =
     "[package]\nname = \"probe\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n";
 
-/// How far back from a unit's newest build the build-directory tests keep its
-/// other builds.
-#[cfg(test)]
+/// How far back from a CI bootstrap unit's newest build to keep its other builds.
 pub(crate) const GARBAGE_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);

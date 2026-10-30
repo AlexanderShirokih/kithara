@@ -374,15 +374,26 @@ impl Process {
         label: &str,
         limit: usize,
     ) -> Result<String> {
-        if self.is_recording() {
-            return self.capture(program, args, label);
-        }
-        let started = Instant::now();
-        let output = crate::child::bounded_output(
+        self.capture_bounded_command(
             self.command(program).args(args),
+            label,
             Duration::from_secs(5),
             limit,
-        );
+        )
+    }
+
+    pub(super) fn capture_bounded_command(
+        &self,
+        command: &mut Command,
+        label: &str,
+        deadline: Duration,
+        limit: usize,
+    ) -> Result<String> {
+        if self.is_recording() {
+            return self.capture_command(command, label);
+        }
+        let started = Instant::now();
+        let output = crate::child::bounded_output(command, deadline, limit);
         self.time(
             label,
             started.elapsed(),

@@ -195,7 +195,7 @@ fn evict(entry: &CacheEntry) -> Result<u64> {
 
 /// The `.cargo-lock` of every profile in `entry`, held so Cargo cannot start
 /// building in one while it is removed, or `None` when Cargo already holds one.
-fn hold_cargo_locks(entry: &Path) -> Result<Option<Vec<FileLock>>> {
+pub(super) fn hold_cargo_locks(entry: &Path) -> Result<Option<Vec<FileLock>>> {
     let mut held = Vec::new();
     for dir in levels(entry, consts::CARGO_LOCK_DEPTH)? {
         match try_hold(&dir.join(consts::CARGO_LOCK))? {
