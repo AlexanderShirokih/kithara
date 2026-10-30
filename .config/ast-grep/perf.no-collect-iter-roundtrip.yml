@@ -14,7 +14,7 @@ message: |
 severity: warning
 language: Rust
 files:
-  - "crates/**/*.rs"
+  - crates/**/*.rs
 ignores:
   - "**/tests/**"
   - "**/test_*.rs"

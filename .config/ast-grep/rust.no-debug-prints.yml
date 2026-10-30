@@ -10,7 +10,7 @@ message: |
 severity: warning
 language: Rust
 files:
-  - "crates/**/src/**/*.rs"
+  - crates/**/src/**/*.rs
 ignores:
   - "**/tests/**"
   - "**/test_*.rs"
