@@ -31,8 +31,8 @@ linux:image:
       when: never
     - when: on_success
   script:
-    - just ci host mac build-linux-image docker/ci.Dockerfile
-    - just ci host mac smoke-linux
+    - just ci host mac --pins .config/ci-pins.toml build-linux-image docker/ci.Dockerfile
+    - just ci host mac --pins .config/ci-pins.toml smoke-linux
 
 # The same roll-out on the Mac mini, opted into by starting a pipeline on the
 # default branch with `KITHARA_PROVISION` set to `1`, from "Run pipeline" or the
